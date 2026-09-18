@@ -1,0 +1,2520 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  Banknote, BookOpen, CalendarCheck2, CalendarRange, Check, CheckCheck, CheckCircle2,
+  ClipboardList, Clock as ClockIcon, Eye, FileBarChart2, FileDown, Globe2, Layers,
+  PenLine, Pencil, Plus, Printer, Receipt, RotateCcw, Save, Send, ShieldCheck, Table2, Tag, Trash2,
+  Undo2, UserCheck, UserX, Wallet,
+} from "lucide-react";
+import type {
+  AcademicYear, AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, DB, FeeItem, Homework,
+  PaymentMethod, PaymentRequest, SchoolClass, Section, Student, Submission, Subject, Term, TimetableEntry,
+} from "../types";
+import {
+  assessmentCalc, attendanceStats, childrenOf, describeSyncErrors, feeStats, fmt1, fmtDate, fullName, getClass,
+  getSubject, getTeacher, getYear, gradeFor, ordinal, sectionLabel, sectionShort, shortName,
+  structureRanks, structureWeightSum, studentAverage, studentOf, studentResults, studentsOf,
+  submissionFor, submissionStatus, teacherFor, teacherPairs, teacherStudentIds,
+  todayISO, uid, useApp, useLazyGroups,
+} from "../store";
+import { hasPermission, isSuperAdmin, pushAudit, pushNotifications } from "../rbac";
+import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
+import { getDownloadUrl } from "../lib/storage";
+import {
+  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Select, SkeletonCards, SkeletonPanel, SkeletonRows,
+  Stat, Tabs, TextArea, TextInput, tdCls, thCls,
+} from "../ui";
+import { AccessDenied } from "./Auth";
+
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+const PERIODS = [1, 2, 3, 4, 5, 6];
+
+/* ================= submission status chip (used by mark entry) ================= */
+function SubmissionChip({ status }: { status: Submission["status"] }) {
+  const meta: Record<Submission["status"], { tone: "gray" | "steel" | "gold" | "pine" | "rust"; label: string }> = {
+    draft: { tone: "gray", label: "Draft" },
+    submitted: { tone: "steel", label: "Submitted" },
+    approved: { tone: "gold", label: "Approved" },
+    published: { tone: "pine", label: "Published" },
+    returned: { tone: "rust", label: "Returned" },
+  };
+  const m = meta[status];
+  return <Chip tone={m.tone}>{m.label}</Chip>;
+}
+
+function exportMarkSheetCsv(db: DB, structure: AssessmentStructure, roster: Student[]) {
+  const ranks = structureRanks(db, structure);
+  const header = ["#", "Student", "Reg. No", ...structure.items.map((i) => `${i.name} (/${i.max})`), "Total", "%", "Grade", "Rank"];
+  const rows: (string | number)[][] = [header];
+  roster.forEach((s, i) => {
+    const calc = assessmentCalc(db, structure, s.id);
+    const grade = calc?.complete ? gradeFor(calc.pct, db.grading) : null;
+    rows.push([
+      i + 1, fullName(s), s.regId,
+      ...structure.items.map((it) => calc?.raw[it.id] ?? ""),
+      calc?.complete ? fmt1(calc.total) : "",
+      calc?.complete ? fmt1(calc.pct) : "",
+      grade?.grade ?? "",
+      calc?.complete && ranks[s.id] ? ranks[s.id] : "",
+    ]);
+  });
+  const fname = `Marksheet-${getSubject(db, structure.subjectId)?.code ?? "subject"}-${getClass(db, structure.classId)?.name ?? ""}-${structure.period}.csv`.replace(/\s+/g, "-");
+  downloadCsv(fname, rows);
+}
+
+function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Student[]) {
+  const ranks = structureRanks(db, structure);
+  const doc = newThemedDoc("landscape");
+  const y0 = drawThemedHeader(doc, db.settings.schoolName, "Mark Sheet", `${getClass(db, structure.classId)?.name} · ${getSubject(db, structure.subjectId)?.name} · ${structure.period}`);
+  const columns = [
+    { header: "#", width: 8, align: "center" as const },
+    { header: "Student", width: 45 },
+    ...structure.items.map((it) => ({ header: `${it.name} /${it.max}`, width: 22, align: "center" as const })),
+    { header: "Total", width: 18, align: "center" as const },
+    { header: "%", width: 14, align: "center" as const },
+    { header: "Grade", width: 14, align: "center" as const },
+    { header: "Rank", width: 12, align: "center" as const },
+  ];
+  const rows = roster.map((s, i) => {
+    const calc = assessmentCalc(db, structure, s.id);
+    const grade = calc?.complete ? gradeFor(calc.pct, db.grading) : null;
+    return [
+      i + 1, fullName(s),
+      ...structure.items.map((it) => calc?.raw[it.id] ?? "—"),
+      calc?.complete ? fmt1(calc.total) : "—",
+      calc?.complete ? `${fmt1(calc.pct)}%` : "—",
+      grade?.grade ?? "—",
+      calc?.complete && ranks[s.id] ? ordinal(ranks[s.id]) : "—",
+    ];
+  });
+  drawThemedTable(doc, y0 + 2, columns, rows);
+  doc.save(`Marksheet-${getSubject(db, structure.subjectId)?.code ?? "subject"}-${structure.period}.pdf`.replace(/\s+/g, "-"));
+}
+
+/* ================= mark entry (admin full / teacher scoped) ================= */
+export function MarkEntryPage() {
+  const { db, currentUser, yearId, setYear, update, toast } = useApp();
+  const groupsLoaded = useLazyGroups("academics");
+  const role = currentUser?.role ?? "admin";
+  const isAdmin = role === "admin";
+  const pairs = teacherPairs(db, currentUser);
+
+  if (!hasPermission(db, currentUser, "exams.view")) {
+    return <AccessDenied required="exams.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+
+  const allStructures = db.structures.filter((st) => st.yearId === yearId);
+
+  const allowedStructures = allStructures.filter((st) => {
+    if (isAdmin) return true;
+    return pairs.some((p) => p.classId === st.classId && p.subjectIds.includes(st.subjectId));
+  });
+
+  const classOptions = [...new Set(allowedStructures.map((st) => st.classId))];
+  const subjectOptions = [...new Set(allowedStructures.map((st) => st.subjectId))];
+  const periodOptions = [...new Set(allowedStructures.map((st) => st.period))];
+
+  const [filterClassId, setFilterClassId] = useState<string>("");
+  const [filterSectionId, setFilterSectionId] = useState<string>("");
+  const [filterSubjectId, setFilterSubjectId] = useState<string>("");
+  const [filterPeriod, setFilterPeriod] = useState<string>("");
+
+  const filteredStructures = allowedStructures.filter((st) => {
+    if (filterClassId && st.classId !== filterClassId) return false;
+    if (filterSectionId) {
+      const cls = getClass(db, st.classId);
+      if (!cls?.sections.some((s) => s.id === filterSectionId)) return false;
+    }
+    if (filterSubjectId && st.subjectId !== filterSubjectId) return false;
+    if (filterPeriod && st.period !== filterPeriod) return false;
+    return true;
+  });
+
+  const [editStruct, setEditStruct] = useState<AssessmentStructure | "new" | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  // With class + subject + period all chosen, exactly one structure should match.
+  const structure = filteredStructures.length === 1 ? filteredStructures[0] : null;
+
+  const availableSections = useMemo(() => {
+    if (!filterClassId) return [];
+    const cls = getClass(db, filterClassId);
+    return cls?.sections || [];
+  }, [db, filterClassId]);
+
+  const roster: Student[] = useMemo(() => {
+    if (!structure) return [];
+    let all = db.students.filter((s) => s.enrollment?.classId === structure.classId);
+    if (filterSectionId) all = all.filter((s) => s.enrollment?.sectionId === filterSectionId);
+    if (isAdmin) return all;
+    const allowed = teacherStudentIds(db, currentUser);
+    return all.filter((s) => allowed.has(s.id));
+  }, [db, structure, filterSectionId, isAdmin, currentUser]);
+
+
+  const ranks = structure ? structureRanks(db, structure) : {};
+
+  const submission = structure ? submissionFor(db, structure.id) : undefined;
+  const status = structure ? submissionStatus(db, structure.id) : "draft";
+  const canApprove = hasPermission(db, currentUser, "results.manage");
+  const canPublish = hasPermission(db, currentUser, "results.publish");
+  const canReopen = isSuperAdmin(db, currentUser); // DB enforces super-admin-only for this transition
+  const canEnter = hasPermission(db, currentUser, "exams.enter_marks");
+  // The database only allows writing assessment structures with exams.manage —
+  // mirror that here so admin-shaped roles without it don't see buttons that
+  // would fail on save.
+  const canManageStructures = hasPermission(db, currentUser, "exams.manage");
+  const canEdit = canEnter && (status === "draft" || status === "returned");
+  const [confirmSubmit, setConfirmSubmit] = useState(false);
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState("");
+  const [confirmPublish, setConfirmPublish] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReasonInput, setReopenReasonInput] = useState("");
+  // Tracks which workflow action (if any) is mid-flight, so its button can
+  // show a spinner and every button can be disabled — without this there was
+  // no feedback while `update()` was awaiting the server round-trip, which
+  // made a slow save look hung and invited a second, overlapping click.
+  const [workflowBusy, setWorkflowBusy] = useState<"submit" | "approve" | "return" | "publish" | "reopen" | null>(null);
+
+  const ensureSubmission = (d: { submissions: Submission[] }, structureId: string): Submission => {
+    let s = d.submissions.find((x) => x.structureId === structureId);
+    if (!s) {
+      s = { id: uid(), structureId, status: "draft" };
+      d.submissions.push(s);
+    }
+    return s;
+  };
+
+  const doSubmit = async () => {
+    if (!structure || !currentUser || workflowBusy) return;
+    setWorkflowBusy("submit");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "submitted";
+      s.submittedBy = currentUser.id;
+      s.submittedAt = new Date().toISOString();
+      s.returnReason = undefined;
+      pushAudit(d, currentUser, "marks.submit", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name} · ${structure.period}`, "Submitted for review");
+      const approvers = d.users.filter((u) => u.status === "active" && u.id !== currentUser.id && d.roles.find((r) => r.id === u.roleId)?.permissions.includes("results.manage"));
+      pushNotifications(d, approvers.map((u) => u.id), "result", "Marks awaiting review", `${currentUser.name} submitted ${getSubject(db, structure.subjectId)?.name} — ${getClass(db, structure.classId)?.name}.`);
+    });
+    setWorkflowBusy(null);
+    setConfirmSubmit(false);
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Submitted for administrative review.");
+  };
+
+  const doApprove = async () => {
+    if (!structure || !currentUser || workflowBusy) return;
+    setWorkflowBusy("approve");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "approved";
+      s.approvedBy = currentUser.id;
+      s.approvedAt = new Date().toISOString();
+      pushAudit(d, currentUser, "marks.approve", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Approved");
+      if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks approved", `Your ${getSubject(db, structure.subjectId)?.name} marks were approved by ${currentUser.name}.`);
+    });
+    setWorkflowBusy(null);
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Marks approved.");
+  };
+
+  const doReturn = async () => {
+    if (!structure || !currentUser || !returnReason.trim() || workflowBusy) { if (!returnReason.trim()) toast("A reason is required to return marks.", "warn"); return; }
+    setWorkflowBusy("return");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "returned";
+      s.returnedBy = currentUser.id;
+      s.returnedAt = new Date().toISOString();
+      s.returnReason = returnReason.trim();
+      pushAudit(d, currentUser, "marks.return", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, returnReason.trim());
+      if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks returned for correction", returnReason.trim());
+    });
+    setWorkflowBusy(null);
+    setReturnOpen(false);
+    setReturnReason("");
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Returned for correction.");
+  };
+
+  const doPublish = async () => {
+    if (!structure || !currentUser || workflowBusy) return;
+    setWorkflowBusy("publish");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "published";
+      s.publishedBy = currentUser.id;
+      s.publishedAt = new Date().toISOString();
+      pushAudit(d, currentUser, "results.publish", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Published to students & families");
+      const classStudents = d.students.filter((st) => st.enrollment?.classId === structure.classId);
+      const recipients = d.users.filter((u) => u.status === "active" && (classStudents.some((st) => u.studentId === st.id) || (u.childrenIds ?? []).some((cid) => classStudents.some((st) => st.id === cid))));
+      pushNotifications(d, recipients.map((u) => u.id), "result", "Results published", `${getSubject(db, structure.subjectId)?.name} results for ${getClass(db, structure.classId)?.name} are now available.`);
+    });
+    setWorkflowBusy(null);
+    setConfirmPublish(false);
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Published — students and families can now view these results.");
+  };
+
+  const doReopen = async () => {
+    if (!structure || !currentUser || !reopenReasonInput.trim() || workflowBusy) { if (!reopenReasonInput.trim()) toast("A reason is required to reopen a marks workflow.", "warn"); return; }
+    setWorkflowBusy("reopen");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "draft";
+      s.approvedBy = undefined; s.approvedAt = undefined; s.publishedBy = undefined; s.publishedAt = undefined;
+      s.reopenReason = reopenReasonInput.trim();
+      pushAudit(d, currentUser, "marks.reopen", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, reopenReasonInput.trim());
+    });
+    setWorkflowBusy(null);
+    setReopenOpen(false);
+    setReopenReasonInput("");
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Reopened — marks are editable again.");
+  };
+
+  const setScore = async (studentId: string, item: AssessmentItem, raw: string) => {
+    if (!structure || !canEdit) return;
+    const errors = await update((d) => {
+      const byStudent = (d.assessmentMarks[structure.id] = d.assessmentMarks[structure.id] ?? {});
+      const row = (byStudent[studentId] = byStudent[studentId] ?? {});
+      if (raw === "") {
+        delete row[item.id];
+        if (Object.keys(row).length === 0) delete byStudent[studentId];
+        return;
+      }
+      const v = Number(raw);
+      row[item.id] = isNaN(v) ? 0 : Math.max(0, Math.min(item.max, v));
+    });
+    if (errors.length) {
+      // Don't show a false "Saved" — the write may not have reached the server.
+      toast(describeSyncErrors(errors), "warn");
+    } else {
+      setSavedAt(new Date().toLocaleTimeString("en-GB"));
+    }
+  };
+
+  return (
+    <div className="mx-auto max-w-6xl">
+      <PageHead kicker="Examination" title="Mark entry" sub={isAdmin ? "Choose year, semester, grade, section and subject — totals, percentages, grades and ranks are all derived." : "Only subjects you are assigned to appear. Totals follow each structure's weights."}>
+        {canManageStructures && <Btn variant="gold" onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn>}
+      </PageHead>
+
+      <div className="anim-rise mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-mist bg-card p-3">
+        <Field label="Academic year" className="w-40">
+          <Select value={yearId} onChange={(e) => setYear(e.target.value)}>
+            {db.years.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}
+          </Select>
+        </Field>
+
+        <Field label="Semester" className="w-36">
+          <Select value={filterPeriod} onChange={(e) => setFilterPeriod(e.target.value)}>
+            <option value="">All</option>
+            {periodOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+          </Select>
+        </Field>
+
+        <Field label="Grade" className="w-40">
+          <Select
+            value={filterClassId}
+            onChange={(e) => { setFilterClassId(e.target.value); setFilterSectionId(""); }}
+          >
+            <option value="">All grades</option>
+            {classOptions.map((id) => {
+              const cls = getClass(db, id);
+              return cls ? <option key={id} value={id}>{cls.name}</option> : null;
+            })}
+          </Select>
+        </Field>
+
+        <Field label="Section" className="w-32">
+          <Select
+            value={filterSectionId}
+            onChange={(e) => setFilterSectionId(e.target.value)}
+            disabled={!filterClassId}
+          >
+            <option value="">All sections</option>
+            {availableSections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+          </Select>
+        </Field>
+
+        <Field label="Subject" className="w-48">
+          <Select
+            value={filterSubjectId}
+            onChange={(e) => setFilterSubjectId(e.target.value)}
+          >
+            <option value="">All subjects</option>
+            {subjectOptions.map((id) => {
+              const subj = getSubject(db, id);
+              return subj ? <option key={id} value={id}>{subj.name}</option> : null;
+            })}
+          </Select>
+        </Field>
+
+        {(filterClassId || filterSectionId || filterSubjectId || filterPeriod) && (
+          <Btn size="sm" variant="ghost" onClick={() => { setFilterClassId(""); setFilterSectionId(""); setFilterSubjectId(""); setFilterPeriod(""); }}>
+            <RotateCcw className="h-3.5 w-3.5" /> Clear filters
+          </Btn>
+        )}
+      </div>
+
+      {!groupsLoaded ? (
+        <SkeletonPanel />
+      ) : allowedStructures.length === 0 ? (
+        <Panel className="anim-rise"><EmptyState icon={<Table2 className="h-5 w-5" />} title="No assessment structures in your scope" body={isAdmin ? "Create a structure: subject + period + assessments with max marks and weights." : "Structures appear here once the admin configures them for your subjects, or ask the office."} action={canManageStructures ? <Btn onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn> : undefined} /></Panel>
+      ) : !structure ? (
+        <Panel className="anim-rise">
+          <EmptyState
+            icon={<Table2 className="h-5 w-5" />}
+            title={filteredStructures.length === 0 ? "No structure matches those filters" : "Choose a semester, grade and subject"}
+            body={filteredStructures.length === 0 ? "Try a different combination, or ask the office to create one." : "Once all three narrow the list to a single mark sheet, it will open here."}
+          />
+        </Panel>
+      ) : (
+        <>
+          <Panel className="anim-rise overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-mist bg-pine-900 px-4 py-3.5 sm:px-5">
+                <div>
+                  <h2 className="font-display text-[15px] font-extrabold tracking-tight text-white">
+                    {getSubject(db, structure.subjectId)?.name} — {getClass(db, structure.classId)?.name} · {structure.period}
+                  </h2>
+                  <p className="text-[11px] text-pine-300">Weights: {structure.items.map((i) => `${i.name} ${i.weight}%`).join(" · ")} · Σ {fmt1(structureWeightSum(structure))}%</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {savedAt && status === "draft" && <Chip tone="pine" className="!border-pine-600 !bg-pine-800 !text-pine-100"><Check className="h-3 w-3" /> Saved {savedAt}</Chip>}
+                  <SubmissionChip status={status} />
+                  <Btn size="sm" variant="soft" onClick={() => exportMarkSheetCsv(db, structure, roster)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>
+                  <Btn size="sm" variant="soft" onClick={() => exportMarkSheetPdf(db, structure, roster)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>
+                  {canManageStructures && <Btn size="sm" variant="gold" onClick={() => setEditStruct(structure)}><Pencil className="h-3.5 w-3.5" /> Edit structure</Btn>}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 border-b border-mist bg-paper/70 px-4 py-3 sm:px-5">
+                <div className="flex flex-wrap items-center gap-2">
+                  {canEdit && canEnter && (
+                    <Btn size="sm" disabled={!!workflowBusy} onClick={() => setConfirmSubmit(true)}><Send className="h-3.5 w-3.5" /> Submit for review</Btn>
+                  )}
+
+                  {status === "submitted" && canApprove && (
+                    <>
+                      <Btn size="sm" variant="gold" busy={workflowBusy === "approve"} disabled={!!workflowBusy} onClick={doApprove}><CheckCheck className="h-3.5 w-3.5" /> Approve</Btn>
+                      <Btn size="sm" variant="dangerSoft" disabled={!!workflowBusy} onClick={() => setReturnOpen(true)}><Undo2 className="h-3.5 w-3.5" /> Return for correction</Btn>
+                    </>
+                  )}
+                  {status === "approved" && canPublish && (
+                    <Btn size="sm" variant="solid" disabled={!!workflowBusy} onClick={() => setConfirmPublish(true)}><Globe2 className="h-3.5 w-3.5" /> Publish results</Btn>
+                  )}
+                  {(status === "approved" || status === "published") && canReopen && (
+                    <Btn size="sm" variant="ghost" disabled={!!workflowBusy} onClick={() => setReopenOpen(true)}><RotateCcw className="h-3.5 w-3.5" /> Reopen</Btn>
+                  )}
+                </div>
+                {!canEdit && (
+                  <p className="ml-auto flex items-center gap-1.5 text-[11.5px] font-semibold text-soft">
+                    <ShieldCheck className="h-3.5 w-3.5 text-pine-600" />
+                    {status === "submitted" ? "Locked — awaiting administrative review." : status === "approved" ? "Locked — approved, ready to publish." : status === "published" ? "Locked — published and visible to students & families." : "Locked."}
+                  </p>
+                )}
+                {canEdit && status === "returned" && submission?.returnReason && (
+                  <p className="ml-auto max-w-md truncate text-[11.5px] font-semibold text-rust-600" title={submission.returnReason}>↩ {submission.returnReason}</p>
+                )}
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px]">
+                  <thead className="border-b border-mist bg-paper/60">
+                    <tr>
+                      <th className={`${thCls()} w-10`}>#</th>
+                      <th className={thCls()}>Student</th>
+                      {structure.items.map((it) => (
+                        <th key={it.id} className={`${thCls()} text-center`}>
+                          <span className="block whitespace-nowrap">{it.name}</span>
+                          <span className="font-mono text-[9.5px] font-semibold normal-case tracking-normal text-soft">/{it.max} · {it.weight}%</span>
+                        </th>
+                      ))}
+                      <th className={`${thCls()} text-center text-gold-700`}>Total<span className="ml-1 font-mono text-[9.5px] font-semibold normal-case text-soft">/{fmt1(structureWeightSum(structure))}</span></th>
+                      <th className={`${thCls()} text-center`}>%</th>
+                      <th className={`${thCls()} text-center`}>Grade</th>
+                      <th className={`${thCls()} text-center`}>Rank</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-mist/70">
+                    {roster.map((s, i) => {
+                      const calc = assessmentCalc(db, structure, s.id);
+                      const grade = calc?.complete ? gradeFor(calc.pct, db.grading) : null;
+                      return (
+                        <tr key={s.id} className={`transition-colors ${calc?.complete ? "hover:bg-pine-50/60" : calc ? "bg-gold-100/25" : "bg-paper/40"}`}>
+                          <td className={`${tdCls()} tnum font-mono text-[11.5px] text-soft`}>{i + 1}</td>
+                          <td className={tdCls()}>
+                            <span className="flex items-center gap-2.5">
+                              <Avatar student={s} size={30} />
+                              <span className="font-bold text-ink">{shortName(s)}</span>
+                              {calc && !calc.complete && <Chip tone="gold">incomplete</Chip>}
+                              {!calc && <Chip tone="gray">not started</Chip>}
+                            </span>
+                          </td>
+                          {structure.items.map((it) => (
+                            <td key={it.id} className={`${tdCls()} text-center`}>
+                              <input
+                                type="number" min={0} max={it.max}
+                                value={calc?.raw[it.id] ?? ""}
+                                placeholder="–"
+                                disabled={!canEdit}
+                                onChange={(e) => setScore(s.id, it, e.target.value)}
+                                className={`tnum w-16 rounded-md border border-mist bg-card px-2 py-1.5 text-center font-mono text-[13px] font-semibold outline-none transition-all focus:border-pine-500 focus:ring-2 focus:ring-pine-500/25 ${!canEdit ? "cursor-not-allowed bg-paper/60 text-soft" : ""}`}
+                              />
+                            </td>
+                          ))}
+                          <td className={`${tdCls()} text-center font-mono text-[13px] font-bold ${calc ? "text-ink" : "text-soft/50"}`}>{calc ? fmt1(calc.total) : "—"}</td>
+                          <td className={`${tdCls()} tnum text-center font-mono text-[12.5px] font-semibold ${calc ? "text-pine-800" : "text-soft/50"}`}>{calc ? `${fmt1(calc.pct)}%` : "—"}</td>
+                          <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={calc!.pct >= 80 ? "pine" : calc!.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <span className="text-soft/40">—</span>}</td>
+                          <td className={`${tdCls()} tnum text-center font-mono text-[12px] text-soft`}>{calc?.complete && ranks[s.id] ? ordinal(ranks[s.id]) : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                    {roster.length === 0 && <tr><td colSpan={structure.items.length + 6} className="px-5 py-10 text-center text-[12.5px] text-soft">No students in scope for this structure.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+        </>
+      )}
+
+      {editStruct && canManageStructures && <StructureModal existing={editStruct === "new" ? undefined : editStruct} onClose={() => setEditStruct(null)} />}
+
+      {structure && confirmSubmit && (
+        <Modal title="Submit marks for review" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name} · ${structure.period}`} onClose={() => !workflowBusy && setConfirmSubmit(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setConfirmSubmit(false)}>Cancel</Btn><Btn busy={workflowBusy === "submit"} onClick={doSubmit}><Send className="h-4 w-4" /> Submit</Btn></>}>
+          <p className="text-[13px] leading-relaxed text-ink">
+            You are about to submit marks for <strong>{getClass(db, structure.classId)?.name}</strong> — <strong>{getSubject(db, structure.subjectId)?.name}</strong> — <strong>{structure.period}</strong>.
+          </p>
+          <p className="mt-2 rounded-lg bg-paper px-3 py-2.5 text-[12.5px] leading-relaxed text-soft">
+            Once submitted, marks are locked and require administrative review before publication.
+            {canApprove && <span className="mt-1 block font-semibold text-pine-700">You hold the approve permission, so you may also approve this submission.</span>}
+          </p>
+        </Modal>
+      )}
+
+      {structure && returnOpen && (
+        <Modal title="Return for correction" kicker="A reason is required" onClose={() => !workflowBusy && setReturnOpen(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setReturnOpen(false)}>Cancel</Btn><Btn variant="danger" busy={workflowBusy === "return"} onClick={doReturn}><Undo2 className="h-4 w-4" /> Return marks</Btn></>}>
+          <Field label="Reason" required>
+            <TextArea value={returnReason} onChange={(e) => setReturnReason(e.target.value)} placeholder="e.g. Please verify Abebe's mark — the attendance register shows he was absent." />
+          </Field>
+          <p className="mt-2 text-[12px] text-soft">The teacher will be notified and can correct and resubmit.</p>
+        </Modal>
+      )}
+
+      {structure && reopenOpen && (
+        <Modal title="Reopen marks workflow" kicker="Super-admin only — a reason is required" onClose={() => !workflowBusy && setReopenOpen(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setReopenOpen(false)}>Cancel</Btn><Btn variant="danger" busy={workflowBusy === "reopen"} onClick={doReopen}><RotateCcw className="h-4 w-4" /> Reopen</Btn></>}>
+          <Field label="Reason" required>
+            <TextArea value={reopenReasonInput} onChange={(e) => setReopenReasonInput(e.target.value)} placeholder="e.g. Correcting a transcription error found after publishing." />
+          </Field>
+          <p className="mt-2 text-[12px] text-soft">This unlocks the marks for editing again and is permanently recorded in the audit log.</p>
+        </Modal>
+      )}
+
+      {structure && confirmPublish && (
+        <Modal title="Publish results" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`} onClose={() => !workflowBusy && setConfirmPublish(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setConfirmPublish(false)}>Cancel</Btn><Btn variant="gold" busy={workflowBusy === "publish"} onClick={doPublish}><Globe2 className="h-4 w-4" /> Publish</Btn></>}>
+          <p className="text-[13px] leading-relaxed text-ink">Publishing makes these results visible to the students of <strong>{getClass(db, structure.classId)?.name}</strong> and their families.</p>
+          <p className="mt-2 rounded-lg bg-paper px-3 py-2.5 text-[12.5px] text-soft">This is recorded in the audit log. You can reopen later if a correction is needed.</p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/** Create / edit an assessment structure — subject + class + period + weighted items. */
+function StructureModal({ existing, onClose }: { existing?: AssessmentStructure; onClose: () => void }) {
+  const { db, yearId, update, toast, currentUser } = useApp();
+  const [classId, setClassId] = useState(existing?.classId ?? db.classes[0]?.id ?? "");
+  const [subjectId, setSubjectId] = useState(existing?.subjectId ?? db.subjects[0]?.id ?? "");
+  const [period, setPeriod] = useState(existing?.period ?? "Semester 1");
+  const [items, setItems] = useState<AssessmentItem[]>(existing?.items.map((i) => ({ ...i })) ?? [
+    { id: uid(), name: "Assessment 1", max: 20, weight: 20 },
+    { id: uid(), name: "Final Exam", max: 40, weight: 40 },
+  ]);
+
+  const weightSum = items.reduce((s, i) => s + (Number(i.weight) || 0), 0);
+
+  const addItem = () => setItems((p) => [...p, { id: uid(), name: `Assessment ${p.length + 1}`, max: 20, weight: 20 }]);
+  const removeItem = (id: string) => setItems((p) => p.filter((i) => i.id !== id));
+  const patchItem = (id: string, patch: Partial<AssessmentItem>) => setItems((p) => p.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+
+  const save = async () => {
+    if (!classId || !subjectId) { toast("Choose a class and subject.", "warn"); return; }
+    if (items.length === 0) { toast("Add at least one assessment item.", "warn"); return; }
+    if (items.some((i) => !i.name.trim())) { toast("Every item needs a name.", "warn"); return; }
+    const errors = await update((d) => {
+      if (existing) {
+        const i = d.structures.findIndex((s) => s.id === existing.id);
+        if (i >= 0) d.structures[i] = { ...existing, classId, subjectId, period, items };
+        pushAudit(d, currentUser, "structure.update", `${getSubject(db, subjectId)?.name} · ${getClass(db, classId)?.name}`);
+      } else {
+        d.structures.push({ id: uid(), yearId, classId, subjectId, period, items });
+        pushAudit(d, currentUser, "structure.create", `${getSubject(db, subjectId)?.name} · ${getClass(db, classId)?.name}`);
+      }
+    });
+    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
+    toast(existing ? "Structure updated." : "Structure created.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? "Edit assessment structure" : "New assessment structure"} kicker="Subject · class · weighted items" onClose={onClose} wide
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save structure</Btn></>}>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label="Class" required>
+          <Select value={classId} onChange={(e) => setClassId(e.target.value)}>
+            {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Subject" required>
+          <Select value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>
+            {db.subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Period" required>
+          <Select value={period} onChange={(e) => setPeriod(e.target.value)}>
+            <option>Semester 1</option>
+            <option>Semester 2</option>
+            <option>Annual</option>
+          </Select>
+        </Field>
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Assessment items — weight Σ {fmt1(weightSum)}%</p>
+          <Btn size="sm" variant="soft" onClick={addItem}><Plus className="h-3.5 w-3.5" /> Add item</Btn>
+        </div>
+        {weightSum !== 100 && <p className="mb-2 text-[11.5px] font-semibold text-rust-600">Weights should add up to 100% (currently {fmt1(weightSum)}%).</p>}
+        <div className="space-y-2">
+          {items.map((it) => (
+            <div key={it.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-mist bg-paper/50 p-2.5">
+              <TextInput value={it.name} onChange={(e) => patchItem(it.id, { name: e.target.value })} placeholder="Item name" className="min-w-[160px] flex-1" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10.5px] font-bold uppercase text-soft">Max</span>
+                <input type="number" min={1} value={it.max} onChange={(e) => patchItem(it.id, { max: Math.max(1, Number(e.target.value) || 1) })} className="w-16 rounded-md border border-mist bg-card px-2 py-1.5 text-center font-mono text-[13px]" />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10.5px] font-bold uppercase text-soft">Weight %</span>
+                <input type="number" min={0} max={100} value={it.weight} onChange={(e) => patchItem(it.id, { weight: Math.max(0, Number(e.target.value) || 0) })} className="w-16 rounded-md border border-mist bg-card px-2 py-1.5 text-center font-mono text-[13px]" />
+              </div>
+              <button onClick={() => removeItem(it.id)} disabled={items.length <= 1} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600 disabled:opacity-30"><Trash2 className="h-3.5 w-3.5" /></button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* =========================================================================
+   CLASSES, SECTIONS & SUBJECTS
+   Admin: full CRUD. Teacher/student/guardian: scoped read-only view of the
+   classes they teach / are enrolled in, with subjects & teachers shown.
+   ========================================================================= */
+/* ================= academic years & terms (admin/superadmin, gated by academics.manage_years) ================= */
+export function AcademicYearsPage() {
+  const { db, currentUser, update, toast } = useApp();
+  useLazyGroups(["academics", "homework"]);
+  const canManage = hasPermission(db, currentUser, "academics.manage_years");
+  const [editYear, setEditYear] = useState<AcademicYear | "new" | null>(null);
+  const [editTerm, setEditTerm] = useState<{ yearId: string; term: Term | "new" } | null>(null);
+  const [confirmDeleteYear, setConfirmDeleteYear] = useState<AcademicYear | null>(null);
+  const [confirmDeleteTerm, setConfirmDeleteTerm] = useState<Term | null>(null);
+
+  if (!canManage) {
+    return <AccessDenied required="academics.manage_years" reason="Only Admins and the Super Admin can manage academic years & terms by default. Ask them to grant it to your role in Roles & permissions if you need it." />;
+  }
+
+  const yearInUse = (y: AcademicYear) =>
+    db.students.some((s) => s.enrollment?.yearId === y.id) || db.structures.some((st) => st.yearId === y.id) || db.homework.some((h) => h.yearId === y.id);
+  const termInUse = (t: Term) => db.structures.some((st) => st.yearId === t.yearId && st.period.trim().toLowerCase() === t.name.trim().toLowerCase());
+
+  const setActiveYear = (y: AcademicYear) => {
+    update((d) => {
+      d.years.forEach((x) => { x.active = x.id === y.id; });
+      pushAudit(d, currentUser, "year.activate", y.name, "Set as the active academic year");
+    });
+    toast(`${y.name} is now the active academic year.`);
+  };
+
+  const removeYear = (y: AcademicYear) => {
+    if (y.active) { toast("Set a different year as active before deleting this one.", "warn"); return; }
+    if (yearInUse(y)) { toast("This year has enrollment, assessment structures or homework tied to it — remove those first.", "warn"); return; }
+    update((d) => {
+      d.years = d.years.filter((x) => x.id !== y.id);
+      d.terms = d.terms.filter((t) => t.yearId !== y.id);
+      pushAudit(d, currentUser, "year.delete", y.name);
+    });
+    toast("Academic year deleted.");
+    setConfirmDeleteYear(null);
+  };
+
+  const removeTerm = (t: Term) => {
+    if (termInUse(t)) { toast("This term has assessment structures using it — remove those first.", "warn"); return; }
+    update((d) => { d.terms = d.terms.filter((x) => x.id !== t.id); pushAudit(d, currentUser, "term.delete", t.name); });
+    toast("Term deleted.");
+    setConfirmDeleteTerm(null);
+  };
+
+  const years = [...db.years].sort((a, b) => b.start.localeCompare(a.start));
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <PageHead kicker="Academics" title="Academic years & terms" sub="The academic calendar everything else — enrollment, assessment periods, homework — is dated against.">
+        <Btn variant="gold" onClick={() => setEditYear("new")}><Plus className="h-4 w-4" /> New academic year</Btn>
+      </PageHead>
+
+      {years.length === 0 ? (
+        <Panel className="anim-rise"><EmptyState icon={<CalendarRange className="h-5 w-5" />} title="No academic years yet" body="Create one to start enrolling students and scheduling terms." /></Panel>
+      ) : (
+        <div className="space-y-4">
+          {years.map((y) => {
+            const terms = db.terms.filter((t) => t.yearId === y.id).sort((a, b) => a.seq - b.seq);
+            return (
+              <Panel key={y.id} className="anim-rise p-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="flex items-center gap-2 font-display text-[16px] font-bold text-ink">
+                      {y.name}
+                      {y.active && <Chip tone="pine"><CheckCircle2 className="h-3 w-3" /> Active</Chip>}
+                    </p>
+                    <p className="text-[11.5px] text-soft">{fmtDate(y.start)} — {fmtDate(y.end)}</p>
+                  </div>
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    {!y.active && <Btn size="sm" variant="ghost" onClick={() => setActiveYear(y)}><CheckCircle2 className="h-3.5 w-3.5" /> Set active</Btn>}
+                    <button onClick={() => setEditYear(y)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                    <button onClick={() => setConfirmDeleteYear(y)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                  </span>
+                </div>
+
+                <div className="mt-3 border-t border-mist pt-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-soft">Terms / semesters</p>
+                    <button onClick={() => setEditTerm({ yearId: y.id, term: "new" })} className="flex cursor-pointer items-center gap-1 text-[11.5px] font-semibold text-pine-700 hover:text-pine-800">
+                      <Plus className="h-3.5 w-3.5" /> Add term
+                    </button>
+                  </div>
+                  {terms.length === 0 ? (
+                    <p className="text-[12px] text-soft">No terms defined for this year yet.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {terms.map((t) => (
+                        <span key={t.id} className="flex items-center gap-1.5 rounded-lg border border-mist bg-card py-1 pl-2.5 pr-1.5 text-[12px] font-semibold text-ink">
+                          {t.name}
+                          <button onClick={() => setEditTerm({ yearId: y.id, term: t })} className="cursor-pointer rounded p-0.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3 w-3" /></button>
+                          <button onClick={() => setConfirmDeleteTerm(t)} className="cursor-pointer rounded p-0.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3 w-3" /></button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Panel>
+            );
+          })}
+        </div>
+      )}
+
+      {editYear && <YearModal existing={editYear === "new" ? null : editYear} onClose={() => setEditYear(null)} />}
+      {editTerm && <TermModal yearId={editTerm.yearId} existing={editTerm.term === "new" ? null : editTerm.term} onClose={() => setEditTerm(null)} />}
+
+      {confirmDeleteYear && (
+        <Modal title="Delete academic year?" kicker={confirmDeleteYear.name} onClose={() => setConfirmDeleteYear(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDeleteYear(null)}>Cancel</Btn><Btn variant="danger" onClick={() => removeYear(confirmDeleteYear)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
+          <p className="text-[13px] text-soft">This also removes its terms. This can't be undone.</p>
+        </Modal>
+      )}
+      {confirmDeleteTerm && (
+        <Modal title="Delete term?" kicker={confirmDeleteTerm.name} onClose={() => setConfirmDeleteTerm(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDeleteTerm(null)}>Cancel</Btn><Btn variant="danger" onClick={() => removeTerm(confirmDeleteTerm)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
+          <p className="text-[13px] text-soft">This can't be undone.</p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function YearModal({ existing, onClose }: { existing: AcademicYear | null; onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const [name, setName] = useState(existing?.name ?? "");
+  const [start, setStart] = useState(existing?.start ?? todayISO());
+  const [end, setEnd] = useState(existing?.end ?? todayISO());
+  const [makeActive, setMakeActive] = useState(existing?.active ?? db.years.length === 0);
+
+  const save = async () => {
+    if (!name.trim()) { toast("Give the academic year a name, e.g. 2027/28.", "warn"); return; }
+    if (!start || !end || end <= start) { toast("End date must be after the start date.", "warn"); return; }
+    const errors = await update((d) => {
+      if (makeActive) d.years.forEach((y) => { y.active = false; });
+      if (existing) {
+        const y = d.years.find((x) => x.id === existing.id)!;
+        y.name = name.trim(); y.start = start; y.end = end; y.active = makeActive || y.active;
+        pushAudit(d, currentUser, "year.update", name.trim());
+      } else {
+        d.years.push({ id: uid(), name: name.trim(), start, end, active: makeActive });
+        pushAudit(d, currentUser, "year.create", name.trim());
+      }
+    });
+    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
+    toast(existing ? "Academic year updated." : "Academic year created.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? `Edit ${existing.name}` : "New academic year"} kicker="Academic calendar" onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <div className="space-y-3">
+        <Field label="Name" required><TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 2027/28" /></Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Start date" required><TextInput type="date" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
+          <Field label="End date" required><TextInput type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></Field>
+        </div>
+        <label className="flex cursor-pointer items-center gap-2 text-[12.5px] font-semibold text-ink">
+          <input type="checkbox" checked={makeActive} onChange={(e) => setMakeActive(e.target.checked)} className="h-4 w-4 rounded border-mist" />
+          Make this the active academic year
+        </label>
+        {makeActive && <p className="text-[11.5px] text-soft">This deactivates whichever year is currently active.</p>}
+      </div>
+    </Modal>
+  );
+}
+
+function TermModal({ yearId, existing, onClose }: { yearId: string; existing: Term | null; onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const [name, setName] = useState(existing?.name ?? "");
+  const [seq, setSeq] = useState(existing?.seq ?? (db.terms.filter((t) => t.yearId === yearId).length + 1));
+
+  const save = async () => {
+    if (!name.trim()) { toast("Give the term a name, e.g. Semester 1.", "warn"); return; }
+    const dup = db.terms.some((t) => t.yearId === yearId && t.id !== existing?.id && t.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (dup) { toast("This year already has a term with that name.", "warn"); return; }
+    const errors = await update((d) => {
+      if (existing) {
+        const t = d.terms.find((x) => x.id === existing.id)!;
+        t.name = name.trim(); t.seq = seq;
+        pushAudit(d, currentUser, "term.update", name.trim());
+      } else {
+        d.terms.push({ id: uid(), yearId, name: name.trim(), seq });
+        pushAudit(d, currentUser, "term.create", name.trim());
+      }
+    });
+    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
+    toast(existing ? "Term updated." : "Term added.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? `Edit ${existing.name}` : "Add term"} kicker={getYear(db, yearId)?.name ?? ""} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <div className="grid gap-3 sm:grid-cols-[1fr_100px]">
+        <Field label="Name" required><TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Semester 1" /></Field>
+        <Field label="Order" hint="display order"><TextInput type="number" min={1} value={seq} onChange={(e) => setSeq(Number(e.target.value) || 1)} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/* ================= classes & subjects ================= */
+export function ClassesPage({ scoped }: { scoped?: boolean } = {}) {
+  const { db, currentUser, update, toast } = useApp();
+  useLazyGroups(["academics", "timetable"]);
+  const role = currentUser?.role ?? "admin";
+  const canManage = !scoped && hasPermission(db, currentUser, "academics.manage");
+  const [tab, setTab] = useState<"classes" | "subjects">("classes");
+  const [editClass, setEditClass] = useState<SchoolClass | "new" | null>(null);
+  const [editSubject, setEditSubject] = useState<Subject | "new" | null>(null);
+  const [confirmDeleteClass, setConfirmDeleteClass] = useState<SchoolClass | null>(null);
+  const [confirmDeleteSubject, setConfirmDeleteSubject] = useState<Subject | null>(null);
+
+  /* -------- scoped (read-only) view for teacher / student / guardian -------- */
+  if (scoped) {
+    let pairs: { classId: string; sectionId: string; subjectIds: string[] }[] = [];
+    if (role === "teacher") pairs = teacherPairs(db, currentUser);
+    else if (role === "student") {
+      const s = studentOf(db, currentUser);
+      if (s?.enrollment) pairs = [{ classId: s.enrollment.classId, sectionId: s.enrollment.sectionId, subjectIds: db.assignments.filter((a) => a.classId === s.enrollment!.classId && a.sectionId === s.enrollment!.sectionId).map((a) => a.subjectId) }];
+    } else if (role === "guardian") {
+      pairs = childrenOf(db, currentUser).filter((c) => c.enrollment).map((c) => ({
+        classId: c.enrollment!.classId, sectionId: c.enrollment!.sectionId,
+        subjectIds: db.assignments.filter((a) => a.classId === c.enrollment!.classId && a.sectionId === c.enrollment!.sectionId).map((a) => a.subjectId),
+      }));
+    }
+
+    return (
+      <div className="mx-auto max-w-5xl">
+        <PageHead kicker="Academics" title="My classes" sub="Subjects and the teacher for each, in your current placement." />
+        {pairs.length === 0 ? (
+          <Panel className="anim-rise"><EmptyState icon={<Layers className="h-5 w-5" />} title="No classes yet" body="Once enrollment or an assignment is set up, it will appear here." /></Panel>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2">
+            {pairs.map((p, idx) => (
+              <Panel key={idx} className="anim-rise p-4">
+                <p className="font-display text-[15px] font-bold text-ink">{sectionLabel(db, p.classId, p.sectionId)}</p>
+                <div className="mt-3 space-y-1.5">
+                  {[...new Set(p.subjectIds)].map((sid) => {
+                    const subj = getSubject(db, sid);
+                    const t = teacherFor(db, db.years.find((y) => y.active)?.id ?? "", p.classId, p.sectionId, sid);
+                    return (
+                      <div key={sid} className="flex items-center justify-between rounded-md bg-paper px-2.5 py-1.5">
+                        <span className="flex items-center gap-2 text-[12.5px] font-semibold text-ink">
+                          <span className="h-2 w-2 rounded-full" style={{ background: subj?.color }} /> {subj?.name}
+                        </span>
+                        <span className="text-[11.5px] text-soft">{t?.name ?? "Unassigned"}</span>
+                      </div>
+                    );
+                  })}
+                  {p.subjectIds.length === 0 && <p className="text-[12px] text-soft">No subjects assigned yet.</p>}
+                </div>
+              </Panel>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* -------- admin: manage -------- */
+  if (!hasPermission(db, currentUser, "academics.view")) {
+    return <AccessDenied required="academics.view" reason="You don't have permission to view academic structure." />;
+  }
+
+  const classInUse = (c: SchoolClass) => db.students.some((s) => s.enrollment?.classId === c.id) || db.assignments.some((a) => a.classId === c.id) || db.timetable.some((t) => t.classId === c.id);
+  const subjectInUse = (s: Subject) => db.assignments.some((a) => a.subjectId === s.id) || db.structures.some((st) => st.subjectId === s.id) || db.timetable.some((t) => t.subjectId === s.id);
+
+  const removeClass = (c: SchoolClass) => {
+    if (classInUse(c)) { toast("This class has students, assignments or timetable entries — remove those first.", "warn"); return; }
+    update((d) => { d.classes = d.classes.filter((x) => x.id !== c.id); pushAudit(d, currentUser, "class.delete", c.name); });
+    toast("Class deleted.");
+    setConfirmDeleteClass(null);
+  };
+  const removeSubject = (s: Subject) => {
+    if (subjectInUse(s)) { toast("This subject is used in assignments, structures or the timetable — remove those first.", "warn"); return; }
+    update((d) => { d.subjects = d.subjects.filter((x) => x.id !== s.id); pushAudit(d, currentUser, "subject.delete", s.name); });
+    toast("Subject deleted.");
+    setConfirmDeleteSubject(null);
+  };
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <PageHead kicker="Academics" title="Classes & sections" sub="The structure everything else (timetable, assignments, enrollment) is built on.">
+        {canManage && tab === "classes" && <Btn variant="gold" onClick={() => setEditClass("new")}><Plus className="h-4 w-4" /> New class</Btn>}
+        {canManage && tab === "subjects" && <Btn variant="gold" onClick={() => setEditSubject("new")}><Plus className="h-4 w-4" /> New subject</Btn>}
+      </PageHead>
+
+      <div className="mb-4"><Tabs tabs={[{ id: "classes", label: "Classes & sections", icon: <Layers className="h-3.5 w-3.5" /> }, { id: "subjects", label: "Subjects", icon: <BookOpen className="h-3.5 w-3.5" /> }]} active={tab} onChange={(id) => setTab(id as any)} /></div>
+
+      {tab === "classes" && (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {db.classes.map((c) => (
+            <Panel key={c.id} className="anim-rise p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="font-display text-[16px] font-bold text-ink">{c.name}</p>
+                  <p className="text-[11px] text-soft">Level {c.level} · {c.sections.length} section{c.sections.length !== 1 ? "s" : ""}</p>
+                </div>
+                {canManage && (
+                  <span className="flex gap-1">
+                    <button onClick={() => setEditClass(c)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                    <button onClick={() => setConfirmDeleteClass(c)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                  </span>
+                )}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {c.sections.map((s) => (
+                  <Chip key={s.id} tone="pine">Section {s.name} · {studentsOf(db, c.id, s.id).length} students</Chip>
+                ))}
+                {c.sections.length === 0 && <p className="text-[12px] text-soft">No sections yet.</p>}
+              </div>
+            </Panel>
+          ))}
+          {db.classes.length === 0 && <Panel className="anim-rise sm:col-span-2"><EmptyState icon={<Layers className="h-5 w-5" />} title="No classes yet" body="Create the first class to start building the academic structure." action={canManage ? <Btn onClick={() => setEditClass("new")}><Plus className="h-4 w-4" /> New class</Btn> : undefined} /></Panel>}
+        </div>
+      )}
+
+      {tab === "subjects" && (
+        <Panel className="anim-rise overflow-hidden">
+          <table className="w-full">
+            <thead className="border-b border-mist bg-paper/60">
+              <tr><th className={thCls()}>Subject</th><th className={thCls()}>Code</th><th className={thCls()}>In use</th><th className={thCls()}></th></tr>
+            </thead>
+            <tbody className="divide-y divide-mist/70">
+              {db.subjects.map((s) => (
+                <tr key={s.id} className="transition-colors hover:bg-pine-50/50">
+                  <td className={tdCls()}><span className="flex items-center gap-2 font-bold text-ink"><span className="h-2.5 w-2.5 rounded-full" style={{ background: s.color }} /> {s.name}</span></td>
+                  <td className={tdCls()}><Chip tone="gray">{s.code}</Chip></td>
+                  <td className={tdCls()}>{subjectInUse(s) ? <Chip tone="pine">Yes</Chip> : <Chip tone="gray">No</Chip>}</td>
+                  <td className={`${tdCls()} text-right`}>
+                    {canManage && (
+                      <span className="inline-flex gap-1">
+                        <button onClick={() => setEditSubject(s)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                        <button onClick={() => setConfirmDeleteSubject(s)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {db.subjects.length === 0 && <tr><td colSpan={4}><EmptyState icon={<BookOpen className="h-5 w-5" />} title="No subjects yet" body="Add the subjects your school teaches." /></td></tr>}
+            </tbody>
+          </table>
+        </Panel>
+      )}
+
+      {editClass && <ClassModal existing={editClass === "new" ? undefined : editClass} onClose={() => setEditClass(null)} />}
+      {editSubject && <SubjectModal existing={editSubject === "new" ? undefined : editSubject} onClose={() => setEditSubject(null)} />}
+
+      {confirmDeleteClass && (
+        <Modal title={`Delete ${confirmDeleteClass.name}?`} onClose={() => setConfirmDeleteClass(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDeleteClass(null)}>Cancel</Btn><Btn variant="danger" onClick={() => removeClass(confirmDeleteClass)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
+          <p className="text-[13px] text-ink">This can't be undone. It only succeeds if no students, assignments or timetable entries reference this class.</p>
+        </Modal>
+      )}
+      {confirmDeleteSubject && (
+        <Modal title={`Delete ${confirmDeleteSubject.name}?`} onClose={() => setConfirmDeleteSubject(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDeleteSubject(null)}>Cancel</Btn><Btn variant="danger" onClick={() => removeSubject(confirmDeleteSubject)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
+          <p className="text-[13px] text-ink">This can't be undone. It only succeeds if no assignments, structures or timetable entries reference this subject.</p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ClassModal({ existing, onClose }: { existing?: SchoolClass; onClose: () => void }) {
+  const { update, toast, currentUser } = useApp();
+  const [name, setName] = useState(existing?.name ?? "");
+  const [level, setLevel] = useState(existing?.level ?? 1);
+  const [sections, setSections] = useState<Section[]>(existing?.sections.map((s) => ({ ...s })) ?? [{ id: uid(), name: "A" }]);
+
+  const addSection = () => setSections((p) => [...p, { id: uid(), name: String.fromCharCode(65 + p.length) }]);
+  const removeSection = (id: string) => setSections((p) => (p.length > 1 ? p.filter((s) => s.id !== id) : p));
+  const renameSection = (id: string, name: string) => setSections((p) => p.map((s) => (s.id === id ? { ...s, name } : s)));
+
+  const save = () => {
+    if (!name.trim()) { toast("Give the class a name.", "warn"); return; }
+    if (sections.some((s) => !s.name.trim())) { toast("Every section needs a name.", "warn"); return; }
+    update((d) => {
+      if (existing) {
+        const i = d.classes.findIndex((c) => c.id === existing.id);
+        if (i >= 0) d.classes[i] = { ...existing, name: name.trim(), level: Number(level), sections };
+        pushAudit(d, currentUser, "class.update", name.trim());
+      } else {
+        d.classes.push({ id: uid(), name: name.trim(), level: Number(level), sections });
+        pushAudit(d, currentUser, "class.create", name.trim());
+      }
+    });
+    toast(existing ? "Class updated." : "Class created.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? `Edit ${existing.name}` : "New class"} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Class name" required><TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Grade 9" /></Field>
+        <Field label="Level" required><input type="number" min={1} value={level} onChange={(e) => setLevel(Number(e.target.value) || 1)} className="w-full rounded-lg border border-mist bg-card px-3 py-2 text-[13.5px]" /></Field>
+      </div>
+      <div className="mt-4">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Sections</p>
+          <Btn size="sm" variant="soft" onClick={addSection}><Plus className="h-3.5 w-3.5" /> Add section</Btn>
+        </div>
+        <div className="space-y-2">
+          {sections.map((s) => (
+            <div key={s.id} className="flex items-center gap-2">
+              <TextInput value={s.name} onChange={(e) => renameSection(s.id, e.target.value)} className="max-w-[160px]" />
+              <button onClick={() => removeSection(s.id)} disabled={sections.length <= 1} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600 disabled:opacity-30"><Trash2 className="h-3.5 w-3.5" /></button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function SubjectModal({ existing, onClose }: { existing?: Subject; onClose: () => void }) {
+  const { update, toast, currentUser } = useApp();
+  const [name, setName] = useState(existing?.name ?? "");
+  const [code, setCode] = useState(existing?.code ?? "");
+  const [color, setColor] = useState(existing?.color ?? "#2c654c");
+
+  const save = () => {
+    if (!name.trim() || !code.trim()) { toast("Name and code are both required.", "warn"); return; }
+    update((d) => {
+      if (existing) {
+        const i = d.subjects.findIndex((s) => s.id === existing.id);
+        if (i >= 0) d.subjects[i] = { ...existing, name: name.trim(), code: code.trim().toUpperCase(), color };
+        pushAudit(d, currentUser, "subject.update", name.trim());
+      } else {
+        d.subjects.push({ id: uid(), name: name.trim(), code: code.trim().toUpperCase(), color });
+        pushAudit(d, currentUser, "subject.create", name.trim());
+      }
+    });
+    toast(existing ? "Subject updated." : "Subject created.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? `Edit ${existing.name}` : "New subject"} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Subject name" required><TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Chemistry" /></Field>
+        <Field label="Code" required><TextInput value={code} onChange={(e) => setCode(e.target.value)} placeholder="e.g. CHEM" /></Field>
+      </div>
+      <Field label="Colour" className="mt-3">
+        <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="h-9 w-16 cursor-pointer rounded border border-mist bg-card" />
+      </Field>
+    </Modal>
+  );
+}
+
+/* =========================================================================
+   TIMETABLE (admin builder)
+   ========================================================================= */
+export function TimetablePage() {
+  const { db, currentUser } = useApp();
+  const groupsLoaded = useLazyGroups("timetable");
+  if (!hasPermission(db, currentUser, "academics.view")) {
+    return <AccessDenied required="academics.view" reason="You don't have permission to view the timetable." />;
+  }
+  const canManage = hasPermission(db, currentUser, "academics.manage");
+  const [classId, setClassId] = useState(db.classes[0]?.id ?? "");
+  const cls = getClass(db, classId);
+  const [sectionId, setSectionId] = useState(cls?.sections[0]?.id ?? "");
+  useEffect(() => {
+    const c = getClass(db, classId);
+    if (c && !c.sections.some((s) => s.id === sectionId)) setSectionId(c.sections[0]?.id ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classId]);
+  const [editCell, setEditCell] = useState<{ day: number; period: number } | null>(null);
+
+  const entryFor = (day: number, period: number) => db.timetable.find((t) => t.classId === classId && t.sectionId === sectionId && t.day === day && t.period === period);
+
+  const availableSubjects = [...new Set(db.assignments.filter((a) => a.classId === classId && a.sectionId === sectionId).map((a) => a.subjectId))];
+
+  return (
+    <div className="mx-auto max-w-6xl">
+      <PageHead kicker="Academics" title="Timetable" sub="One grid per class & section — Monday to Friday, six periods a day.">
+        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => setClassId(e.target.value)}>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Section" className="w-28"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)}>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+      </PageHead>
+
+      {availableSubjects.length === 0 && canManage && (
+        <p className="anim-rise mb-3 rounded-lg border border-gold-200 bg-gold-100/60 px-3 py-2 text-[12px] font-semibold text-gold-700">No teacher–subject assignments exist for this class/section yet — set those up first so periods can be assigned.</p>
+      )}
+
+      {!groupsLoaded ? (
+        <SkeletonPanel rows={PERIODS.length} />
+      ) : (
+      <Panel className="anim-rise overflow-x-auto">
+        <table className="w-full min-w-[720px]">
+          <thead className="border-b border-mist bg-paper/60">
+            <tr>
+              <th className={`${thCls()} w-20`}>Period</th>
+              {DAYS.map((d) => <th key={d} className={thCls()}>{d}</th>)}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-mist/70">
+            {PERIODS.map((p) => (
+              <tr key={p}>
+                <td className={`${tdCls()} font-mono text-[12px] font-bold text-soft`}>P{p}</td>
+                {DAYS.map((_, day) => {
+                  const e = entryFor(day, p);
+                  const subj = e ? getSubject(db, e.subjectId) : null;
+                  const teacher = e ? teacherFor(db, db.years.find((y) => y.active)?.id ?? "", classId, sectionId, e.subjectId) : null;
+                  return (
+                    <td key={day} className={tdCls()}>
+                      <button
+                        disabled={!canManage}
+                        onClick={() => setEditCell({ day, period: p })}
+                        className={`w-full cursor-pointer rounded-lg border px-2.5 py-2 text-left transition-all ${e ? "border-pine-200 bg-pine-50 hover:border-pine-400" : "border-dashed border-mist bg-paper/50 hover:border-pine-300"} disabled:cursor-not-allowed`}
+                      >
+                        {subj ? (
+                          <>
+                            <span className="flex items-center gap-1.5 text-[12px] font-bold text-ink"><span className="h-1.5 w-1.5 rounded-full" style={{ background: subj.color }} /> {subj.name}</span>
+                            <span className="block text-[10.5px] text-soft">{teacher?.name ?? "Unassigned"} · {e!.room}</span>
+                          </>
+                        ) : (
+                          <span className="text-[11.5px] text-soft/60">{canManage ? "+ Assign" : "Free period"}</span>
+                        )}
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Panel>
+      )}
+
+      {editCell && (
+        <TimetableCellModal
+          day={editCell.day} period={editCell.period} classId={classId} sectionId={sectionId}
+          existing={entryFor(editCell.day, editCell.period)}
+          availableSubjects={availableSubjects}
+          onClose={() => setEditCell(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function TimetableCellModal({ day, period, classId, sectionId, existing, availableSubjects, onClose }: {
+  day: number; period: number; classId: string; sectionId: string; existing?: TimetableEntry; availableSubjects: string[]; onClose: () => void;
+}) {
+  const { db, update, toast, currentUser } = useApp();
+  const [subjectId, setSubjectId] = useState(existing?.subjectId ?? availableSubjects[0] ?? "");
+  const [room, setRoom] = useState(existing?.room ?? "");
+
+  const save = () => {
+    if (!subjectId) { toast("Choose a subject.", "warn"); return; }
+    update((d) => {
+      const i = d.timetable.findIndex((t) => t.classId === classId && t.sectionId === sectionId && t.day === day && t.period === period);
+      if (i >= 0) d.timetable[i] = { ...d.timetable[i], subjectId, room: room.trim() };
+      else d.timetable.push({ id: uid(), classId, sectionId, day, period, subjectId, room: room.trim() });
+      pushAudit(d, currentUser, "timetable.update", `${DAYS[day]} P${period} · ${getClass(db, classId)?.name}`);
+    });
+    toast("Timetable updated.");
+    onClose();
+  };
+  const clear = () => {
+    update((d) => { d.timetable = d.timetable.filter((t) => !(t.classId === classId && t.sectionId === sectionId && t.day === day && t.period === period)); });
+    toast("Period cleared.");
+    onClose();
+  };
+
+  return (
+    <Modal title={`${DAYS[day]} · Period ${period}`} kicker={sectionLabel(db, classId, sectionId)} onClose={onClose}
+      footer={<>
+        {existing && <Btn variant="dangerSoft" onClick={clear}><Trash2 className="h-4 w-4" /> Clear</Btn>}
+        <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn>
+      </>}>
+      <Field label="Subject" required>
+        <Select value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>
+          {availableSubjects.length === 0 && <option value="">No assignments for this class/section</option>}
+          {availableSubjects.map((sid) => <option key={sid} value={sid}>{getSubject(db, sid)?.name}</option>)}
+        </Select>
+      </Field>
+      <Field label="Room" className="mt-3"><TextInput value={room} onChange={(e) => setRoom(e.target.value)} placeholder="e.g. R-201" /></Field>
+    </Modal>
+  );
+}
+
+/* =========================================================================
+   ATTENDANCE
+   Teacher/admin: mark a daily register. Student/guardian: view stats & history.
+   ========================================================================= */
+export function AttendancePage() {
+  const { db, currentUser, update, toast } = useApp();
+  const groupsLoaded = useLazyGroups("attendance");
+  const role = currentUser?.role ?? "admin";
+
+  if (role === "student" || role === "guardian") {
+    return <AttendanceViewer />;
+  }
+
+  if (!hasPermission(db, currentUser, "attendance.view")) {
+    return <AccessDenied required="attendance.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+
+  const canManage = hasPermission(db, currentUser, "attendance.manage");
+  const isAdmin = role === "admin";
+  const pairs = teacherPairs(db, currentUser);
+  const classIds = isAdmin ? db.classes.map((c) => c.id) : [...new Set(pairs.map((p) => p.classId))];
+
+  const [classId, setClassId] = useState(classIds[0] ?? "");
+  const cls = getClass(db, classId);
+  const sectionOptionsForClass = isAdmin
+    ? (cls?.sections ?? [])
+    : (cls?.sections ?? []).filter((s) => pairs.some((p) => p.classId === classId && p.sectionId === s.id));
+  const [sectionId, setSectionId] = useState(sectionOptionsForClass[0]?.id ?? "");
+  useEffect(() => {
+    const opts = isAdmin ? (getClass(db, classId)?.sections ?? []) : (getClass(db, classId)?.sections ?? []).filter((s) => pairs.some((p) => p.classId === classId && p.sectionId === s.id));
+    if (!opts.some((s) => s.id === sectionId)) setSectionId(opts[0]?.id ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classId]);
+  const [date, setDate] = useState(todayISO());
+
+  const roster = studentsOf(db, classId, sectionId);
+  const register = db.attendance.find((r) => r.date === date && r.classId === classId && r.sectionId === sectionId);
+
+  const setMark = (studentId: string, status: AttendanceStatus) => {
+    if (!canManage) return;
+    update((d) => {
+      let r = d.attendance.find((x) => x.date === date && x.classId === classId && x.sectionId === sectionId);
+      if (!r) { r = { date, classId, sectionId, marks: {} }; d.attendance.push(r); }
+      r.marks[studentId] = status;
+    });
+  };
+  const markAllPresent = () => {
+    if (!canManage) return;
+    update((d) => {
+      let r = d.attendance.find((x) => x.date === date && x.classId === classId && x.sectionId === sectionId);
+      if (!r) { r = { date, classId, sectionId, marks: {} }; d.attendance.push(r); }
+      roster.forEach((s) => { if (!r!.marks[s.id]) r!.marks[s.id] = "present"; });
+    });
+    toast("Unmarked students set to present.");
+  };
+
+  const counts = { present: 0, absent: 0, late: 0, unmarked: 0 };
+  roster.forEach((s) => {
+    const m = register?.marks[s.id];
+    if (m === "present") counts.present++;
+    else if (m === "absent") counts.absent++;
+    else if (m === "late") counts.late++;
+    else counts.unmarked++;
+  });
+
+  if (classIds.length === 0) {
+    return <AccessDenied required="attendance.manage / a teaching assignment" reason="You aren't assigned to any class-section yet." />;
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <PageHead kicker="Attendance" title="Daily register" sub="Mark present, absent or late for each student. Unmarked students count as not yet recorded.">
+        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => setClassId(e.target.value)}>{classIds.map((id) => <option key={id} value={id}>{getClass(db, id)?.name}</option>)}</Select></Field>
+        <Field label="Section" className="w-28"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)}>{sectionOptionsForClass.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+        <Field label="Date" className="w-40"><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} max={todayISO()} /></Field>
+      </PageHead>
+
+      {!groupsLoaded ? (
+        <>
+          <div className="anim-rise mb-4"><SkeletonCards n={4} /></div>
+          <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
+        </>
+      ) : (
+      <>
+      <div className="anim-rise mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="Present" value={counts.present} tone="pine" icon={<UserCheck className="h-4.5 w-4.5" />} />
+        <Stat label="Absent" value={counts.absent} tone="rust" icon={<UserX className="h-4.5 w-4.5" />} />
+        <Stat label="Late" value={counts.late} tone="gold" icon={<ClockIcon className="h-4.5 w-4.5" />} />
+        <Stat label="Unmarked" value={counts.unmarked} tone="steel" icon={<CalendarCheck2 className="h-4.5 w-4.5" />} />
+      </div>
+
+      <Panel className="anim-rise overflow-hidden">
+        <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-3">
+          <p className="text-[12.5px] font-bold text-ink">{sectionLabel(db, classId, sectionId)} · {fmtDate(date)}</p>
+          {canManage && <Btn size="sm" variant="soft" onClick={markAllPresent}><CheckCircle2 className="h-3.5 w-3.5" /> Mark rest present</Btn>}
+        </div>
+        <table className="w-full">
+          <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-10`}>#</th><th className={thCls()}>Student</th><th className={`${thCls()} text-center`}>Status</th></tr></thead>
+          <tbody className="divide-y divide-mist/70">
+            {roster.map((s, i) => {
+              const m = register?.marks[s.id];
+              return (
+                <tr key={s.id} className="transition-colors hover:bg-pine-50/40">
+                  <td className={`${tdCls()} tnum text-soft`}>{i + 1}</td>
+                  <td className={tdCls()}><span className="flex items-center gap-2.5"><Avatar student={s} size={30} /><span className="font-bold text-ink">{shortName(s)}</span></span></td>
+                  <td className={`${tdCls()} text-center`}>
+                    <span className="inline-flex gap-1">
+                      {(["present", "late", "absent"] as AttendanceStatus[]).map((st) => (
+                        <button key={st} disabled={!canManage} onClick={() => setMark(s.id, st)}
+                          className={`cursor-pointer rounded-md border px-2.5 py-1 text-[11px] font-bold capitalize transition-all disabled:cursor-not-allowed ${m === st ? (st === "present" ? "border-pine-700 bg-pine-700 text-white" : st === "late" ? "border-gold-500 bg-gold-500 text-white" : "border-rust-600 bg-rust-600 text-white") : "border-mist bg-card text-soft hover:border-pine-300"}`}>
+                          {st}
+                        </button>
+                      ))}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+            {roster.length === 0 && <tr><td colSpan={3}><EmptyState icon={<CalendarCheck2 className="h-5 w-5" />} title="No students in this section" body="Enroll students into this class/section first." /></td></tr>}
+          </tbody>
+        </table>
+      </Panel>
+      </>
+      )}
+    </div>
+  );
+}
+
+/** Read-only attendance view for students (own record) and guardians (per child). */
+function AttendanceViewer() {
+  const { db, currentUser } = useApp();
+  const role = currentUser?.role;
+  const viewPerm = role === "guardian" ? "attendance.view_children" : "attendance.view";
+  if (!hasPermission(db, currentUser, viewPerm)) {
+    return <AccessDenied required={viewPerm} reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+  const kids = role === "guardian" ? childrenOf(db, currentUser) : (studentOf(db, currentUser) ? [studentOf(db, currentUser)!] : []);
+  const [selId, setSelId] = useState(kids[0]?.id ?? "");
+  const student = kids.find((k) => k.id === selId) ?? kids[0];
+
+  if (!student) return <AccessDenied required="students.view_self / students.view_children" reason="No linked student record was found." />;
+
+  const stats = attendanceStats(db, student.id);
+  const history = db.attendance
+    .filter((r) => student.enrollment && r.classId === student.enrollment.classId && r.sectionId === student.enrollment.sectionId && r.marks[student.id])
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 30);
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <PageHead kicker="Attendance" title={role === "guardian" ? "Attendance" : "My attendance"} sub="Present, late and absent counts across the academic year.">
+        {role === "guardian" && kids.length > 1 && (
+          <Field label="Child" className="w-48"><Select value={selId} onChange={(e) => setSelId(e.target.value)}>{kids.map((k) => <option key={k.id} value={k.id}>{shortName(k)}</option>)}</Select></Field>
+        )}
+      </PageHead>
+
+      <div className="anim-rise mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="Present" value={stats.present} tone="pine" icon={<UserCheck className="h-4.5 w-4.5" />} />
+        <Stat label="Late" value={stats.late} tone="gold" icon={<ClockIcon className="h-4.5 w-4.5" />} />
+        <Stat label="Absent" value={stats.absent} tone="rust" icon={<UserX className="h-4.5 w-4.5" />} />
+        <Stat label="Attendance rate" value={`${stats.pct}%`} tone="steel" icon={<CalendarCheck2 className="h-4.5 w-4.5" />} />
+      </div>
+
+      <Panel className="anim-rise overflow-hidden">
+        <table className="w-full">
+          <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Date</th><th className={`${thCls()} text-center`}>Status</th></tr></thead>
+          <tbody className="divide-y divide-mist/70">
+            {history.map((r) => (
+              <tr key={r.date}><td className={tdCls()}>{fmtDate(r.date)}</td><td className={`${tdCls()} text-center`}><Chip tone={r.marks[student.id] === "present" ? "pine" : r.marks[student.id] === "late" ? "gold" : "rust"}>{r.marks[student.id]}</Chip></td></tr>
+            ))}
+            {history.length === 0 && <tr><td colSpan={2}><EmptyState icon={<CalendarCheck2 className="h-5 w-5" />} title="No attendance recorded yet" body="Records will appear here once the register is taken." /></td></tr>}
+          </tbody>
+        </table>
+      </Panel>
+    </div>
+  );
+}
+
+/* =========================================================================
+   TEACHER–SUBJECT ASSIGNMENTS
+   Admin: full CRUD. Teacher/student/guardian: read-only, scoped to them.
+   ========================================================================= */
+export function AssignmentsPage() {
+  const { db, currentUser, yearId, update, toast } = useApp();
+  const role = currentUser?.role ?? "admin";
+
+  if (role !== "admin") {
+    if (!hasPermission(db, currentUser, "assignments.view")) {
+      return <AccessDenied required="assignments.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+    }
+    let rows: { classId: string; sectionId: string; subjectId: string; teacherId: string }[] = [];
+    if (role === "teacher") {
+      for (const p of teacherPairs(db, currentUser)) for (const sid of p.subjectIds) rows.push({ classId: p.classId, sectionId: p.sectionId, subjectId: sid, teacherId: currentUser!.teacherId! });
+    } else if (role === "student") {
+      const s = studentOf(db, currentUser);
+      if (s?.enrollment) rows = db.assignments.filter((a) => a.classId === s.enrollment!.classId && a.sectionId === s.enrollment!.sectionId).map((a) => ({ classId: a.classId, sectionId: a.sectionId, subjectId: a.subjectId, teacherId: a.teacherId }));
+    } else if (role === "guardian") {
+      for (const c of childrenOf(db, currentUser)) {
+        if (!c.enrollment) continue;
+        for (const a of db.assignments.filter((a) => a.classId === c.enrollment!.classId && a.sectionId === c.enrollment!.sectionId)) rows.push({ classId: a.classId, sectionId: a.sectionId, subjectId: a.subjectId, teacherId: a.teacherId });
+      }
+    }
+    return (
+      <div className="mx-auto max-w-4xl">
+        <PageHead kicker="Academics" title="Assignments" sub="Which teacher covers which subject for each class." />
+        <Panel className="anim-rise overflow-hidden">
+          <table className="w-full">
+            <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Class</th><th className={thCls()}>Subject</th><th className={thCls()}>Teacher</th></tr></thead>
+            <tbody className="divide-y divide-mist/70">
+              {rows.map((r, i) => (
+                <tr key={i}><td className={tdCls()}>{sectionShort(db, r.classId, r.sectionId)}</td><td className={tdCls()}>{getSubject(db, r.subjectId)?.name}</td><td className={tdCls()}>{getTeacher(db, r.teacherId)?.name}</td></tr>
+              ))}
+              {rows.length === 0 && <tr><td colSpan={3}><EmptyState icon={<ClipboardList className="h-5 w-5" />} title="Nothing assigned yet" body="Assignments will appear once the office sets them up." /></td></tr>}
+            </tbody>
+          </table>
+        </Panel>
+      </div>
+    );
+  }
+
+  if (!hasPermission(db, currentUser, "academics.manage")) {
+    return <AccessDenied required="academics.manage" reason="You don't have permission to manage teacher assignments." />;
+  }
+
+  const [edit, setEdit] = useState<Assignment | "new" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Assignment | null>(null);
+  const [filterClass, setFilterClass] = useState("");
+
+  const rows = db.assignments.filter((a) => a.yearId === yearId && (!filterClass || a.classId === filterClass));
+
+  const remove = (a: Assignment) => {
+    update((d) => { d.assignments = d.assignments.filter((x) => x.id !== a.id); pushAudit(d, currentUser, "assignment.delete", `${getSubject(db, a.subjectId)?.name} · ${sectionShort(db, a.classId, a.sectionId)}`); });
+    toast("Assignment removed.");
+    setConfirmDelete(null);
+  };
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <PageHead kicker="Academics" title="Teacher assignments" sub="The source of truth for who teaches what, where — drives access for teachers everywhere in the system.">
+        <Field label="Class" className="w-40"><Select value={filterClass} onChange={(e) => setFilterClass(e.target.value)}><option value="">All classes</option>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Btn variant="gold" onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> New assignment</Btn>
+      </PageHead>
+
+      <Panel className="anim-rise overflow-hidden">
+        <table className="w-full">
+          <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Class · Section</th><th className={thCls()}>Subject</th><th className={thCls()}>Teacher</th><th className={thCls()}></th></tr></thead>
+          <tbody className="divide-y divide-mist/70">
+            {rows.map((a) => (
+              <tr key={a.id} className="transition-colors hover:bg-pine-50/50">
+                <td className={tdCls()}>{sectionShort(db, a.classId, a.sectionId)}</td>
+                <td className={tdCls()}><span className="flex items-center gap-1.5"><Tag className="h-3 w-3 text-soft" /> {getSubject(db, a.subjectId)?.name}</span></td>
+                <td className={tdCls()}>{getTeacher(db, a.teacherId)?.name}</td>
+                <td className={`${tdCls()} text-right`}>
+                  <span className="inline-flex gap-1">
+                    <button onClick={() => setEdit(a)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                    <button onClick={() => setConfirmDelete(a)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={4}><EmptyState icon={<ClipboardList className="h-5 w-5" />} title="No assignments yet" body="Assign a teacher to a subject for a class & section." action={<Btn onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> New assignment</Btn>} /></td></tr>}
+          </tbody>
+        </table>
+      </Panel>
+
+      {edit && <AssignmentModal existing={edit === "new" ? undefined : edit} onClose={() => setEdit(null)} />}
+      {confirmDelete && (
+        <Modal title="Remove this assignment?" onClose={() => setConfirmDelete(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDelete(null)}>Cancel</Btn><Btn variant="danger" onClick={() => remove(confirmDelete)}><Trash2 className="h-4 w-4" /> Remove</Btn></>}>
+          <p className="text-[13px] text-ink">The teacher will immediately lose access to students in this class/section for this subject.</p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function AssignmentModal({ existing, onClose }: { existing?: Assignment; onClose: () => void }) {
+  const { db, yearId, update, toast, currentUser } = useApp();
+  const [classId, setClassId] = useState(existing?.classId ?? db.classes[0]?.id ?? "");
+  const cls = getClass(db, classId);
+  const [sectionId, setSectionId] = useState(existing?.sectionId ?? cls?.sections[0]?.id ?? "");
+  useEffect(() => {
+    const c = getClass(db, classId);
+    if (c && !c.sections.some((s) => s.id === sectionId)) setSectionId(c.sections[0]?.id ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classId]);
+  const [subjectId, setSubjectId] = useState(existing?.subjectId ?? db.subjects[0]?.id ?? "");
+  const [teacherId, setTeacherId] = useState(existing?.teacherId ?? db.teachers[0]?.id ?? "");
+
+  const save = () => {
+    const dup = db.assignments.find((a) => a.id !== existing?.id && a.yearId === yearId && a.classId === classId && a.sectionId === sectionId && a.subjectId === subjectId);
+    if (dup) { toast("This class/section already has a teacher for that subject — edit the existing assignment instead.", "warn"); return; }
+    update((d) => {
+      if (existing) {
+        const i = d.assignments.findIndex((a) => a.id === existing.id);
+        if (i >= 0) d.assignments[i] = { ...existing, classId, sectionId, subjectId, teacherId };
+        pushAudit(d, currentUser, "assignment.update", `${getSubject(db, subjectId)?.name} · ${sectionShort(db, classId, sectionId)}`);
+      } else {
+        d.assignments.push({ id: uid(), yearId, classId, sectionId, subjectId, teacherId });
+        pushAudit(d, currentUser, "assignment.create", `${getSubject(db, subjectId)?.name} · ${sectionShort(db, classId, sectionId)}`);
+      }
+    });
+    toast(existing ? "Assignment updated." : "Assignment created.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? "Edit assignment" : "New assignment"} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Class" required><Select value={classId} onChange={(e) => setClassId(e.target.value)}>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Section" required><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)}>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+        <Field label="Subject" required><Select value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>{db.subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+        <Field label="Teacher" required><Select value={teacherId} onChange={(e) => setTeacherId(e.target.value)}>{db.teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</Select></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/* =========================================================================
+   RESULTS / REPORT CARDS (role-aware viewer)
+   ========================================================================= */
+export function ReportsPage() {
+  const { db, currentUser } = useApp();
+  const groupsLoaded = useLazyGroups("academics");
+  const role = currentUser?.role ?? "admin";
+
+  if (role === "student" || role === "guardian") {
+    return <ReportCardViewer />;
+  }
+
+  if (!hasPermission(db, currentUser, "results.view")) {
+    return <AccessDenied required="results.view" reason="You don't have permission to view results." />;
+  }
+
+  const [classId, setClassId] = useState(db.classes[0]?.id ?? "");
+  const cls = getClass(db, classId);
+  const [sectionId, setSectionId] = useState("");
+  const [q, setQ] = useState("");
+  const [openStudent, setOpenStudent] = useState<Student | null>(null);
+
+  const roster = studentsOf(db, classId, sectionId || undefined).filter((s) => !q || fullName(s).toLowerCase().includes(q.toLowerCase()));
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <PageHead kicker="Results" title="Reports" sub="Class averages across every published assessment structure.">
+        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); }}>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Section" className="w-32"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)}><option value="">All</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+        <Field label="Search" className="w-48"><TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Student name…" /></Field>
+      </PageHead>
+
+      {!groupsLoaded ? (
+        <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
+      ) : (
+      <Panel className="anim-rise overflow-hidden">
+        <table className="w-full">
+          <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-10`}>#</th><th className={thCls()}>Student</th><th className={thCls()}>Section</th><th className={`${thCls()} text-center`}>Average</th><th className={thCls()}></th></tr></thead>
+          <tbody className="divide-y divide-mist/70">
+            {roster.map((s, i) => {
+              const avg = studentAverage(db, s);
+              return (
+                <tr key={s.id} className="transition-colors hover:bg-pine-50/50">
+                  <td className={`${tdCls()} tnum text-soft`}>{i + 1}</td>
+                  <td className={tdCls()}><span className="flex items-center gap-2.5"><Avatar student={s} size={30} /><span className="font-bold text-ink">{shortName(s)}</span></span></td>
+                  <td className={tdCls()}>{s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "—"}</td>
+                  <td className={`${tdCls()} text-center font-mono font-bold`}>{avg != null ? `${avg}%` : "—"}</td>
+                  <td className={`${tdCls()} text-right`}><Btn size="sm" variant="ghost" onClick={() => setOpenStudent(s)}><Eye className="h-3.5 w-3.5" /> View</Btn></td>
+                </tr>
+              );
+            })}
+            {roster.length === 0 && <tr><td colSpan={5}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
+          </tbody>
+        </table>
+      </Panel>
+      )}
+
+      {openStudent && <ReportCardModal student={openStudent} onClose={() => setOpenStudent(null)} adminView />}
+    </div>
+  );
+}
+
+/** Student/guardian: only ever see PUBLISHED results. */
+function ReportCardViewer() {
+  const { db, currentUser } = useApp();
+  const groupsLoaded = useLazyGroups("academics");
+  const role = currentUser?.role;
+  const kids = role === "guardian" ? childrenOf(db, currentUser) : (studentOf(db, currentUser) ? [studentOf(db, currentUser)!] : []);
+  const [selId, setSelId] = useState(kids[0]?.id ?? "");
+  const student = kids.find((k) => k.id === selId) ?? kids[0];
+  if (!student) return <AccessDenied required="results.view_self / results.view_children" reason="No linked student record was found." />;
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <PageHead kicker="Results" title={role === "guardian" ? "Grades" : "My grades"} sub="Only published results are shown here.">
+        {role === "guardian" && kids.length > 1 && (
+          <Field label="Child" className="w-48"><Select value={selId} onChange={(e) => setSelId(e.target.value)}>{kids.map((k) => <option key={k.id} value={k.id}>{shortName(k)}</option>)}</Select></Field>
+        )}
+      </PageHead>
+      {!groupsLoaded ? <SkeletonPanel rows={3} /> : <ReportCardBody student={student} publishedOnly />}
+    </div>
+  );
+}
+
+function ReportCardModal({ student, onClose, adminView }: { student: Student; onClose: () => void; adminView?: boolean }) {
+  return (
+    <Modal title={fullName(student)} kicker="Report card" onClose={onClose} wide
+      footer={<><Btn variant="ghost" onClick={onClose}>Close</Btn><Btn onClick={() => window.print()}><Printer className="h-4 w-4" /> Print</Btn></>}>
+      <ReportCardBody student={student} publishedOnly={!adminView} />
+    </Modal>
+  );
+}
+
+function exportReportCardCsv(db: DB, student: Student, results: ReturnType<typeof studentResults>) {
+  const rows: (string | number)[][] = [["Subject", "Period", "Assessment", "Max", "Weight %", "Score"]];
+  results.forEach((r) => {
+    r.st.items.forEach((it) => {
+      rows.push([r.subject?.name ?? "", r.st.period, it.name, it.max, it.weight, r.calc.raw[it.id] ?? ""]);
+    });
+    rows.push([r.subject?.name ?? "", r.st.period, "TOTAL", "", "", r.calc.complete ? fmt1(r.calc.total) : ""]);
+  });
+  downloadCsv(`Report-${student.regId}.csv`, rows);
+}
+
+function exportReportCardPdf(db: DB, student: Student, results: ReturnType<typeof studentResults>) {
+  const doc = newThemedDoc("portrait");
+  let y = drawThemedHeader(doc, db.settings.schoolName, "Report Card", `${fullName(student)} · Reg. ${student.regId}`);
+  y += 2;
+  y = drawThemedTable(doc, y, [
+    { header: "Subject", width: 55 },
+    { header: "Period", width: 35, align: "center" },
+    { header: "Total", width: 25, align: "center" },
+    { header: "%", width: 20, align: "center" },
+    { header: "Grade", width: 20, align: "center" },
+  ], results.map((r) => {
+    const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null;
+    return [r.subject?.name ?? "", r.st.period, r.calc.complete ? fmt1(r.calc.total) : "—", r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—", grade?.grade ?? "—"];
+  }));
+  y += 6;
+  results.forEach((r) => {
+    y = drawThemedSectionLabel(doc, y, `${r.subject?.name ?? ""} — ${r.st.period}`);
+    y = drawThemedTable(doc, y, [
+      { header: "Assessment", width: 65 },
+      { header: "Max", width: 25, align: "center" },
+      { header: "Weight %", width: 25, align: "center" },
+      { header: "Score", width: 25, align: "center" },
+    ], r.st.items.map((it) => [it.name, it.max, `${it.weight}%`, r.calc.raw[it.id] ?? "—"]));
+    y += 6;
+  });
+  doc.save(`Report-${student.regId}.pdf`);
+}
+
+function ReportCardBody({ student, publishedOnly }: { student: Student; publishedOnly?: boolean }) {
+  const { db } = useApp();
+  const all = studentResults(db, student);
+  const results = publishedOnly ? all.filter((r) => submissionStatus(db, r.st.id) === "published") : all;
+  const completeOnes = results.filter((r) => r.calc.complete);
+  const avg = completeOnes.length ? +(completeOnes.reduce((s, r) => s + r.calc.pct, 0) / completeOnes.length).toFixed(1) : null;
+  const [tab, setTab] = useState<"summary" | "detailed">("summary");
+
+  return (
+    <div className="anim-rise">
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-mist bg-paper/50 p-3">
+        <Avatar student={student} size={40} />
+        <div>
+          <p className="font-display font-bold text-ink">{fullName(student)}</p>
+          <p className="text-[11.5px] text-soft">{student.enrollment ? sectionShort(db, student.enrollment.classId, student.enrollment.sectionId) : "—"} · Reg. {student.regId}</p>
+        </div>
+        {avg != null && <span className="text-right"><span className="block font-mono text-[20px] font-extrabold text-pine-800">{avg}%</span><span className="block text-[10.5px] font-semibold text-soft">overall average</span></span>}
+        <div className="ml-auto flex gap-2">
+          <Btn size="sm" variant="soft" onClick={() => exportReportCardCsv(db, student, results)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>
+          <Btn size="sm" variant="soft" onClick={() => exportReportCardPdf(db, student, results)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>
+        </div>
+      </div>
+
+      <div className="mb-3"><Tabs tabs={[{ id: "summary", label: "Summary", icon: <FileBarChart2 className="h-3.5 w-3.5" /> }, { id: "detailed", label: "Detailed", icon: <Table2 className="h-3.5 w-3.5" /> }]} active={tab} onChange={(id) => setTab(id as any)} /></div>
+
+      {tab === "summary" ? (
+        <Panel className="overflow-x-auto">
+          <table className="w-full min-w-[560px]">
+            <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th><th className={`${thCls()} text-center`}>Grade</th></tr></thead>
+            <tbody className="divide-y divide-mist/70">
+              {results.map((r, i) => {
+                const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null;
+                return (
+                  <tr key={i}>
+                    <td className={tdCls()}><span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: r.subject?.color }} /> {r.subject?.name}</span></td>
+                    <td className={tdCls()}>{r.st.period}</td>
+                    <td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.complete ? fmt1(r.calc.total) : "—"}</td>
+                    <td className={`${tdCls()} text-center font-mono`}>{r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—"}</td>
+                    <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={r.calc.pct >= 80 ? "pine" : r.calc.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <Chip tone="gray">pending</Chip>}</td>
+                  </tr>
+                );
+              })}
+              {results.length === 0 && <tr><td colSpan={5}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></td></tr>}
+            </tbody>
+          </table>
+        </Panel>
+      ) : (
+        <div className="space-y-4">
+          {results.map((r, i) => (
+            <Panel key={i} className="overflow-hidden">
+              <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-2.5">
+                <span className="flex items-center gap-2 text-[12.5px] font-bold text-ink"><span className="h-2.5 w-2.5 rounded-full" style={{ background: r.subject?.color }} /> {r.subject?.name} <span className="font-normal text-soft">· {r.st.period}</span></span>
+                <span className="font-mono text-[12.5px] font-bold text-pine-800">{r.calc.complete ? `${fmt1(r.calc.total)} (${fmt1(r.calc.pct)}%)` : "Incomplete"}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[420px]">
+                <thead className="border-b border-mist bg-paper/40"><tr><th className={thCls()}>Assessment</th><th className={`${thCls()} text-center`}>Max</th><th className={`${thCls()} text-center`}>Weight</th><th className={`${thCls()} text-center`}>Score</th></tr></thead>
+                <tbody className="divide-y divide-mist/70">
+                  {r.st.items.map((it) => (
+                    <tr key={it.id}>
+                      <td className={tdCls()}>{it.name}</td>
+                      <td className={`${tdCls()} text-center font-mono`}>{it.max}</td>
+                      <td className={`${tdCls()} text-center font-mono`}>{it.weight}%</td>
+                      <td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.raw[it.id] ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              </div>
+            </Panel>
+          ))}
+          {results.length === 0 && <Panel><EmptyState icon={<Table2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></Panel>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================================
+   FEES (admin ledger + simple receipts)
+   ========================================================================= */
+export function FeesPage() {
+  const { db, currentUser, update, toast } = useApp();
+  const groupsLoaded = useLazyGroups("fees");
+  if (!hasPermission(db, currentUser, "fees.view")) {
+    return <AccessDenied required="fees.view" reason="You don't have permission to view fee records." />;
+  }
+  const canManage = hasPermission(db, currentUser, "fees.manage");
+
+  const [classId, setClassId] = useState("");
+  const cls = getClass(db, classId);
+  const [sectionId, setSectionId] = useState("");
+  const [q, setQ] = useState("");
+  const [openStudent, setOpenStudent] = useState<Student | null>(null);
+  const [reviewRequest, setReviewRequest] = useState<PaymentRequest | null>(null);
+  const [bankOpen, setBankOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bankDraft, setBankDraft] = useState({ bankName: "", accountName: "", accountNumber: "", branch: "" });
+
+  const pendingRequests = db.paymentRequests.filter((r) => r.status === "pending");
+  const bankAccounts = db.settings.bankAccounts ?? [];
+
+  const addBankAccount = () => {
+    if (!bankDraft.bankName.trim() || !bankDraft.accountName.trim() || !bankDraft.accountNumber.trim()) {
+      toast("Bank, account name, and account number are all required.", "warn"); return;
+    }
+    update((d) => {
+      d.settings.bankAccounts = [...(d.settings.bankAccounts ?? []), {
+        id: uid(), bankName: bankDraft.bankName.trim(), accountName: bankDraft.accountName.trim(),
+        accountNumber: bankDraft.accountNumber.trim(), branch: bankDraft.branch.trim() || undefined,
+      }];
+    });
+    toast("Bank account added — guardians will see it when paying by transfer.");
+    setBankDraft({ bankName: "", accountName: "", accountNumber: "", branch: "" });
+  };
+  const removeBankAccount = (id: string) => {
+    update((d) => { d.settings.bankAccounts = (d.settings.bankAccounts ?? []).filter((a) => a.id !== id); });
+    toast("Bank account removed.");
+  };
+
+  const roster = db.students.filter((s) => {
+    if (classId && s.enrollment?.classId !== classId) return false;
+    if (sectionId && s.enrollment?.sectionId !== sectionId) return false;
+    if (q && !fullName(s).toLowerCase().includes(q.toLowerCase())) return false;
+    return true;
+  });
+
+  const totals = roster.reduce((acc, s) => {
+    const f = feeStats(db, s.id);
+    acc.billed += f.billed; acc.paid += f.paid; acc.outstanding += f.outstanding;
+    return acc;
+  }, { billed: 0, paid: 0, outstanding: 0 });
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <PageHead kicker="Finance" title="Fees" sub="Per-student ledgers — billed, paid and outstanding.">
+        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); }}><option value="">All</option>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Section" className="w-28"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)} disabled={!classId}><option value="">All</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+        <Field label="Search" className="w-44"><TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Student name…" /></Field>
+        {canManage && <Btn variant="gold" onClick={() => setBulkOpen(true)}><Plus className="h-4 w-4" /> Bulk add fee item</Btn>}
+      </PageHead>
+
+      {!groupsLoaded ? (
+        <>
+          <div className="anim-rise mb-4"><SkeletonCards n={3} /></div>
+          <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
+        </>
+      ) : (
+      <>
+      <div className="anim-rise mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Stat label="Billed" value={`Br ${totals.billed.toLocaleString()}`} tone="steel" icon={<Banknote className="h-4.5 w-4.5" />} />
+        <Stat label="Collected" value={`Br ${totals.paid.toLocaleString()}`} tone="pine" icon={<Wallet className="h-4.5 w-4.5" />} />
+        <Stat label="Outstanding" value={`Br ${totals.outstanding.toLocaleString()}`} tone="rust" icon={<Receipt className="h-4.5 w-4.5" />} />
+      </div>
+
+      {canManage && pendingRequests.length > 0 && (
+        <Panel className="anim-rise mb-4 overflow-hidden border-gold-300">
+          <div className="flex items-center justify-between border-b border-mist px-4 py-3 sm:px-5">
+            <h3 className="font-display text-[14px] font-bold">Bank transfers awaiting review</h3>
+            <Chip tone="gold">{pendingRequests.length} pending</Chip>
+          </div>
+          <ul className="divide-y divide-mist/70">
+            {pendingRequests.map((r) => {
+              const st = db.students.find((x) => x.id === r.studentId);
+              const item = db.fees.find((f) => f.id === r.feeItemId);
+              return (
+                <li key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
+                  <div className="min-w-[160px] flex-1">
+                    <p className="text-[13px] font-bold text-ink">{st ? fullName(st) : "Unknown student"} — {item?.label ?? "Fee"}</p>
+                    <p className="text-[11px] text-soft">Br {r.amount.toLocaleString()} · {r.bankName} · submitted by {r.submittedByName ?? "guardian"} · {fmtDate(r.submittedAt.slice(0, 10))}</p>
+                  </div>
+                  <Btn size="sm" variant="soft" onClick={() => setReviewRequest(r)}><Eye className="h-3.5 w-3.5" /> Review</Btn>
+                </li>
+              );
+            })}
+          </ul>
+        </Panel>
+      )}
+
+      <Panel className="anim-rise overflow-x-auto">
+        <table className="w-full min-w-[640px]">
+          <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Student</th><th className={thCls()}>Section</th><th className={`${thCls()} text-center`}>Billed</th><th className={`${thCls()} text-center`}>Paid</th><th className={`${thCls()} text-center`}>Outstanding</th><th className={thCls()}></th></tr></thead>
+          <tbody className="divide-y divide-mist/70">
+            {roster.map((s) => {
+              const f = feeStats(db, s.id);
+              return (
+                <tr key={s.id} className="transition-colors hover:bg-pine-50/50">
+                  <td className={tdCls()}><span className="flex items-center gap-2.5"><Avatar student={s} size={30} /><span className="font-bold text-ink">{shortName(s)}</span></span></td>
+                  <td className={tdCls()}>{s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "—"}</td>
+                  <td className={`${tdCls()} text-center font-mono`}>{f.billed.toLocaleString()}</td>
+                  <td className={`${tdCls()} text-center font-mono text-pine-700`}>{f.paid.toLocaleString()}</td>
+                  <td className={`${tdCls()} text-center font-mono ${f.outstanding > 0 ? "font-bold text-rust-600" : "text-soft"}`}>{f.outstanding.toLocaleString()}</td>
+                  <td className={`${tdCls()} text-right`}><Btn size="sm" variant="ghost" onClick={() => setOpenStudent(s)}><Eye className="h-3.5 w-3.5" /> Ledger</Btn></td>
+                </tr>
+              );
+            })}
+            {roster.length === 0 && <tr><td colSpan={6}><EmptyState icon={<Banknote className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
+          </tbody>
+        </table>
+      </Panel>
+
+      {canManage && (
+        <Panel className="anim-rise mt-4 overflow-hidden">
+          <button onClick={() => setBankOpen((v) => !v)} className="flex w-full cursor-pointer items-center justify-between px-4 py-3.5 text-left sm:px-5">
+            <h3 className="font-display text-[14px] font-bold">Bank accounts for guardian transfers</h3>
+            <Chip tone="gray">{bankAccounts.length}</Chip>
+          </button>
+          {bankOpen && (
+            <div className="border-t border-mist p-4 sm:p-5">
+              <p className="mb-3 text-[11.5px] text-soft">These are the accounts guardians see when they pay a fee by manual bank transfer.</p>
+              <div className="space-y-2">
+                {bankAccounts.map((a) => (
+                  <div key={a.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-mist bg-card p-2.5">
+                    <div className="min-w-[160px] flex-1">
+                      <p className="text-[12.5px] font-bold text-ink">{a.bankName} — {a.accountName}</p>
+                      <p className="font-mono text-[11.5px] text-soft">{a.accountNumber}{a.branch ? ` · ${a.branch}` : ""}</p>
+                    </div>
+                    <button onClick={() => removeBankAccount(a.id)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                  </div>
+                ))}
+                {bankAccounts.length === 0 && <p className="py-3 text-center text-[12px] text-soft">No accounts added yet.</p>}
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <TextInput value={bankDraft.bankName} onChange={(e) => setBankDraft((p) => ({ ...p, bankName: e.target.value }))} placeholder="Bank name" />
+                <TextInput value={bankDraft.accountName} onChange={(e) => setBankDraft((p) => ({ ...p, accountName: e.target.value }))} placeholder="Account holder name" />
+                <TextInput value={bankDraft.accountNumber} onChange={(e) => setBankDraft((p) => ({ ...p, accountNumber: e.target.value }))} placeholder="Account number" />
+                <TextInput value={bankDraft.branch} onChange={(e) => setBankDraft((p) => ({ ...p, branch: e.target.value }))} placeholder="Branch (optional)" />
+              </div>
+              <div className="mt-2 flex justify-end"><Btn size="sm" onClick={addBankAccount}><Plus className="h-3.5 w-3.5" /> Add account</Btn></div>
+            </div>
+          )}
+        </Panel>
+      )}
+      </>
+      )}
+
+      {openStudent && <FeeLedgerModal student={openStudent} canManage={canManage} onClose={() => setOpenStudent(null)} />}
+      {reviewRequest && <ReviewPaymentRequestModal request={reviewRequest} onClose={() => setReviewRequest(null)} />}
+      {bulkOpen && <BulkFeeModal onClose={() => setBulkOpen(false)} />}
+    </div>
+  );
+}
+
+/** Admin bulk action: create the same fee item (label, amount, due date) for
+ *  every student in a chosen class/section in one go, instead of opening
+ *  each student's ledger individually. Scope narrows live as class/section
+ *  are picked, and any student can be unchecked from the resulting list
+ *  before it's created — so it still covers "just these few" without a
+ *  separate individual flow. */
+function BulkFeeModal({ onClose }: { onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const [label, setLabel] = useState("");
+  const [amount, setAmount] = useState(0);
+  const [due, setDue] = useState(todayISO());
+  const [classId, setClassId] = useState("");
+  const [sectionId, setSectionId] = useState("");
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const cls = getClass(db, classId);
+
+  const scoped = db.students.filter((s) => {
+    if (!s.enrollment) return false;
+    if (classId && s.enrollment.classId !== classId) return false;
+    if (sectionId && s.enrollment.sectionId !== sectionId) return false;
+    return true;
+  });
+  const targets = scoped.filter((s) => !excluded.has(s.id));
+
+  const toggle = (id: string) => setExcluded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const submit = () => {
+    if (!label.trim() || amount <= 0) { toast("Give the fee a label and a positive amount.", "warn"); return; }
+    if (targets.length === 0) { toast("No students in scope — pick a class or section with students in it.", "warn"); return; }
+    setBusy(true);
+    update((d) => {
+      targets.forEach((s) => {
+        d.fees.push({ id: uid(), studentId: s.id, label: label.trim(), amount, paid: 0, due, payments: [] });
+      });
+      pushAudit(d, currentUser, "fee.bulk_create", `${label.trim()} · ${targets.length} student${targets.length !== 1 ? "s" : ""}`,
+        `Br ${amount} each${cls ? ` · ${cls.name}${sectionId ? ` ${db.classes.find((c) => c.id === classId)?.sections.find((sec) => sec.id === sectionId)?.name ?? ""}` : ""}` : ""}`);
+    });
+    toast(`Added "${label.trim()}" to ${targets.length} student${targets.length !== 1 ? "s" : ""}.`);
+    setBusy(false);
+    onClose();
+  };
+
+  return (
+    <Modal title="Bulk add fee item" kicker="Applies to every student in the scope you pick" onClose={onClose} wide
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit} busy={busy}><Save className="h-4 w-4" /> Add to {targets.length} student{targets.length !== 1 ? "s" : ""}</Btn></>}>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <Field label="Label" required><TextInput value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Tuition — Term 2" /></Field>
+        <Field label="Amount" required><input type="number" min={0} value={amount} onChange={(e) => setAmount(Number(e.target.value) || 0)} className="w-full rounded-lg border border-mist bg-card px-3 py-2 text-[13.5px]" /></Field>
+        <Field label="Due date" required><TextInput type="date" value={due} onChange={(e) => setDue(e.target.value)} /></Field>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <Field label="Class"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); setExcluded(new Set()); }}><option value="">Whole school</option>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Section"><Select value={sectionId} onChange={(e) => { setSectionId(e.target.value); setExcluded(new Set()); }} disabled={!classId}><option value="">All sections</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+      </div>
+
+      <div className="mt-3 rounded-lg border border-mist">
+        <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-3 py-2">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-soft">{scoped.length} student{scoped.length !== 1 ? "s" : ""} in scope</p>
+          {scoped.length > 0 && <button onClick={() => setExcluded(excluded.size ? new Set() : new Set(scoped.map((s) => s.id)))} className="cursor-pointer text-[11.5px] font-bold text-pine-700 hover:underline">{excluded.size ? "Select all" : "Deselect all"}</button>}
+        </div>
+        <div className="max-h-56 overflow-y-auto">
+          {scoped.map((s) => (
+            <label key={s.id} className="flex cursor-pointer items-center gap-2.5 border-b border-mist/60 px-3 py-2 text-[12.5px] last:border-0 hover:bg-paper/40">
+              <input type="checkbox" checked={!excluded.has(s.id)} onChange={() => toggle(s.id)} className="h-4 w-4 rounded border-mist accent-pine-700" />
+              <Avatar student={s} size={22} />
+              <span className="font-medium text-ink">{fullName(s)}</span>
+              <span className="ml-auto text-soft">{s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "—"}</span>
+            </label>
+          ))}
+          {scoped.length === 0 && <p className="px-3 py-6 text-center text-[12px] text-soft">No enrolled students match this scope.</p>}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** Admin decision point: view the uploaded receipt, then approve (which turns
+ *  it into a real Payment on the fee item) or reject it. */
+function ReviewPaymentRequestModal({ request, onClose }: { request: PaymentRequest; onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const [receiptUrl, setReceiptUrl] = useState<string | undefined>(request.receiptDataUrl);
+  const [loadingReceipt, setLoadingReceipt] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const student = db.students.find((x) => x.id === request.studentId);
+  const item = db.fees.find((f) => f.id === request.feeItemId);
+
+  useEffect(() => {
+    if (request.receiptPath && !receiptUrl) {
+      setLoadingReceipt(true);
+      getDownloadUrl("fee_receipt", request.studentId, request.receiptPath)
+        .then(setReceiptUrl)
+        .catch((e) => toast(`Couldn't load the receipt: ${e instanceof Error ? e.message : String(e)}`, "warn"))
+        .finally(() => setLoadingReceipt(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request.receiptPath]);
+
+  const decide = (status: "approved" | "rejected") => {
+    if (!item) { toast("That fee item no longer exists.", "warn"); return; }
+    setBusy(true);
+    update((d) => {
+      const r = d.paymentRequests.find((x) => x.id === request.id);
+      if (!r || r.status !== "pending") return;
+      r.status = status;
+      r.reviewedBy = currentUser?.id;
+      r.reviewedByName = currentUser?.name;
+      r.reviewedAt = new Date().toISOString();
+      r.reviewNote = note.trim() || undefined;
+      if (status === "approved") {
+        const f = d.fees.find((x) => x.id === request.feeItemId);
+        if (f) {
+          f.paid = Math.min(f.amount, f.paid + request.amount);
+          f.payments = [...(f.payments ?? []), {
+            id: uid(), amount: request.amount, method: "bank_transfer", reference: request.reference,
+            bank: request.bankName, date: todayISO(), recordedBy: currentUser?.name,
+          }];
+        }
+      }
+      pushAudit(d, currentUser, status === "approved" ? "fee.payment.approve" : "fee.payment.reject",
+        `${item.label} · ${student ? fullName(student) : request.studentId}`,
+        `Br ${request.amount} via ${request.bankName}${note.trim() ? ` — ${note.trim()}` : ""}`);
+    });
+    toast(status === "approved" ? "Payment approved and recorded." : "Request rejected.");
+    setBusy(false);
+    onClose();
+  };
+
+  return (
+    <Modal title={`${student ? fullName(student) : "Guardian"} — ${item?.label ?? "Fee"}`} kicker="Review bank transfer receipt" onClose={onClose}
+      footer={<>
+        <Btn variant="ghost" onClick={onClose}>Close</Btn>
+        <Btn variant="soft" onClick={() => decide("rejected")} busy={busy}><UserX className="h-4 w-4" /> Reject</Btn>
+        <Btn onClick={() => decide("approved")} busy={busy}><CheckCircle2 className="h-4 w-4" /> Approve</Btn>
+      </>}>
+      <div className="grid gap-2 text-[12.5px] sm:grid-cols-2">
+        <div><span className="text-soft">Amount</span> · <span className="font-mono font-bold">Br {request.amount.toLocaleString()}</span></div>
+        <div><span className="text-soft">Bank</span> · <span className="font-bold">{request.bankName}</span></div>
+        {request.reference && <div><span className="text-soft">Reference</span> · <span className="font-mono">{request.reference}</span></div>}
+        <div><span className="text-soft">Submitted</span> · {fmtDate(request.submittedAt.slice(0, 10))} by {request.submittedByName ?? "guardian"}</div>
+      </div>
+
+      <div className="mt-3 rounded-lg border border-mist bg-paper/50 p-3">
+        <p className="mb-2 text-[10.5px] font-bold uppercase tracking-wider text-soft">Receipt</p>
+        {loadingReceipt ? (
+          <p className="text-[12px] text-soft">Loading…</p>
+        ) : receiptUrl ? (
+          /\.pdf($|\?)/i.test(receiptUrl) || (request.receiptName ?? "").toLowerCase().endsWith(".pdf") ? (
+            <a href={receiptUrl} target="_blank" rel="noopener" className="text-[12.5px] font-bold text-pine-700 underline">Open {request.receiptName ?? "receipt"} (PDF)</a>
+          ) : (
+            <a href={receiptUrl} target="_blank" rel="noopener"><img src={receiptUrl} alt="Payment receipt" className="max-h-72 w-full rounded-lg object-contain" /></a>
+          )
+        ) : (
+          <p className="text-[12px] text-soft">No receipt on file.</p>
+        )}
+      </div>
+
+      <Field label="Note (optional, shown in the audit log)" className="mt-3">
+        <TextArea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="e.g. slip matches the amount and account" />
+      </Field>
+    </Modal>
+  );
+}
+
+const PAYMENT_METHODS: { id: PaymentMethod; label: string }[] = [
+  { id: "telebirr", label: "telebirr" },
+  { id: "cbe_birr", label: "CBE Birr" },
+  { id: "bank_transfer", label: "Bank transfer" },
+  { id: "cash", label: "Cash" },
+  { id: "cheque", label: "Cheque" },
+];
+const ETH_BANKS = ["Commercial Bank of Ethiopia", "Awash Bank", "Dashen Bank", "Bank of Abyssinia", "Wegagen Bank", "Cooperative Bank of Oromia", "Zemen Bank", "Hibret Bank"];
+
+function methodLabel(m: PaymentMethod) { return PAYMENT_METHODS.find((x) => x.id === m)?.label ?? m; }
+
+function FeeLedgerModal({ student, canManage, onClose }: { student: Student; canManage: boolean; onClose: () => void }) {
+  const { db, update, toast, currentUser } = useApp();
+  const [addOpen, setAddOpen] = useState(false);
+  const [label, setLabel] = useState("");
+  const [amount, setAmount] = useState(0);
+  const [due, setDue] = useState(todayISO());
+  const [payItem, setPayItem] = useState<FeeItem | null>(null);
+  const [historyItem, setHistoryItem] = useState<FeeItem | null>(null);
+  const [payAmount, setPayAmount] = useState(0);
+  const [payMethod, setPayMethod] = useState<PaymentMethod>("telebirr");
+  const [payReference, setPayReference] = useState("");
+  const [payBank, setPayBank] = useState(ETH_BANKS[0]);
+
+  const items = db.fees.filter((f) => f.studentId === student.id);
+  const stats = feeStats(db, student.id);
+
+  const addItem = () => {
+    if (!label.trim() || amount <= 0) { toast("Give the fee a label and a positive amount.", "warn"); return; }
+    update((d) => { d.fees.push({ id: uid(), studentId: student.id, label: label.trim(), amount, paid: 0, due, payments: [] }); pushAudit(d, currentUser, "fee.create", `${label.trim()} · ${fullName(student)}`); });
+    toast("Fee item added.");
+    setAddOpen(false); setLabel(""); setAmount(0);
+  };
+  const removeItem = (f: FeeItem) => {
+    update((d) => { d.fees = d.fees.filter((x) => x.id !== f.id); pushAudit(d, currentUser, "fee.delete", `${f.label} · ${fullName(student)}`); });
+    toast("Fee item removed.");
+  };
+  const recordPayment = () => {
+    if (!payItem || payAmount <= 0) { toast("Enter a positive payment amount.", "warn"); return; }
+    if (payMethod !== "cash" && !payReference.trim()) { toast(`Enter the ${methodLabel(payMethod)} transaction reference.`, "warn"); return; }
+    update((d) => {
+      const f = d.fees.find((x) => x.id === payItem.id);
+      if (!f) return;
+      f.paid = Math.min(f.amount, f.paid + payAmount);
+      f.payments = [...(f.payments ?? []), {
+        id: uid(), amount: payAmount, method: payMethod,
+        reference: payMethod === "cash" ? undefined : payReference.trim(),
+        bank: payMethod === "bank_transfer" ? payBank : undefined,
+        date: todayISO(), recordedBy: currentUser?.name,
+      }];
+      pushAudit(d, currentUser, "fee.payment", `${payItem.label} · ${fullName(student)}`, `Br ${payAmount} via ${methodLabel(payMethod)}${payReference ? ` (${payReference.trim()})` : ""}`);
+    });
+    toast("Payment recorded.");
+    setPayItem(null); setPayAmount(0); setPayReference(""); setPayMethod("telebirr");
+  };
+
+  const printReceipt = async (f: FeeItem) => {
+    const { jsPDF } = await import("jspdf");
+    const doc = new jsPDF({ unit: "mm", format: "a5" });
+    doc.setFontSize(14); doc.text(db.settings.schoolName || "School", 12, 16);
+    doc.setFontSize(10); doc.text("Payment receipt", 12, 23);
+    doc.setDrawColor(200); doc.line(12, 27, 138, 27);
+    doc.setFontSize(11);
+    doc.text(`Student: ${fullName(student)}`, 12, 36);
+    doc.text(`Reg. no: ${student.regId}`, 12, 43);
+    doc.text(`Item: ${f.label}`, 12, 50);
+    doc.text(`Billed: Br ${f.amount.toLocaleString()}`, 12, 57);
+    doc.text(`Paid to date: Br ${f.paid.toLocaleString()}`, 12, 64);
+    doc.text(`Outstanding: Br ${(f.amount - f.paid).toLocaleString()}`, 12, 71);
+    const last = (f.payments ?? [])[f.payments.length - 1];
+    let y = 78;
+    if (last) {
+      doc.text(`Last payment: Br ${last.amount.toLocaleString()} via ${methodLabel(last.method)}`, 12, y); y += 7;
+      if (last.bank) { doc.text(`Bank: ${last.bank}`, 12, y); y += 7; }
+      if (last.reference) { doc.text(`Reference: ${last.reference}`, 12, y); y += 7; }
+    }
+    doc.text(`Date issued: ${fmtDate(todayISO())}`, 12, y);
+    doc.save(`Receipt-${student.regId}-${f.label.replace(/\s+/g, "-")}.pdf`);
+  };
+
+  return (
+    <Modal title={fullName(student)} kicker="Fee ledger" onClose={onClose} wide
+      footer={<><Btn variant="ghost" onClick={onClose}>Close</Btn>{canManage && <Btn variant="gold" onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Add fee item</Btn>}</>}>
+      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className="rounded-lg bg-paper p-2.5 text-center"><p className="font-mono text-[16px] font-extrabold text-ink">{stats.billed.toLocaleString()}</p><p className="text-[10.5px] font-bold uppercase text-soft">Billed</p></div>
+        <div className="rounded-lg bg-paper p-2.5 text-center"><p className="font-mono text-[16px] font-extrabold text-pine-700">{stats.paid.toLocaleString()}</p><p className="text-[10.5px] font-bold uppercase text-soft">Paid</p></div>
+        <div className="rounded-lg bg-paper p-2.5 text-center"><p className={`font-mono text-[16px] font-extrabold ${stats.outstanding > 0 ? "text-rust-600" : "text-ink"}`}>{stats.outstanding.toLocaleString()}</p><p className="text-[10.5px] font-bold uppercase text-soft">Outstanding</p></div>
+      </div>
+
+      {addOpen && (
+        <div className="mb-3 rounded-lg border border-mist bg-paper/50 p-3">
+          <div className="grid gap-2 sm:grid-cols-3">
+            <TextInput value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Tuition — Term 2" className="sm:col-span-1" />
+            <input type="number" min={0} value={amount} onChange={(e) => setAmount(Number(e.target.value) || 0)} placeholder="Amount" className="rounded-lg border border-mist bg-card px-3 py-2 text-[13.5px]" />
+            <TextInput type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+          </div>
+          <div className="mt-2 flex justify-end gap-2"><Btn size="sm" variant="ghost" onClick={() => setAddOpen(false)}>Cancel</Btn><Btn size="sm" onClick={addItem}><Save className="h-3.5 w-3.5" /> Add</Btn></div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {items.map((f) => (
+          <div key={f.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-mist bg-card p-2.5">
+            <div className="min-w-[140px] flex-1">
+              <p className="text-[12.5px] font-bold text-ink">{f.label}</p>
+              <p className="text-[10.5px] text-soft">Due {fmtDate(f.due)}{(f.payments?.length ?? 0) > 0 && ` · ${f.payments.length} payment${f.payments.length !== 1 ? "s" : ""}`}</p>
+            </div>
+            <span className="font-mono text-[12.5px]">Br {f.amount.toLocaleString()}</span>
+            <Chip tone={f.paid >= f.amount ? "pine" : f.paid > 0 ? "gold" : "rust"}>{f.paid >= f.amount ? "Paid" : f.paid > 0 ? "Partial" : "Unpaid"}</Chip>
+            {canManage && f.paid < f.amount && <Btn size="sm" variant="soft" onClick={() => { setPayItem(f); setPayAmount(f.amount - f.paid); setPayMethod("telebirr"); setPayReference(""); setPayBank(ETH_BANKS[0]); }}><Wallet className="h-3.5 w-3.5" /> Record payment</Btn>}
+            {(f.payments?.length ?? 0) > 0 && <Btn size="sm" variant="ghost" onClick={() => setHistoryItem(f)}><Eye className="h-3.5 w-3.5" /> History</Btn>}
+            <Btn size="sm" variant="ghost" onClick={() => printReceipt(f)}><Printer className="h-3.5 w-3.5" /> Receipt</Btn>
+            {canManage && <button onClick={() => removeItem(f)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>}
+          </div>
+        ))}
+        {items.length === 0 && <p className="py-6 text-center text-[12.5px] text-soft">No fee items yet.</p>}
+      </div>
+
+      {payItem && (
+        <Modal title={`Record payment — ${payItem.label}`} kicker="Choose the channel the payer used" onClose={() => setPayItem(null)}
+          footer={<><Btn variant="ghost" onClick={() => setPayItem(null)}>Cancel</Btn><Btn onClick={recordPayment}><Save className="h-4 w-4" /> Save payment</Btn></>}>
+          <Field label={`Amount (outstanding: Br ${(payItem.amount - payItem.paid).toLocaleString()})`} required>
+            <input type="number" min={0} max={payItem.amount - payItem.paid} value={payAmount} onChange={(e) => setPayAmount(Math.min(payItem.amount - payItem.paid, Number(e.target.value) || 0))} className="w-full rounded-lg border border-mist bg-card px-3 py-2 text-[13.5px]" />
+          </Field>
+          <Field label="Payment method" required className="mt-3">
+            <div className="flex flex-wrap gap-1.5">
+              {PAYMENT_METHODS.map((m) => (
+                <button key={m.id} onClick={() => setPayMethod(m.id)}
+                  className={`cursor-pointer rounded-lg border px-3 py-1.5 text-[12px] font-bold transition-all ${payMethod === m.id ? "border-pine-700 bg-pine-700 text-white" : "border-mist bg-card text-soft hover:border-pine-300"}`}>
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </Field>
+          {payMethod === "bank_transfer" && (
+            <Field label="Receiving bank" required className="mt-3">
+              <Select value={payBank} onChange={(e) => setPayBank(e.target.value)}>{ETH_BANKS.map((b) => <option key={b} value={b}>{b}</option>)}</Select>
+            </Field>
+          )}
+          {payMethod !== "cash" && (
+            <Field label={payMethod === "bank_transfer" ? "Deposit slip / transaction number" : payMethod === "cheque" ? "Cheque number" : `${methodLabel(payMethod)} transaction number`} required className="mt-3">
+              <TextInput value={payReference} onChange={(e) => setPayReference(e.target.value)} placeholder={payMethod === "telebirr" || payMethod === "cbe_birr" ? "e.g. CBE1A2B3C4D5" : "Reference number"} />
+            </Field>
+          )}
+        </Modal>
+      )}
+
+      {historyItem && (
+        <Modal title={`Payment history — ${historyItem.label}`} onClose={() => setHistoryItem(null)} footer={<Btn variant="ghost" onClick={() => setHistoryItem(null)}>Close</Btn>}>
+          <div className="space-y-2">
+            {[...(historyItem.payments ?? [])].reverse().map((p) => (
+              <div key={p.id} className="rounded-lg border border-mist bg-card p-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[13px] font-bold text-ink">Br {p.amount.toLocaleString()}</span>
+                  <Chip tone="pine">{methodLabel(p.method)}</Chip>
+                </div>
+                <p className="mt-1 text-[11px] text-soft">
+                  {fmtDate(p.date)}{p.bank ? ` · ${p.bank}` : ""}{p.reference ? ` · Ref: ${p.reference}` : ""}{p.recordedBy ? ` · recorded by ${p.recordedBy}` : ""}
+                </p>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+    </Modal>
+  );
+}
+
+/* =========================================================================
+   HOMEWORK
+   Teacher/admin: set homework for a class/section/subject and see who
+   submitted. Student: view what's due and mark it done. Guardian: read-only
+   per child.
+   ========================================================================= */
+export function HomeworkPage() {
+  const { db, currentUser } = useApp();
+  const groupsLoaded = useLazyGroups("homework");
+  const role = currentUser?.role ?? "admin";
+
+  if (role === "student") return <StudentHomework />;
+  if (role === "guardian") return <GuardianHomework />;
+
+  if (!hasPermission(db, currentUser, "homework.view")) {
+    return <AccessDenied required="homework.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+
+  const isAdmin = role === "admin";
+  const canManage = hasPermission(db, currentUser, "homework.manage");
+  const pairs = teacherPairs(db, currentUser);
+
+  const [classId, setClassId] = useState("");
+  const cls = getClass(db, classId);
+  const [sectionId, setSectionId] = useState("");
+  const [edit, setEdit] = useState<Homework | "new" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Homework | null>(null);
+  const [openRoster, setOpenRoster] = useState<Homework | null>(null);
+
+  const scopedClassIds = isAdmin ? db.classes.map((c) => c.id) : [...new Set(pairs.map((p) => p.classId))];
+
+  const rows = db.homework
+    .filter((h) => scopedClassIds.includes(h.classId))
+    .filter((h) => (isAdmin ? true : pairs.some((p) => p.classId === h.classId && p.sectionId === h.sectionId && p.subjectIds.includes(h.subjectId))))
+    .filter((h) => !classId || h.classId === classId)
+    .filter((h) => !sectionId || h.sectionId === sectionId)
+    .sort((a, b) => b.due.localeCompare(a.due));
+
+  const { update, toast } = useApp();
+  const remove = (h: Homework) => {
+    update((d) => { d.homework = d.homework.filter((x) => x.id !== h.id); pushAudit(d, currentUser, "homework.delete", h.title); });
+    toast("Homework removed.");
+    setConfirmDelete(null);
+  };
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <PageHead kicker="Academics" title="Homework" sub="Set homework for a class & subject, and track who's submitted.">
+        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); }}><option value="">All</option>{scopedClassIds.map((id) => <option key={id} value={id}>{getClass(db, id)?.name}</option>)}</Select></Field>
+        <Field label="Section" className="w-28"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)} disabled={!classId}><option value="">All</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+        {canManage && <Btn variant="gold" onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> Set homework</Btn>}
+      </PageHead>
+
+      <div className="space-y-2.5">
+        {!groupsLoaded ? (
+          <SkeletonPanel rows={Math.min(rows.length || 4, 6)} />
+        ) : (
+        <>
+        {rows.map((h) => {
+          const roster = studentsOf(db, h.classId, h.sectionId);
+          const submittedCount = roster.filter((s) => h.submitted.includes(s.id)).length;
+          const overdue = h.due < todayISO();
+          return (
+            <Panel key={h.id} className="anim-rise p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="flex items-center gap-2 font-display text-[14.5px] font-bold text-ink">
+                    {h.title}
+                    <Chip tone={overdue ? "rust" : "steel"}>{overdue ? "Overdue" : `Due ${fmtDate(h.due)}`}</Chip>
+                  </p>
+                  <p className="mt-0.5 text-[11.5px] text-soft">{sectionShort(db, h.classId, h.sectionId)} · {getSubject(db, h.subjectId)?.name} · issued {fmtDate(h.issued)}</p>
+                  {h.description && <p className="mt-1.5 text-[12.5px] text-ink">{h.description}</p>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Chip tone={submittedCount === roster.length && roster.length > 0 ? "pine" : "gold"}>{submittedCount}/{roster.length} submitted</Chip>
+                  <Btn size="sm" variant="ghost" onClick={() => setOpenRoster(h)}><Eye className="h-3.5 w-3.5" /> Roster</Btn>
+                  {canManage && (isAdmin || pairs.some((p) => p.classId === h.classId && p.sectionId === h.sectionId && p.subjectIds.includes(h.subjectId))) && (
+                    <>
+                      <button onClick={() => setEdit(h)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => setConfirmDelete(h)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </Panel>
+          );
+        })}
+        {rows.length === 0 && <Panel className="anim-rise"><EmptyState icon={<PenLine className="h-5 w-5" />} title="No homework set yet" body="Set homework for a class & subject you teach." action={canManage ? <Btn onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> Set homework</Btn> : undefined} /></Panel>}
+        </>
+        )}
+      </div>
+
+      {edit && <HomeworkModal existing={edit === "new" ? undefined : edit} teacherPairs={pairs} isAdmin={isAdmin} onClose={() => setEdit(null)} />}
+      {openRoster && <HomeworkRosterModal homework={openRoster} onClose={() => setOpenRoster(null)} canManage={canManage} />}
+      {confirmDelete && (
+        <Modal title={`Delete "${confirmDelete.title}"?`} onClose={() => setConfirmDelete(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDelete(null)}>Cancel</Btn><Btn variant="danger" onClick={() => remove(confirmDelete)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
+          <p className="text-[13px] text-ink">This can't be undone.</p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function HomeworkModal({ existing, teacherPairs: pairs, isAdmin, onClose }: {
+  existing?: Homework; teacherPairs: { classId: string; sectionId: string; subjectIds: string[] }[]; isAdmin: boolean; onClose: () => void;
+}) {
+  const { db, yearId, update, toast, currentUser } = useApp();
+  const options = isAdmin
+    ? db.classes.flatMap((c) => c.sections.flatMap((s) => db.subjects.map((sub) => ({ classId: c.id, sectionId: s.id, subjectId: sub.id }))))
+    : pairs.flatMap((p) => p.subjectIds.map((sid) => ({ classId: p.classId, sectionId: p.sectionId, subjectId: sid })));
+
+  const key = (o: { classId: string; sectionId: string; subjectId: string }) => `${o.classId}|${o.sectionId}|${o.subjectId}`;
+  const [combo, setCombo] = useState(existing ? key({ classId: existing.classId, sectionId: existing.sectionId, subjectId: existing.subjectId }) : key(options[0] ?? { classId: "", sectionId: "", subjectId: "" }));
+  const [title, setTitle] = useState(existing?.title ?? "");
+  const [description, setDescription] = useState(existing?.description ?? "");
+  const [due, setDue] = useState(existing?.due ?? todayISO());
+
+  const save = () => {
+    if (!title.trim()) { toast("Give the homework a title.", "warn"); return; }
+    const [classId, sectionId, subjectId] = combo.split("|");
+    if (!classId) { toast("Choose a class, section and subject.", "warn"); return; }
+    update((d) => {
+      if (existing) {
+        const i = d.homework.findIndex((h) => h.id === existing.id);
+        if (i >= 0) d.homework[i] = { ...existing, classId, sectionId, subjectId, title: title.trim(), description: description.trim() || undefined, due };
+        pushAudit(d, currentUser, "homework.update", title.trim());
+      } else {
+        d.homework.push({ id: uid(), yearId, classId, sectionId, subjectId, title: title.trim(), description: description.trim() || undefined, issued: todayISO(), due, submitted: [] });
+        pushAudit(d, currentUser, "homework.create", title.trim());
+        const roster = studentsOf(d, classId, sectionId);
+        const recipients = d.users.filter((u) => u.status === "active" && (roster.some((s) => u.studentId === s.id) || (u.childrenIds ?? []).some((cid) => roster.some((s) => s.id === cid))));
+        pushNotifications(d, recipients.map((u) => u.id), "homework", "New homework", `${title.trim()} — due ${fmtDate(due)}.`);
+      }
+    });
+    toast(existing ? "Homework updated." : "Homework set.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? "Edit homework" : "Set homework"} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <Field label="Class · section · subject" required>
+        <Select value={combo} onChange={(e) => setCombo(e.target.value)}>
+          {options.length === 0 && <option value="">No teaching assignments found</option>}
+          {options.map((o) => <option key={key(o)} value={key(o)}>{sectionShort(db, o.classId, o.sectionId)} · {getSubject(db, o.subjectId)?.name}</option>)}
+        </Select>
+      </Field>
+      <Field label="Title" required className="mt-3"><TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Chapter 4 exercises" /></Field>
+      <Field label="Description" className="mt-3"><TextArea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional details…" /></Field>
+      <Field label="Due date" required className="mt-3"><TextInput type="date" value={due} onChange={(e) => setDue(e.target.value)} /></Field>
+    </Modal>
+  );
+}
+
+function HomeworkRosterModal({ homework, onClose, canManage }: { homework: Homework; onClose: () => void; canManage: boolean }) {
+  const { db, update, toast } = useApp();
+  const roster = studentsOf(db, homework.classId, homework.sectionId);
+
+  const toggle = (studentId: string) => {
+    if (!canManage) return;
+    update((d) => {
+      const h = d.homework.find((x) => x.id === homework.id);
+      if (!h) return;
+      if (h.submitted.includes(studentId)) h.submitted = h.submitted.filter((id) => id !== studentId);
+      else h.submitted.push(studentId);
+    });
+  };
+
+  return (
+    <Modal title={homework.title} kicker={`${sectionShort(db, homework.classId, homework.sectionId)} · due ${fmtDate(homework.due)}`} onClose={onClose} footer={<Btn variant="ghost" onClick={onClose}>Close</Btn>}>
+      <div className="space-y-1.5">
+        {roster.map((s) => {
+          const done = homework.submitted.includes(s.id);
+          return (
+            <div key={s.id} className="flex items-center justify-between rounded-lg border border-mist bg-card p-2.5">
+              <span className="flex items-center gap-2.5"><Avatar student={s} size={28} /><span className="text-[12.5px] font-bold text-ink">{shortName(s)}</span></span>
+              <button disabled={!canManage} onClick={() => toggle(s.id)} className={`cursor-pointer rounded-md border px-2.5 py-1 text-[11px] font-bold transition-all disabled:cursor-not-allowed ${done ? "border-pine-700 bg-pine-700 text-white" : "border-mist bg-paper text-soft hover:border-pine-300"}`}>
+                {done ? "Submitted" : "Not yet"}
+              </button>
+            </div>
+          );
+        })}
+        {roster.length === 0 && <p className="py-6 text-center text-[12.5px] text-soft">No students in this section.</p>}
+      </div>
+    </Modal>
+  );
+}
+
+/** Student: homework due for my class/section, with a self-serve "mark done". */
+function StudentHomework() {
+  const { db, currentUser, update, toast } = useApp();
+  if (!hasPermission(db, currentUser, "homework.view")) {
+    return <AccessDenied required="homework.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+  const student = studentOf(db, currentUser);
+  if (!student?.enrollment) return <AccessDenied required="homework.view" reason="No enrollment on record." />;
+
+  const rows = db.homework
+    .filter((h) => h.classId === student.enrollment!.classId && h.sectionId === student.enrollment!.sectionId)
+    .sort((a, b) => a.due.localeCompare(b.due));
+
+  const toggle = (h: Homework) => {
+    update((d) => {
+      const x = d.homework.find((y) => y.id === h.id);
+      if (!x) return;
+      if (x.submitted.includes(student.id)) x.submitted = x.submitted.filter((id) => id !== student.id);
+      else x.submitted.push(student.id);
+    });
+  };
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <PageHead kicker="Academics" title="My homework" sub="Mark it done once you've submitted it in class." />
+      <div className="space-y-2.5">
+        {rows.map((h) => {
+          const done = h.submitted.includes(student.id);
+          const overdue = !done && h.due < todayISO();
+          return (
+            <Panel key={h.id} className="anim-rise p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-display text-[14px] font-bold text-ink">{h.title}</p>
+                  <p className="mt-0.5 text-[11.5px] text-soft">{getSubject(db, h.subjectId)?.name} · due {fmtDate(h.due)}</p>
+                  {h.description && <p className="mt-1.5 text-[12.5px] text-ink">{h.description}</p>}
+                </div>
+                <div className="flex items-center gap-2">
+                  {overdue && <Chip tone="rust">Overdue</Chip>}
+                  <Btn size="sm" variant={done ? "soft" : "gold"} onClick={() => toggle(h)}>
+                    <CheckCircle2 className="h-3.5 w-3.5" /> {done ? "Submitted" : "Mark done"}
+                  </Btn>
+                </div>
+              </div>
+            </Panel>
+          );
+        })}
+        {rows.length === 0 && <Panel className="anim-rise"><EmptyState icon={<PenLine className="h-5 w-5" />} title="No homework yet" body="Homework set by your teachers will appear here." /></Panel>}
+      </div>
+    </div>
+  );
+}
+
+/** Guardian: read-only, per child. */
+function GuardianHomework() {
+  const { db, currentUser } = useApp();
+  if (!hasPermission(db, currentUser, "homework.view")) {
+    return <AccessDenied required="homework.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+  const kids = childrenOf(db, currentUser).filter((c) => c.enrollment);
+  const [selId, setSelId] = useState(kids[0]?.id ?? "");
+  const child = kids.find((k) => k.id === selId) ?? kids[0];
+  if (!child?.enrollment) return <AccessDenied required="homework.view" reason="No linked student record was found." />;
+
+  const rows = db.homework
+    .filter((h) => h.classId === child.enrollment!.classId && h.sectionId === child.enrollment!.sectionId)
+    .sort((a, b) => a.due.localeCompare(b.due));
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <PageHead kicker="Academics" title="Homework" sub="What's been set for your child's class.">
+        {kids.length > 1 && <Field label="Child" className="w-48"><Select value={selId} onChange={(e) => setSelId(e.target.value)}>{kids.map((k) => <option key={k.id} value={k.id}>{shortName(k)}</option>)}</Select></Field>}
+      </PageHead>
+      <div className="space-y-2.5">
+        {rows.map((h) => {
+          const done = h.submitted.includes(child.id);
+          return (
+            <Panel key={h.id} className="anim-rise p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-display text-[14px] font-bold text-ink">{h.title}</p>
+                  <p className="mt-0.5 text-[11.5px] text-soft">{getSubject(db, h.subjectId)?.name} · due {fmtDate(h.due)}</p>
+                  {h.description && <p className="mt-1.5 text-[12.5px] text-ink">{h.description}</p>}
+                </div>
+                <Chip tone={done ? "pine" : h.due < todayISO() ? "rust" : "gold"}>{done ? "Submitted" : h.due < todayISO() ? "Overdue" : "Pending"}</Chip>
+              </div>
+            </Panel>
+          );
+        })}
+        {rows.length === 0 && <Panel className="anim-rise"><EmptyState icon={<PenLine className="h-5 w-5" />} title="No homework yet" body="Homework set by teachers will appear here." /></Panel>}
+      </div>
+    </div>
+  );
+}

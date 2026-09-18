@@ -1,0 +1,177 @@
+import { lazy, Suspense, type ReactNode } from "react";
+import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { Compass } from "lucide-react";
+import { AppProvider, homePathFor, useApp } from "./store";
+import type { Role } from "./types";
+import { AppShell } from "./Layout";
+import { AccessDenied, LoginPage } from "./pages/Auth";
+import { SkeletonCards, SkeletonPanel } from "./ui";
+
+/**
+ * Route-level code splitting: only the login screen + shell are in the
+ * initial bundle. Everything below (including the heavy recharts/jspdf/
+ * dnd-kit-using academics page) is fetched on first navigation to a route
+ * that needs it, not before — this is what actually gates first paint.
+ *
+ * Each page module is dynamic-import()'d once per named export below, but
+ * the bundler/browser dedupes repeat import() calls to the same resolved
+ * chunk, so e.g. all seven `./pages/people` exports still cost one fetch.
+ */
+function named<M extends Record<string, any>>(loader: () => Promise<M>) {
+  return new Proxy({} as { [K in keyof M]: M[K] }, {
+    get: (_t, key: string) => lazy(() => loader().then((m) => ({ default: m[key] }))),
+  });
+}
+
+const dashboards = named(() => import("./pages/dashboards"));
+const { AdminDashboard, GuardianDashboard, StudentDashboard, TeacherDashboard } = dashboards;
+
+const people = named(() => import("./pages/people"));
+const { FamiliesPage, GuardianFeesPage, ProfilePage, StudentProfilePage, StudentsPage, TeachersPage, UsersPage } = people;
+
+const academics = named(() => import("./pages/academics"));
+const {
+  AssignmentsPage, AttendancePage, AcademicYearsPage, ClassesPage, FeesPage, HomeworkPage, MarkEntryPage, ReportsPage, TimetablePage,
+} = academics;
+
+const communication = named(() => import("./pages/communication"));
+const { AnnouncementsPage, ContactsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage } = communication;
+
+const admin = named(() => import("./pages/admin"));
+const { AuditPage, RolesPage } = admin;
+
+/** Suspense fallback for a lazy page chunk still downloading. Mirrors the
+ *  page's eventual layout (a stat row + a content panel) with shimmering
+ *  placeholders instead of a spinner, so the shell doesn't jump/reflow once
+ *  the real content lands. */
+function PageLoading() {
+  return (
+    <div className="anim-rise p-4 sm:p-6">
+      <div className="mb-4">
+        <SkeletonCards n={4} />
+      </div>
+      <SkeletonPanel rows={6} />
+    </div>
+  );
+}
+
+/** Shown briefly while the initial Supabase session check is still in
+ *  flight — avoids redirecting an already-signed-in person to /login just
+ *  because currentUser hasn't resolved yet on this render. */
+function CheckingSession() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-paper">
+      <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
+    </div>
+  );
+}
+
+/** Route-level authorization: checks the signed-in role, blocks everything else. */
+function Guard({ roles, required, children }: { roles: Role[]; required?: string; children: ReactNode }) {
+  const { currentUser, sessionChecked } = useApp();
+  if (!sessionChecked) return <CheckingSession />;
+  if (!currentUser) return <Navigate to="/login" replace />;
+  if (!roles.includes(currentUser.role)) {
+    return <AccessDenied required={required ?? roles.map((r) => r[0].toUpperCase() + r.slice(1)).join(" / ")} />;
+  }
+  return <>{children}</>;
+}
+
+function HomeRedirect() {
+  const { currentUser, sessionChecked } = useApp();
+  if (!sessionChecked) return <CheckingSession />;
+  if (!currentUser) return <Navigate to="/login" replace />;
+  return <Navigate to={homePathFor(currentUser.role)} replace />;
+}
+
+function NotFound() {
+  const { currentUser } = useApp();
+  return (
+    <AccessDenied
+      required="A valid route"
+      reason={
+        currentUser
+          ? "That address doesn't exist in the system. If you followed a link, it may have pointed to a section your role can't reach."
+          : "Sign in to reach the school management system."
+      }
+    />
+  );
+}
+
+export default function App() {
+  return (
+    <AppProvider>
+      <HashRouter>
+        <Suspense fallback={<PageLoading />}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/" element={<HomeRedirect />} />
+
+          <Route element={<AppShell />}>
+            {/* shared across all authenticated roles — communication (relationship-checked inside) */}
+            <Route path="/announcements" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><AnnouncementsPage /></Guard>} />
+            <Route path="/messages" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><MessagesPage /></Guard>} />
+            <Route path="/messages/:id" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><MessagesPage /></Guard>} />
+            <Route path="/notifications" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><NotificationsPage /></Guard>} />
+            <Route path="/events" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><EventsPage /></Guard>} />
+            <Route path="/contacts" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><ContactsPage /></Guard>} />
+            <Route path="/moderation" element={<Guard roles={["admin"]} required="Moderator"><ModerationPage /></Guard>} />
+            <Route path="/profile" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><ProfilePage /></Guard>} />
+
+            {/* system administration — permission-checked inside as well */}
+            <Route path="/admin/roles" element={<Guard roles={["admin"]} required="Super Admin"><RolesPage /></Guard>} />
+            <Route path="/admin/audit" element={<Guard roles={["admin"]} required="Administrator"><AuditPage /></Guard>} />
+
+            {/* administrator */}
+            <Route path="/admin/dashboard" element={<Guard roles={["admin"]} required="Administrator"><AdminDashboard /></Guard>} />
+            <Route path="/admin/students" element={<Guard roles={["admin"]} required="Administrator"><StudentsPage /></Guard>} />
+            <Route path="/admin/students/:id" element={<Guard roles={["admin"]} required="Administrator"><StudentProfilePage /></Guard>} />
+            <Route path="/admin/teachers" element={<Guard roles={["admin"]} required="Administrator"><TeachersPage /></Guard>} />
+            <Route path="/admin/families" element={<Guard roles={["admin"]} required="Administrator"><FamiliesPage /></Guard>} />
+            <Route path="/admin/classes" element={<Guard roles={["admin"]} required="Administrator"><ClassesPage /></Guard>} />
+            <Route path="/admin/academic-years" element={<Guard roles={["admin"]} required="Administrator"><AcademicYearsPage /></Guard>} />
+            <Route path="/admin/timetable" element={<Guard roles={["admin"]} required="Administrator"><TimetablePage /></Guard>} />
+            <Route path="/admin/marks" element={<Guard roles={["admin"]} required="Administrator"><MarkEntryPage /></Guard>} />
+            <Route path="/admin/assignments" element={<Guard roles={["admin"]} required="Administrator"><AssignmentsPage /></Guard>} />
+            <Route path="/admin/homework" element={<Guard roles={["admin"]} required="Administrator"><HomeworkPage /></Guard>} />
+            <Route path="/admin/reports" element={<Guard roles={["admin"]} required="Administrator"><ReportsPage /></Guard>} />
+            <Route path="/admin/attendance" element={<Guard roles={["admin"]} required="Administrator"><AttendancePage /></Guard>} />
+            <Route path="/admin/fees" element={<Guard roles={["admin"]} required="Administrator"><FeesPage /></Guard>} />
+            <Route path="/admin/users" element={<Guard roles={["admin"]} required="Administrator"><UsersPage /></Guard>} />
+
+            {/* teacher — scoped to assigned classes/students inside each page */}
+            <Route path="/teacher/dashboard" element={<Guard roles={["teacher"]} required="Teacher"><TeacherDashboard /></Guard>} />
+            <Route path="/teacher/classes" element={<Guard roles={["teacher"]} required="Teacher"><ClassesPage scoped /></Guard>} />
+            <Route path="/teacher/students" element={<Guard roles={["teacher"]} required="Teacher"><StudentsPage scoped /></Guard>} />
+            <Route path="/teacher/students/:id" element={<Guard roles={["teacher"]} required="Teacher"><StudentProfilePage /></Guard>} />
+            <Route path="/teacher/attendance" element={<Guard roles={["teacher"]} required="Teacher"><AttendancePage /></Guard>} />
+            <Route path="/teacher/marks" element={<Guard roles={["teacher"]} required="Teacher"><MarkEntryPage /></Guard>} />
+            <Route path="/teacher/assignments" element={<Guard roles={["teacher"]} required="Teacher"><AssignmentsPage /></Guard>} />
+            <Route path="/teacher/homework" element={<Guard roles={["teacher"]} required="Teacher"><HomeworkPage /></Guard>} />
+
+            {/* student — own records only */}
+            <Route path="/student/dashboard" element={<Guard roles={["student"]} required="Student"><StudentDashboard /></Guard>} />
+            <Route path="/student/classes" element={<Guard roles={["student"]} required="Student"><ClassesPage scoped /></Guard>} />
+            <Route path="/student/grades" element={<Guard roles={["student"]} required="Student"><ReportsPage /></Guard>} />
+            <Route path="/student/attendance" element={<Guard roles={["student"]} required="Student"><AttendancePage /></Guard>} />
+            <Route path="/student/assignments" element={<Guard roles={["student"]} required="Student"><AssignmentsPage /></Guard>} />
+            <Route path="/student/homework" element={<Guard roles={["student"]} required="Student"><HomeworkPage /></Guard>} />
+
+            {/* guardian — registered children only */}
+            <Route path="/guardian/dashboard" element={<Guard roles={["guardian"]} required="Guardian"><GuardianDashboard /></Guard>} />
+            <Route path="/guardian/children" element={<Guard roles={["guardian"]} required="Guardian"><StudentsPage scoped /></Guard>} />
+            <Route path="/guardian/children/:id" element={<Guard roles={["guardian"]} required="Guardian"><StudentProfilePage /></Guard>} />
+            <Route path="/guardian/grades" element={<Guard roles={["guardian"]} required="Guardian"><ReportsPage /></Guard>} />
+            <Route path="/guardian/attendance" element={<Guard roles={["guardian"]} required="Guardian"><AttendancePage /></Guard>} />
+            <Route path="/guardian/fees" element={<Guard roles={["guardian"]} required="Guardian"><GuardianFeesPage /></Guard>} />
+            <Route path="/guardian/assignments" element={<Guard roles={["guardian"]} required="Guardian"><AssignmentsPage /></Guard>} />
+            <Route path="/guardian/homework" element={<Guard roles={["guardian"]} required="Guardian"><HomeworkPage /></Guard>} />
+
+            <Route path="*" element={<NotFound />} />
+          </Route>
+        </Routes>
+        </Suspense>
+      </HashRouter>
+    </AppProvider>
+  );
+}

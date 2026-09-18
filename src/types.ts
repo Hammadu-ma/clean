@@ -1,0 +1,454 @@
+export type ID = string;
+
+/* ================= authentication & authorization ================= */
+export type Role = "admin" | "teacher" | "student" | "guardian";
+export type UserStatus = "active" | "disabled";
+
+/**
+ * A role is a named collection of permissions. `permissions` holds permission
+ * ids from the central catalog (or "*" for full access). System roles are
+ * protected from deletion; their permission sets remain editable by a
+ * super-admin so the school can tune them.
+ */
+export interface RoleDef {
+  id: ID;
+  name: string;
+  description: string;
+  permissions: string[];
+  status: "active" | "disabled";
+  /** System roles can't be removed; only their permissions may change. */
+  system: boolean;
+  /** Which base roles this profile may be assigned to. */
+  appliesTo: Role[];
+}
+
+export interface User {
+  id: ID;
+  name: string;
+  username: string;
+  /** Demo credential. A real deployment would store a salted hash server-side. */
+  password: string;
+  /**
+   * Base role — the entity type that drives RELATIONSHIPS (who this person is
+   * connected to: teacher→assignments, student→enrollment, guardian→children).
+   */
+  role: Role;
+  /**
+   * Permission profile — drives Level-1 role PERMISSIONS (what actions this
+   * account may perform). Points at a RoleDef in db.roles.
+   */
+  roleId: ID;
+  status: UserStatus;
+  email?: string;
+  phone?: string;
+  /** teacher → linked Teacher record (class access flows from assignments) */
+  teacherId?: ID;
+  /** student → linked Student record */
+  studentId?: ID;
+  /** guardian → linked child Student record ids */
+  childrenIds?: ID[];
+  createdAt: string;
+}
+
+/* ================= academic structure ================= */
+export interface AcademicYear {
+  id: ID;
+  name: string;
+  start: string;
+  end: string;
+  active: boolean;
+}
+
+export interface Section {
+  id: ID;
+  name: string;
+}
+
+export interface SchoolClass {
+  id: ID;
+  name: string;
+  level: number;
+  sections: Section[];
+}
+
+export interface Subject {
+  id: ID;
+  name: string;
+  code: string;
+  color: string;
+}
+
+export interface Teacher {
+  id: ID;
+  name: string;
+  phone?: string;
+  email?: string;
+  specialty?: string;
+}
+
+/** Central teacher–subject assignment: the single source of truth for who teaches what where. */
+export interface Assignment {
+  id: ID;
+  yearId: ID;
+  classId: ID;
+  sectionId: ID;
+  subjectId: ID;
+  teacherId: ID;
+}
+
+/** A student's placement for ONE academic year — the student record itself never changes. */
+export interface Enrollment {
+  yearId: ID;
+  classId: ID;
+  sectionId: ID;
+  rollNumber?: number;
+  status: "active" | "transferred" | "withdrawn";
+  enrolledOn?: string;
+}
+
+export interface StudentDoc {
+  id: ID;
+  name: string;
+  kind: string;
+  size: string;
+  date: string;
+  /** R2 object key (see src/lib/storage.ts). Present once uploaded to storage. */
+  storagePath?: string;
+  /** Offline/demo-mode fallback only, when no Supabase project is connected. */
+  dataUrl?: string;
+}
+
+export type StudentStatus = "active" | "transferred" | "withdrawn" | "graduated";
+
+export interface Student {
+  id: ID;
+  regId: string;
+  firstName: string;
+  middleName: string;
+  lastName: string;
+  gender: "Male" | "Female";
+  dob: string;
+  status: StudentStatus;
+  /** Portrait (data URL) — printed on the student ID card. */
+  photo?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  guardian: {
+    father: string;
+    mother?: string;
+    relation: string;
+    phone?: string;
+    address?: string;
+  };
+  admission: {
+    number: string;
+    date: string;
+    previousSchool?: string;
+    type: string;
+  };
+  enrollment?: Enrollment;
+  /** Append-only academic history — one entry per year, never overwritten. */
+  history: Enrollment[];
+  documents: StudentDoc[];
+}
+
+export interface TimetableEntry {
+  id: ID;
+  classId: ID;
+  sectionId: ID;
+  day: number; // 0 = Monday
+  period: number;
+  subjectId: ID;
+  room: string;
+}
+
+export interface Homework {
+  id: ID;
+  yearId: ID;
+  classId: ID;
+  sectionId: ID;
+  subjectId: ID;
+  title: string;
+  description?: string;
+  issued: string;
+  due: string;
+  submitted: ID[];
+}
+
+export interface AssessmentItem {
+  id: ID;
+  name: string;
+  max: number;
+  weight: number;
+}
+
+export interface AssessmentStructure {
+  id: ID;
+  yearId: ID;
+  classId: ID;
+  subjectId: ID;
+  period: string;
+  items: AssessmentItem[];
+}
+
+/* ================= mark submission workflow =================
+   Marks flow: Draft → Submitted → (Approved | Returned) → Published.
+   Approval requires `results.manage`; publishing requires `results.publish`.
+   Both are grantable by the Super Admin, so a teacher granted either can
+   self-approve / self-publish. */
+export type SubmissionStatus = "draft" | "submitted" | "approved" | "published" | "returned";
+
+export interface Submission {
+  id: ID;
+  /** Assessment structure (subject + class + period) these marks belong to. */
+  structureId: ID;
+  status: SubmissionStatus;
+  submittedBy?: ID;
+  submittedAt?: string;
+  approvedBy?: ID;
+  approvedAt?: string;
+  publishedBy?: ID;
+  publishedAt?: string;
+  returnedBy?: ID;
+  returnedAt?: string;
+  returnReason?: string;
+  /** Required by the DB whenever a super admin reopens an approved/published submission. */
+  reopenReason?: string;
+}
+
+export interface GradeBand {
+  min: number;
+  max: number;
+  grade: string;
+  remark: string;
+}
+
+export type AttendanceStatus = "present" | "absent" | "late";
+
+export interface AttendanceRecord {
+  date: string;
+  classId: ID;
+  sectionId: ID;
+  marks: Record<ID, AttendanceStatus>;
+}
+
+/** Payment channels in common use for school fee collection in Ethiopia. */
+export type PaymentMethod = "cash" | "telebirr" | "cbe_birr" | "bank_transfer" | "cheque";
+
+export interface Payment {
+  id: ID;
+  amount: number;
+  method: PaymentMethod;
+  /** Transaction/reference number — the Telebirr or CBE Birr confirmation code, bank slip number, or cheque number. */
+  reference?: string;
+  /** Receiving bank, only set when method is "bank_transfer". */
+  bank?: string;
+  date: string;
+  recordedBy?: string;
+}
+
+export interface FeeItem {
+  id: ID;
+  studentId: ID;
+  label: string;
+  amount: number;
+  paid: number;
+  due: string;
+  payments: Payment[];
+}
+
+/** A bank account guardians can transfer fees into manually. Admin-managed. */
+export interface BankAccount {
+  id: ID;
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+  branch?: string;
+  note?: string;
+}
+
+export type PaymentRequestStatus = "pending" | "approved" | "rejected";
+
+/**
+ * A guardian-submitted manual bank transfer: they pick a fee item and one of
+ * the school's bank accounts, pay outside the app, then upload the receipt
+ * here. It sits "pending" until an admin reviews the receipt and approves it
+ * — only then does it turn into a real Payment on the fee item.
+ */
+export interface PaymentRequest {
+  id: ID;
+  studentId: ID;
+  feeItemId: ID;
+  amount: number;
+  bankAccountId: ID;
+  bankName: string;
+  /** Sender's own reference/slip number, if they have one. */
+  reference?: string;
+  /** R2 object key (see src/lib/storage.ts). Present once uploaded to storage. */
+  receiptPath?: string;
+  /** Offline/demo-mode fallback only, when no Supabase project is connected. */
+  receiptDataUrl?: string;
+  receiptName?: string;
+  submittedBy: ID;
+  submittedByName?: string;
+  submittedAt: string;
+  status: PaymentRequestStatus;
+  reviewedBy?: ID;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  reviewNote?: string;
+}
+
+/* ================= communication ================= */
+export type NoticeCategory = "Urgent" | "Academic" | "Exams" | "Event" | "General";
+
+/** Audience reuses the same placement model the rest of the system is built on. */
+export type Audience =
+  | { kind: "everyone" }
+  | { kind: "teachers" }
+  | { kind: "students" }
+  | { kind: "guardians" }
+  | { kind: "section-students"; classId: ID; sectionId: ID }
+  | { kind: "section-guardians"; classId: ID; sectionId: ID };
+
+export type AnnouncementStatus = "draft" | "scheduled" | "published" | "archived";
+
+/** One-to-many official communication. References entities by id — never duplicates them. */
+export interface Announcement {
+  id: ID;
+  title: string;
+  body: string;
+  category: NoticeCategory;
+  senderId: ID;
+  audience: Audience;
+  status: AnnouncementStatus;
+  createdAt: string;
+  scheduledFor?: string; // ISO datetime; becomes published once reached
+  publishedAt?: string;
+  editedAt?: string;
+  pinned?: boolean;
+  /** user ids that have opened/read the announcement (read tracking) */
+  readBy?: ID[];
+}
+
+/** One-to-one (or small group) conversation, anchored to school context. */
+export type ConversationStatus = "active" | "archived" | "hidden";
+
+export interface Conversation {
+  id: ID;
+  type: "direct";
+  participants: ID[]; // user ids
+  relatedStudentId?: ID;
+  relatedClassId?: ID;
+  relatedSectionId?: ID;
+  relatedSubjectId?: ID;
+  createdAt: string;
+  updatedAt: string;
+  status: ConversationStatus;
+}
+
+export type MessageStatus = "sent" | "read";
+
+export interface Message {
+  id: ID;
+  conversationId: ID;
+  senderId: ID;
+  body: string;
+  createdAt: string;
+  readBy: ID[];
+  status: MessageStatus;
+}
+
+export type ReportStatus = "open" | "resolved" | "dismissed";
+
+export interface MessageReport {
+  id: ID;
+  messageId: ID;
+  conversationId: ID;
+  reporterId: ID;
+  reason: string;
+  detail?: string;
+  at: string;
+  status: ReportStatus;
+}
+
+/** System-generated notification. */
+export interface AppNotification {
+  id: ID;
+  userId: ID;
+  type: "announcement" | "message" | "homework" | "result" | "attendance" | "event" | "system";
+  title: string;
+  body: string;
+  at: string;
+  read: boolean;
+}
+
+/** School calendar event, optionally audience-targeted. */
+export interface SchoolEvent {
+  id: ID;
+  title: string;
+  description?: string;
+  date: string; // yyyy-mm-dd
+  time?: string;
+  location?: string;
+  category: NoticeCategory;
+  audience: Audience;
+  createdBy: ID;
+}
+
+/** Security/activity audit entry. */
+export interface AuditEntry {
+  id: ID;
+  userId: ID;
+  userName: string;
+  action: string;
+  target: string;
+  detail?: string;
+  at: string;
+}
+
+export interface Settings {
+  schoolName: string;
+  motto: string;
+  /** Bank accounts guardians can transfer fees into manually. */
+  bankAccounts: BankAccount[];
+}
+
+export interface Term {
+  id: ID;
+  yearId: ID;
+  name: string;
+  seq: number;
+}
+
+export interface DB {
+  users: User[];
+  years: AcademicYear[];
+  terms: Term[];
+  classes: SchoolClass[];
+  subjects: Subject[];
+  teachers: Teacher[];
+  assignments: Assignment[];
+  students: Student[];
+  timetable: TimetableEntry[];
+  homework: Homework[];
+  structures: AssessmentStructure[];
+  /** assessmentMarks[structureId][studentId][itemId] = raw mark */
+  assessmentMarks: Record<string, Record<string, Record<string, number>>>;
+  /** One workflow record per assessment structure (submit → approve → publish). */
+  submissions: Submission[];
+  grading: GradeBand[];
+  attendance: AttendanceRecord[];
+  fees: FeeItem[];
+  paymentRequests: PaymentRequest[];
+  roles: RoleDef[];
+  announcements: Announcement[];
+  conversations: Conversation[];
+  messages: Message[];
+  reports: MessageReport[];
+  notifications: AppNotification[];
+  events: SchoolEvent[];
+  audit: AuditEntry[];
+  settings: Settings;
+}

@@ -4,6 +4,7 @@ import {
   ArrowLeft, Bell, CalendarDays, Check, CheckCheck, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2,
 } from "lucide-react";
 import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, timeAgo, uid } from "../store";
+import { startConversation } from "../lib/backend";
 import {
   canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canSendMessage, canTargetAudience,
   canViewConversation, contactContext, contactGroups, conversationsFor, effectiveAnnouncementStatus,
@@ -347,12 +348,20 @@ export function MessagesPage() {
     if (!gate.ok) { toast(gate.reason ?? "Not permitted.", "warn"); return; }
     const existing = findDirectConversation(db, currentUser.id, target.id);
     if (existing) { nav(`/messages/${existing.id}`); return; }
-    const cid = uid();
-    const errors = await update((d) => {
-      d.conversations.unshift({ id: cid, type: "direct", participants: [currentUser.id, target.id], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "active" });
+
+    // Ask the server to actually create (or find) this conversation and
+    // wait for the real id back, rather than inventing a local one and
+    // navigating there optimistically — see startConversation()'s comment
+    // in lib/backend.ts for why that silently broke.
+    const result = await startConversation(target.id);
+    if ("error" in result) { toast(result.error || "Couldn't start that conversation.", "warn"); return; }
+    const cid = result.conversationId;
+    await update((d) => {
+      if (!d.conversations.some((c) => c.id === cid)) {
+        d.conversations.unshift({ id: cid, type: "direct", participants: [currentUser.id, target.id], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "active" });
+      }
       pushAudit(d, currentUser, "conversation.open", target.name);
     });
-    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
     nav(`/messages/${cid}`);
   };
 

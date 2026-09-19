@@ -1345,6 +1345,41 @@ async function syncConversations(oldDB: DB, newDB: DB, errors: string[]) {
   }
 }
 
+/**
+ * Opening a direct conversation with someone, called straight from the
+ * page rather than through update()/sync().
+ *
+ * start_conversation() mints its own id server-side — it never accepts a
+ * client-supplied one — and hands back an existing conversation's real id
+ * too, if the two people already had one. The generic optimistic
+ * update()/sync() diff (syncConversations above) only reconciles a
+ * locally-invented id against the server's on FAILURE, via the recovery
+ * hydrate() in store.tsx; on success the two ids were simply never
+ * compared. A conversation opened by inventing a local id and navigating
+ * straight there (the previous approach) would work for the rest of that
+ * browser tab's session purely because the optimistic local copy was still
+ * in memory, then break — silently pointing at an id the server never
+ * created — the moment state next refreshed from the server under the
+ * real id instead, e.g. on a page reload or a shared link. Calling the RPC
+ * directly and waiting for its real id avoids ever having two ids for the
+ * same conversation in the first place.
+ */
+export async function startConversation(
+  otherProfileId: string,
+  related?: { studentId?: string; classId?: string; sectionId?: string; subjectId?: string }
+): Promise<{ conversationId: string; created: boolean } | { error: string }> {
+  const { data, error } = await sb()!.rpc("start_conversation", {
+    p_other_profile_id: otherProfileId,
+    p_related_student_id: related?.studentId ?? null,
+    p_related_class_id: related?.classId ?? null,
+    p_related_section_id: related?.sectionId ?? null,
+    p_related_subject_id: related?.subjectId ?? null,
+  });
+  if (error) return { error: error.message };
+  return data as { conversationId: string; created: boolean };
+}
+
+
 async function syncMessages(oldDB: DB, newDB: DB, errors: string[]) {
   // Brand-new messages → send_message(). (send_message() assigns the real
   // id server-side; the client's optimistic id is only ever compared

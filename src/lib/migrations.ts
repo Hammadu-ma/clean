@@ -19,6 +19,20 @@ import m17 from "../../supabase/migrations/0017_families_view_permission.sql?raw
 import m18 from "../../supabase/migrations/0018_fix_account_login_email_mismatch.sql?raw";
 import m19 from "../../supabase/migrations/0019_guardian_fees_permission.sql?raw";
 import m20 from "../../supabase/migrations/0020_fix_bootstrap_bank_accounts.sql?raw";
+import m21 from "../../supabase/migrations/0021_year_scope.sql?raw";
+import m22 from "../../supabase/migrations/0022_performance.sql?raw";
+import m23 from "../../supabase/migrations/0023_scoped_bootstrap.sql?raw";
+import m24 from "../../supabase/migrations/0024_paged_queries.sql?raw";
+import m25 from "../../supabase/migrations/0025_year_lifecycle.sql?raw";
+import m26 from "../../supabase/migrations/0026_write_api.sql?raw";
+import m27 from "../../supabase/migrations/0027_fee_payment_detail.sql?raw";
+import m28 from "../../supabase/migrations/0028_fee_item_crud.sql?raw";
+import m29 from "../../supabase/migrations/0029_save_student_stable_id.sql?raw";
+import m30 from "../../supabase/migrations/0030_write_api_structure.sql?raw";
+import m31 from "../../supabase/migrations/0031_year_lifecycle_fixes.sql?raw";
+import m32 from "../../supabase/migrations/0032_reconcile_student_documents.sql?raw";
+import m33 from "../../supabase/migrations/0033_delete_announcement.sql?raw";
+import m34 from "../../supabase/migrations/0034_fix_start_conversation_type_column.sql?raw";
 
 /**
  * The migration bundle ships inside the app as plain text. SQL DDL is not a
@@ -68,6 +82,20 @@ export const MIGRATIONS: MigrationFile[] = [
   { file: "0018_fix_account_login_email_mismatch.sql", title: "Fix: new accounts with a real contact email could never log in", sql: m18 },
   { file: "0019_guardian_fees_permission.sql", title: "Adds \"View children's fees\" permission — powers the guardian sidebar Fees page", sql: m19 },
   { file: "0020_fix_bootstrap_bank_accounts.sql", title: "Fix: bank accounts never appeared in the Pay modal (missing from the bootstrap RPC)", sql: m20 },
+  { file: "0021_year_scope.sql", title: "Every record (timetable, attendance, fees, events, announcements, conversations) tied to an academic year", sql: m21 },
+  { file: "0022_performance.sql", title: "Indexes for the tables that grow — attendance, marks, fee items", sql: m22 },
+  { file: "0023_scoped_bootstrap.sql", title: "Each role's login only loads its own year-scoped data instead of the whole school", sql: m23 },
+  { file: "0024_paged_queries.sql", title: "Server-side filtering, sorting, searching and paging for large tables", sql: m24 },
+  { file: "0025_year_lifecycle.sql", title: "Starting a new academic year — rollover, promotion, fee templates", sql: m25 },
+  { file: "0026_write_api.sql", title: "Real write RPCs for students, marks, attendance, fees, roles, messages, accounts", sql: m26 },
+  { file: "0027_fee_payment_detail.sql", title: "Fix: fee payments recorded the new total but dropped the transaction detail", sql: m27 },
+  { file: "0028_fee_item_crud.sql", title: "Real write RPCs for adding/removing a one-off fee item", sql: m28 },
+  { file: "0029_save_student_stable_id.sql", title: "Fix: creating a student could get a different id server-side than the client already used", sql: m29 },
+  { file: "0030_write_api_structure.sql", title: "Real write RPCs for classes, subjects, teachers, homework, timetable, announcements, events, conversations", sql: m30 },
+  { file: "0031_year_lifecycle_fixes.sql", title: "Fix: academic-year permission and rollover-copy bugs from 0025", sql: m31 },
+  { file: "0032_reconcile_student_documents.sql", title: "Fix: uploaded student documents were invisible until reload (read/write table split)", sql: m32 },
+  { file: "0033_delete_announcement.sql", title: "Fix: deleting an announcement didn't persist — adds a real delete RPC", sql: m33 },
+  { file: "0034_fix_start_conversation_type_column.sql", title: "Fix: starting a conversation always failed (referenced a column that doesn't exist)", sql: m34 },
 ];
 
 /**

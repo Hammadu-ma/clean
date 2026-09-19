@@ -126,30 +126,35 @@ export async function checkSchema(): Promise<DbMode | "missing" | "error"> {
    api/_lib/allowlist.ts, and the legacy path is gone for good.
    --------------------------------------------------------------------------- */
 
-let snapshotPromise: Promise<Record<string, any[]> | null> | null = null;
+const snapshotPromises = new Map<string, Promise<Record<string, any[]> | null>>();
 
-/** One snapshot per session, shared by every caller in it. */
-function legacySnapshot(): Promise<Record<string, any[]> | null> {
-  if (snapshotPromise) return snapshotPromise;
-  snapshotPromise = (async () => {
-    const { data, error } = await sb()!.rpc<Record<string, any[]>>("get_app_snapshot");
+/** One snapshot per (session, year) pair, shared by every caller requesting
+ *  that year. Switching the year in the UI requests a different key here
+ *  rather than reusing the active year's cached copy. */
+function legacySnapshot(yearId?: string): Promise<Record<string, any[]> | null> {
+  const key = yearId ?? "__active__";
+  const cached = snapshotPromises.get(key);
+  if (cached) return cached;
+  const p = (async () => {
+    const { data, error } = await sb()!.rpc<Record<string, any[]>>("get_app_snapshot", { p_year_id: yearId ?? null });
     if (error) {
       console.warn("[backend] legacy snapshot failed:", error.message);
-      snapshotPromise = null; // let a later call retry
+      snapshotPromises.delete(key); // let a later call retry
       return null;
     }
     return data ?? null;
   })();
-  return snapshotPromise;
+  snapshotPromises.set(key, p);
+  return p;
 }
 
-/** Drops the cached snapshot — call after any write, and on sign-out. */
+/** Drops every cached snapshot (all years) — call after any write, and on sign-out. */
 export function invalidateLegacySnapshot() {
-  snapshotPromise = null;
+  snapshotPromises.clear();
 }
 
-async function sel<T = any>(table: string, _select = "*"): Promise<T[] | null> {
-  const snap = await legacySnapshot();
+async function sel<T = any>(table: string, yearId?: string, _select = "*"): Promise<T[] | null> {
+  const snap = await legacySnapshot(yearId);
   if (!snap) return null;
   const rows = snap[table];
   if (!Array.isArray(rows)) {
@@ -429,11 +434,11 @@ function applyCoreRows(seed: DB, rows: CoreRows): { db: DB; remote: boolean } {
 /** Fast path: one `get_app_bootstrap()` RPC (+ the one small table it
  *  doesn't carry, student_documents, fetched alongside it) instead of 14
  *  separate requests. `null` means "couldn't use it, fall back". */
-async function hydrateCoreViaBootstrap(seed: DB): Promise<{ db: DB; remote: boolean } | null> {
+async function hydrateCoreViaBootstrap(seed: DB, yearId?: string): Promise<{ db: DB; remote: boolean } | null> {
   try {
     const [{ data, error }, documents] = await Promise.all([
-      sb()!.rpc("get_app_bootstrap"),
-      sel<any>("student_documents"),
+      sb()!.rpc("get_app_bootstrap", { p_year_id: yearId ?? null }) as unknown as Promise<{ data: any; error: any }>,
+      sel<any>("student_documents", yearId),
     ]);
     if (error || !data || !Array.isArray(data.schools)) return null;
     return applyCoreRows(seed, {
@@ -475,7 +480,7 @@ async function hydrateCoreViaTables(seed: DB): Promise<{ db: DB; remote: boolean
  *  flag is cleared so the next call re-probes properly. */
 let knownLive = false;
 
-export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean; transientError: boolean }> {
+export async function hydrateCore(yearId?: string): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean; transientError: boolean }> {
   const seed = buildSeed();
   const probe = knownLive ? "live" : await checkSchema();
   if (probe === "off") { knownLive = false; return { db: seed, mode: "off", schemaMissing: false, transientError: false }; }
@@ -501,7 +506,7 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
     return { db: empty, mode: "live", schemaMissing: false, transientError: false };
   }
 
-  const boot = await hydrateCoreViaBootstrap(seed);
+  const boot = await hydrateCoreViaBootstrap(seed, yearId);
   const { db, remote } = boot ?? await hydrateCoreViaTables(seed);
 
   // In live mode, lazy-loaded fields start genuinely empty rather than the
@@ -530,13 +535,13 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
  * supplies cross-references a mapper needs (e.g. db.terms for naming
  * assessment periods); pass the current db.
  */
-export async function hydrateGroup(group: LazyGroup, base: DB): Promise<Partial<DB>> {
+export async function hydrateGroup(group: LazyGroup, base: DB, yearId?: string): Promise<Partial<DB>> {
   if (!isSupabaseConfigured) return {};
   switch (group) {
     case "academics": {
       const [structures, items, marks, submissions, gradeBands] = await Promise.all([
-        sel("assessment_structures"), sel("assessment_items"), sel("assessment_marks"),
-        sel("mark_submissions"), sel("grade_bands"),
+        sel("assessment_structures", yearId), sel("assessment_items", yearId), sel("assessment_marks", yearId),
+        sel("mark_submissions", yearId), sel("grade_bands", yearId),
       ]);
       const out: Partial<DB> = {};
       if (structures && items) out.structures = mapStructures(structures, items, base);
@@ -546,31 +551,34 @@ export async function hydrateGroup(group: LazyGroup, base: DB): Promise<Partial<
       return out;
     }
     case "attendance": {
-      const [registers, entries] = await Promise.all([sel("attendance_registers"), sel("attendance_entries")]);
+      const [registers, entries] = await Promise.all([sel("attendance_registers", yearId), sel("attendance_entries", yearId)]);
       return registers && entries ? { attendance: mapAttendance(registers, entries) } : {};
     }
     case "fees": {
-      const [fees, paymentRequests] = await Promise.all([sel("fee_items"), sel("fee_payment_requests")]);
+      const [fees, paymentRequests] = await Promise.all([sel("fee_items", yearId), sel("fee_payment_requests", yearId)]);
       const out: Partial<DB> = {};
       if (fees) out.fees = mapFees(fees);
       if (paymentRequests) out.paymentRequests = mapPaymentRequests(paymentRequests);
       return out;
     }
     case "homework": {
-      const homework = await sel("homework");
+      const homework = await sel("homework", yearId);
       return homework ? { homework: mapHomework(homework) } : {};
     }
     case "timetable": {
-      const timetable = await sel("timetable_entries");
+      const timetable = await sel("timetable_entries", yearId);
       return timetable ? { timetable: mapTimetable(timetable) } : {};
     }
     case "announcements": {
-      const [announcements, reads] = await Promise.all([sel("announcements"), sel("announcement_reads")]);
+      // Not year-scoped server-side (see 0035) — same data regardless of
+      // yearId, but still keyed per-year in the snapshot cache below since
+      // it's cheap and keeps this call from forcing a shared cache entry.
+      const [announcements, reads] = await Promise.all([sel("announcements", yearId), sel("announcement_reads", yearId)]);
       return announcements ? { announcements: mapAnnouncements(announcements, reads ?? []) } : {};
     }
     case "messaging": {
       const [conversations, participants, messages] = await Promise.all([
-        sel("conversations"), sel("conversation_participants"), sel("messages"),
+        sel("conversations", yearId), sel("conversation_participants", yearId), sel("messages", yearId),
       ]);
       const out: Partial<DB> = {};
       if (conversations && participants) out.conversations = mapConversations(conversations, participants);
@@ -578,19 +586,19 @@ export async function hydrateGroup(group: LazyGroup, base: DB): Promise<Partial<
       return out;
     }
     case "notifications": {
-      const notifications = await sel("notifications");
+      const notifications = await sel("notifications", yearId);
       return notifications ? { notifications: mapNotifications(notifications) } : {};
     }
     case "events": {
-      const events = await sel("events");
+      const events = await sel("events", yearId);
       return events ? { events: mapEvents(events) } : {};
     }
     case "audit": {
-      const audit = await sel("audit_log");
+      const audit = await sel("audit_log", yearId);
       return audit ? { audit: mapAudit(audit) } : {};
     }
     case "reports": {
-      const reports = await sel("message_reports");
+      const reports = await sel("message_reports", yearId);
       return reports ? { reports: mapReports(reports) } : {};
     }
   }

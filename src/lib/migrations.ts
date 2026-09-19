@@ -82,6 +82,8 @@ const TITLES: Record<string, string> = {
   "0033_delete_announcement.sql": "Fix: deleting an announcement didn't persist — adds a real delete RPC",
   "0034_fix_start_conversation_type_column.sql": "Fix: starting a conversation always failed (referenced a column that doesn't exist)",
   "0035_year_scope_legacy_reads.sql": "Fix: login and every feature's first load downloaded the entire school's data, for every year, every time",
+  "0036_year_switcher_params.sql": "Fix: the Academic year dropdown stopped working once 0035 scoped reads to a single year — restores it with a real year parameter",
+  "0037_fee_payment_requests_in_snapshot.sql": "Fix: guardian bank-transfer fee payment requests were never included in the snapshot read at all — always came back empty",
 };
 
 /** Turns "0036_some_new_thing.sql" into "Some new thing" for anything not

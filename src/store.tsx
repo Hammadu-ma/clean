@@ -537,7 +537,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    hydrateGroup(group, dbRef.current)
+    hydrateGroup(group, dbRef.current, yearIdRef.current || undefined)
       .then((partial) => {
         const merged: DB = { ...dbRef.current, ...partial };
         dbRef.current = merged;
@@ -550,6 +550,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
         loadedGroupsRef.current.add(group);
         setLoadedGroupsTick((t) => t + 1);
       });
+  };
+
+  /**
+   * Switches which academic year the app is viewing. The "Academic year"
+   * dropdown (Layout.tsx, academics.tsx) has called this since before this
+   * change; until 0035/0036 it was effectively cosmetic — the underlying
+   * data was already fetched for every year at once, so picking a
+   * different one just filtered an in-memory array. 0035 scoped those
+   * fetches to a single year for the (very real) bandwidth/growth reasons
+   * documented there, which made this the one thing that had to start
+   * actually doing something: request that year's data for real.
+   *
+   * Re-fetches core (teacher_assignments is year-scoped) via the same
+   * mergeFreshCore() boot uses, so it doesn't blank out groups a page
+   * already loaded — then re-fetches those already-loaded groups too, for
+   * the new year, so a page that's open right now updates immediately
+   * instead of only on next navigation.
+   */
+  const setYear = async (id: string) => {
+    const changed = id !== yearIdRef.current;
+    yearIdRef.current = id;
+    setYearId(id);
+    if (!changed || modeRef.current !== "live") return;
+
+    const { db: core } = await hydrateCore(id);
+    let merged = mergeFreshCore(core, dbRef.current, loadedGroupsRef.current);
+    dbRef.current = merged;
+    setDb(merged);
+
+    const groupsToRefresh = Array.from(loadedGroupsRef.current);
+    if (!groupsToRefresh.length) return;
+    try {
+      const results = await Promise.all(groupsToRefresh.map((g) => hydrateGroup(g, dbRef.current, id)));
+      // yearIdRef may have moved on again while these were in flight (rapid
+      // switching) — only apply results if we're still looking at this year.
+      if (yearIdRef.current !== id) return;
+      merged = { ...dbRef.current };
+      for (const partial of results) merged = { ...merged, ...partial };
+      dbRef.current = merged;
+      setDb(merged);
+    } catch (e) {
+      console.warn("[store] failed to refresh groups for new year:", e);
+    }
   };
 
   const currentUser = useMemo(() => {
@@ -658,6 +701,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const yearIdRef = useRef(yearId);
+  yearIdRef.current = yearId;
 
   const update = (fn: (d: DB) => void): Promise<string[]> => {
     // No offline/local write path: if Supabase isn't live, refuse rather than
@@ -790,7 +835,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value = {
     db, update, resetData,
-    yearId, setYear: setYearId,
+    yearId, setYear,
     sessionUserId, currentUser, login, logout,
     toast, ui: { toast: toastState }, dismissToast,
     ready, mode, schemaMissing, reconnect, sessionChecked,

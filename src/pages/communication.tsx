@@ -1,819 +1,1338 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft, Bell, CalendarDays, Check, CheckCheck, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2,
+  BadgeCheck, Baby, BookOpen, CalendarCheck2, CreditCard, FileBarChart2, History, Inbox, KeyRound, Layers, Lock,
+  FileText as Notebook, Pencil, Plus, Search, ShieldCheck, Trash2, User as UserIcon, Users, Wallet, Eye, GraduationCap, X,
 } from "lucide-react";
-import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, getClass, sectionShort, timeAgo, uid } from "../store";
-import { startConversation } from "../lib/backend";
+import type { DB, Enrollment, FeeItem, Role, Student, User, UserStatus } from "../types";
 import {
-  canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canSendMessage, canTargetAudience,
-  canViewConversation, contactContext, contactGroups, conversationsFor, effectiveAnnouncementStatus,
-  findDirectConversation, hasPermission, pushAudit, pushNotifications, totalUnreadMessages,
-  unreadInConversation, unreadNotifications, userNotifications, visibleAnnouncements, audienceUserIds,
-} from "../rbac";
-import type { Announcement, Audience, Conversation, User } from "../types";
-import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonPanel, SkeletonRows, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls } from "../ui";
+  assessmentCalc, attendanceStats, canSeeStudent, childrenOf, describeSyncErrors, feeStats, fmtDate, fullName, getClass, getSection,
+  getSubject, gradeFor, guardianOfStudent, homePathFor, ordinal, pendingRequestFor, sectionLabel, sectionShort, shortName,
+  studentAverage, studentOf, studentResults, structureRanks, teacherPairs, teacherStudentIds, teachersOfStudent,
+  todayISO, uid, useApp, useLazyGroups,
+} from "../store";
+import {
+  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, RoleBadge, Select, Skel, SkeletonPanel, SkeletonRows,
+  Stat, Tabs, TextInput, UserAvatar, UsernameConflictModal, tdCls, thCls,
+} from "../ui";
+import { getDownloadUrl, isStorageConfigured, uploadFile } from "../lib/storage";
 import { AccessDenied } from "./Auth";
+import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
+import { IDCardModal, RegistrationWizard } from "./registration";
 
-/* ================= shared bits ================= */
-const CAT_META: Record<string, { bg: string; dot: string }> = {
-  Urgent: { bg: "bg-rust-100 text-rust-700 border-rust-200", dot: "bg-rust-500" },
-  Academic: { bg: "bg-pine-100 text-pine-800 border-pine-200", dot: "bg-pine-500" },
-  Exams: { bg: "bg-steel-100 text-steel-700 border-steel-100", dot: "bg-steel-500" },
-  Event: { bg: "bg-gold-100 text-gold-700 border-gold-200", dot: "bg-gold-500" },
-  General: { bg: "bg-paper text-soft border-mist", dot: "bg-soft" },
-};
+/* ================= students directory (role-scoped) ================= */
+export function StudentsPage({ scoped }: { scoped?: boolean }) {
+  const { db, currentUser, yearId, update, toast } = useApp();
+  const groupsLoaded = useLazyGroups("attendance");
+  const nav = useNavigate();
+  const [q, setQ] = useState("");
+  const [cls, setCls] = useState("");
+  const [sec, setSec] = useState("");
+  const [regOpen, setRegOpen] = useState(false);
 
-function AudiencePicker({ value, onChange }: { value: Audience; onChange: (a: Audience) => void }) {
-  const { db } = useApp();
-  const isSection = value.kind === "section-students" || value.kind === "section-guardians";
-  const [classId, setClassId] = useState(isSection ? (value as { classId: string }).classId : db.classes[0]?.id ?? "");
-  const [sectionId, setSectionId] = useState(isSection ? (value as { sectionId: string }).sectionId : "");
-  const cls = db.classes.find((c) => c.id === classId);
+  const isAdmin = currentUser?.role === "admin";
+  const canRegister = hasPermission(db, currentUser, "students.create");
+  const role = currentUser?.role ?? "admin";
+
+  // Level-1 view gate — matches the sidebar's perm for this route, so a role
+  // that has the link removed can't reach the page directly either.
+  const viewPerm = role === "admin" ? "students.view" : role === "teacher" ? "students.view_assigned" : role === "guardian" ? "students.view_children" : "students.view_self";
+  if (!hasPermission(db, currentUser, viewPerm)) {
+    return <AccessDenied required={viewPerm} reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+
+  // Authorization underneath the UI: the visible set is derived from relationships.
+  const allowedIds: Set<string> | null = useMemo(() => {
+    if (role === "admin") return null; // null = everything
+    if (role === "teacher") return teacherStudentIds(db, currentUser);
+    if (role === "guardian") return new Set((currentUser?.childrenIds ?? []));
+    return new Set<string>();
+  }, [db, currentUser, role]);
+
+  const base = db.students.filter((s) => s.enrollment && s.enrollment.yearId === yearId);
+  const rows = base
+    .filter((s) => allowedIds === null || allowedIds.has(s.id))
+    .filter((s) => (!cls || s.enrollment!.classId === cls) && (!sec || s.enrollment!.sectionId === sec))
+    .filter((s) => (q ? fullName(s).toLowerCase().includes(q.toLowerCase()) || s.regId.toLowerCase().includes(q.toLowerCase()) : true))
+    .sort((a, b) => a.regId.localeCompare(b.regId));
+
+  const profilePath = (id: string) =>
+    role === "admin" ? `/admin/students/${id}` : role === "teacher" ? `/teacher/students/${id}` : `/guardian/children/${id}`;
+
+  const head = scoped
+    ? role === "teacher"
+      ? { kicker: "Teaching", title: "My students", sub: `Only students in your ${teacherPairs(db, currentUser).length} assigned class sections appear here — the rest of the school is out of scope.` }
+      : { kicker: "Family", title: "My children", sub: "Your registered children, exactly as linked by the front office." }
+    : { kicker: "People", title: "Students", sub: `${base.length} enrolled in AY ${db.years.find((y) => y.id === yearId)?.name}. One record per student — reused by attendance, marks, fees and reports.` };
 
   return (
-    <div className="grid gap-3 sm:grid-cols-3">
-      <Field label="Audience" required>
-        <Select
-          value={value.kind}
-          onChange={(e) => {
-            const k = e.target.value as Audience["kind"];
-            if (k === "section-students" || k === "section-guardians")
-              onChange({ kind: k, classId, sectionId: cls?.sections[0]?.id ?? "" });
-            else onChange({ kind: k } as Audience);
-          }}
-        >
-          <option value="everyone">Entire school</option>
-          <option value="teachers">All teachers</option>
-          <option value="students">All students</option>
-          <option value="guardians">All families</option>
-          <option value="section-students">Class / section — students</option>
-          <option value="section-guardians">Class / section — families</option>
-        </Select>
-      </Field>
-      {isSection && (
-        <>
-          <Field label="Class" required>
-            <Select value={classId} onChange={(e) => { setClassId(e.target.value); const c = db.classes.find((x) => x.id === e.target.value); const sid = c?.sections[0]?.id ?? ""; setSectionId(sid); onChange({ kind: value.kind, classId: e.target.value, sectionId: sid } as Audience); }}>
-              {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </Select>
-          </Field>
-          <Field label="Section" required>
-            <Select value={sectionId} onChange={(e) => { setSectionId(e.target.value); onChange({ kind: value.kind, classId, sectionId: e.target.value } as Audience); }}>
-              {cls?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
-            </Select>
-          </Field>
-        </>
-      )}
-      <div className="sm:col-span-3 flex items-center gap-2 text-[12px] text-soft">
-        <Users className="h-3.5 w-3.5 text-pine-600" />
-        Reaches <strong className="text-ink">{audienceSize(db, value)}</strong> people — {audienceLabel(db, value)}
-      </div>
+    <div className="mx-auto max-w-6xl">
+      <PageHead {...head}>
+        {canRegister && (
+          <Btn variant="gold" onClick={() => setRegOpen(true)}><Plus className="h-4 w-4" /> Register student</Btn>
+        )}
+      </PageHead>
+
+      <Panel className="anim-rise overflow-hidden">
+        <div className="flex flex-wrap items-center gap-2 border-b border-mist px-4 py-3">
+          <div className="relative min-w-[200px] flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
+            <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or student ID…" className="!pl-9" />
+          </div>
+          <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); }} className="!w-40">
+            <option value="">All grades</option>
+            {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+          <Select value={sec} onChange={(e) => setSec(e.target.value)} className="!w-36" disabled={!cls}>
+            <option value="">All sections</option>
+            {getClass(db, cls)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+          </Select>
+        </div>
+
+        {rows.length === 0 ? (
+          <EmptyState icon={<Users className="h-5 w-5" />} title="No students match" body={scoped ? "No students are linked to your account yet." : "Adjust the filters or register a new student."} />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[680px]">
+              <thead className="border-b border-mist bg-paper/60">
+                <tr>
+                  <th className={thCls()}>Student</th>
+                  <th className={thCls()}>Placement</th>
+                  <th className={`${thCls()} hidden md:table-cell`}>Guardian</th>
+                  <th className={`${thCls()} hidden sm:table-cell`}>Admitted</th>
+                  <th className={thCls()}>Attendance</th>
+                  <th className={thCls()}></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-mist/70">
+                {rows.map((s) => {
+                  const att = attendanceStats(db, s.id);
+                  const g = guardianOfStudent(db, s.id);
+                  return (
+                    <tr key={s.id} onClick={() => nav(profilePath(s.id))} className="cursor-pointer transition-colors hover:bg-pine-50/70">
+                      <td className={tdCls()}>
+                        <span className="flex items-center gap-3">
+                          <Avatar student={s} size={34} />
+                          <span>
+                            <span className="block font-bold text-ink">{fullName(s)}</span>
+                            <span className="font-mono text-[11px] text-soft">{s.regId}</span>
+                          </span>
+                        </span>
+                      </td>
+                      <td className={tdCls()}><Chip tone="pine">{sectionShort(db, s.enrollment!.classId, s.enrollment!.sectionId)}</Chip></td>
+                      <td className={`${tdCls()} hidden text-soft md:table-cell`}>{g ? g.name : s.guardian.father}</td>
+                      <td className={`${tdCls()} hidden text-soft sm:table-cell`}>{fmtDate(s.admission.date)}</td>
+                      <td className={tdCls()}>
+                        <span className="flex items-center gap-2">
+                          {groupsLoaded ? (
+                            <Ring pct={att.pct} size={34} stroke={4} label={`${Math.round(att.pct)}`} color={att.pct >= 90 ? "var(--color-pine-600)" : att.pct >= 75 ? "var(--color-gold-500)" : "var(--color-rust-500)"} />
+                          ) : (
+                            <Skel className="h-[34px] w-[34px] rounded-full" />
+                          )}
+                        </span>
+                      </td>
+                      <td className={`${tdCls()} text-right`}>
+                        <Chip tone="gray">View <Eye className="h-3 w-3" /></Chip>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      {regOpen && <RegistrationWizard onClose={() => setRegOpen(false)} onSaved={(id) => nav(`/admin/students/${id}`)} />}
     </div>
   );
 }
 
-/* ================= Announcements ================= */
-export function AnnouncementsPage() {
-  const { db, currentUser, update, toast } = useApp();
-  const groupsLoaded = useLazyGroups("announcements");
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Announcement | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<Announcement | null>(null);
-  const [filter, setFilter] = useState("all");
-  const canCreate = canCreateAnnouncement(db, currentUser);
+/* ================= register student (admin) ================= */
+function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string) => void }) {
+  const { db, yearId, update, toast, reconnect } = useApp();
+  const [f, setF] = useState({
+    firstName: "", middleName: "", lastName: "", gender: "Male" as "Male" | "Female", dob: "", address: "",
+    gFather: "", gPhone: "", classId: "c8", sectionId: "", admDate: todayISO(), prevSchool: "",
+    makeLogin: true, username: "", password: "stud123",
+  });
+  const set = (k: string, v: string | boolean) => setF((p) => ({ ...p, [k]: v }));
+  const [conflict, setConflict] = useState<User | null>(null);
 
-  const closeModal = () => { setOpen(false); setEditing(null); };
-
-  const list = visibleAnnouncements(db, currentUser)
-    .filter((a) => filter === "all" || (filter === "mine" ? a.senderId === currentUser?.id : effectiveAnnouncementStatus(a) === filter))
-    .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.createdAt.localeCompare(a.createdAt));
-
-  const saveAnnouncement = (a: Announcement) => {
-    update((d) => {
-      const i = d.announcements.findIndex((x) => x.id === a.id);
-      if (i >= 0) d.announcements[i] = a;
-      else d.announcements.unshift(a);
-      if (a.status === "published") {
-        pushAudit(d, currentUser, "announcement.publish", a.title, audienceLabel(db, a.audience));
-        const targets = audienceUserIds(d, a.audience).filter((id) => id !== currentUser?.id);
-        pushNotifications(d, targets, "announcement", a.title, a.body.slice(0, 110));
-      } else {
-        pushAudit(d, currentUser, a.status === "scheduled" ? "announcement.schedule" : "announcement.draft", a.title);
+  const finalizeSave = async (loginUsername?: string, loginPassword?: string, replaceId?: string) => {
+    const id = uid();
+    const regNo = `ST-2026-${String(db.students.length + 1).padStart(3, "0")}`;
+    const errors = await update((d) => {
+      d.students.push({
+        id, regId: regNo,
+        firstName: f.firstName.trim(), middleName: f.middleName.trim(), lastName: f.lastName.trim(),
+        gender: f.gender, dob: f.dob, address: f.address.trim(),
+        guardian: { father: f.gFather.trim() || "—", relation: "Father", phone: f.gPhone.trim(), address: f.address.trim() },
+        admission: { number: `ADM-2026-${String(d.students.length + 1).padStart(3, "0")}`, date: f.admDate, previousSchool: f.prevSchool.trim(), type: "New Admission" },
+        enrollment: { yearId, classId: f.classId, sectionId: f.sectionId, status: "active", enrolledOn: f.admDate },
+        history: [{ yearId, classId: f.classId, sectionId: f.sectionId, status: "active", enrolledOn: f.admDate }],
+        documents: [],
+        status: "active",
+      });
+      if (loginUsername && loginPassword) {
+        if (replaceId) {
+          const ridx = d.users.findIndex((u) => u.id === replaceId);
+          if (ridx >= 0) d.users.splice(ridx, 1);
+        }
+        d.users.push({
+          id: uid(), name: `${f.firstName.trim()} ${f.lastName.trim()}`, username: loginUsername, password: loginPassword,
+          role: "student", roleId: "student", status: "active", studentId: id, createdAt: todayISO(),
+        });
       }
     });
-    toast(a.status === "published" ? "Announcement published." : a.status === "scheduled" ? "Announcement scheduled." : "Draft saved.");
-    closeModal();
+    if (errors.length) {
+      toast(describeSyncErrors(errors), "warn");
+    } else {
+      toast(`${f.firstName.trim()} ${f.lastName.trim()} registered${loginUsername ? " — student login created" : ""}.`);
+      if (loginUsername) await reconnect(); // pull in the real Supabase-assigned account id
+    }
+    onSaved(id);
   };
 
-  const archiveAnnouncement = (a: Announcement) => {
-    update((d) => {
-      const i = d.announcements.findIndex((x) => x.id === a.id);
-      if (i >= 0) d.announcements[i] = { ...a, status: "archived" };
-      pushAudit(d, currentUser, "announcement.archive", a.title);
-    });
-    toast("Announcement archived.");
+  const save = async () => {
+    if (!f.firstName.trim() || !f.lastName.trim() || !f.dob || !f.sectionId) {
+      toast("First name, last name, date of birth and section are required.", "warn");
+      return;
+    }
+    if (f.makeLogin && (!f.username.trim() || !f.password.trim())) {
+      toast("Login needs a username and password (or untick “Create login”).", "warn");
+      return;
+    }
+    if (f.makeLogin && f.password.trim().length < 6) {
+      toast("Password must be at least 6 characters.", "warn");
+      return;
+    }
+    const loginUsername = f.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    if (f.makeLogin) {
+      const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername);
+      if (existing) { setConflict(existing); return; }
+      await finalizeSave(loginUsername, f.password.trim());
+    } else {
+      await finalizeSave();
+    }
   };
+  return (
+    <>
+    <Modal title="Register student" kicker="One record, reused everywhere" onClose={onClose} wide
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Plus className="h-4 w-4" /> Save student</Btn></>}>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Field label="First name" required><TextInput value={f.firstName} onChange={(e) => set("firstName", e.target.value)} /></Field>
+        <Field label="Middle name"><TextInput value={f.middleName} onChange={(e) => set("middleName", e.target.value)} /></Field>
+        <Field label="Last name" required><TextInput value={f.lastName} onChange={(e) => set("lastName", e.target.value)} /></Field>
+        <Field label="Gender" required>
+          <Select value={f.gender} onChange={(e) => set("gender", e.target.value)}><option>Male</option><option>Female</option></Select>
+        </Field>
+        <Field label="Date of birth" required><TextInput type="date" value={f.dob} onChange={(e) => set("dob", e.target.value)} /></Field>
+        <Field label="Admission date" required><TextInput type="date" value={f.admDate} onChange={(e) => set("admDate", e.target.value)} /></Field>
+        <Field label="Guardian name"><TextInput value={f.gFather} onChange={(e) => set("gFather", e.target.value)} /></Field>
+        <Field label="Guardian phone"><TextInput value={f.gPhone} onChange={(e) => set("gPhone", e.target.value)} /></Field>
+        <Field label="Previous school"><TextInput value={f.prevSchool} onChange={(e) => set("prevSchool", e.target.value)} /></Field>
+        <Field label="Grade" required>
+          <Select value={f.classId} onChange={(e) => setF((p) => ({ ...p, classId: e.target.value, sectionId: "" }))}>
+            {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Section" required>
+          <Select value={f.sectionId} onChange={(e) => set("sectionId", e.target.value)}>
+            <option value="">Select…</option>
+            {getClass(db, f.classId)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Address"><TextInput value={f.address} onChange={(e) => set("address", e.target.value)} /></Field>
+      </div>
+      <div className="mt-4 rounded-lg border border-pine-200 bg-pine-50 p-3.5">
+        <label className="flex cursor-pointer items-center gap-2.5">
+          <input type="checkbox" checked={f.makeLogin} onChange={(e) => set("makeLogin", e.target.checked)} className="h-4 w-4 accent-pine-700" />
+          <span className="text-[12.5px] font-bold text-pine-900">Create a student login</span>
+          <span className="text-[11px] text-pine-700">— they sign in and see only their own records</span>
+        </label>
+        {f.makeLogin && (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <Field label="Username" required><TextInput value={f.username} onChange={(e) => set("username", e.target.value)} placeholder="e.g. abebe.k" className="font-mono" /></Field>
+            <Field label="Temporary password" required><TextInput value={f.password} onChange={(e) => set("password", e.target.value)} className="font-mono" /></Field>
+          </div>
+        )}
+      </div>
+    </Modal>
+    {conflict && (
+      <UsernameConflictModal
+        existing={conflict}
+        username={f.username.trim().toLowerCase()}
+        password={f.password.trim()}
+        onCancel={() => setConflict(null)}
+        onReplace={async () => { const c = conflict; setConflict(null); await finalizeSave(f.username.trim().toLowerCase(), f.password.trim(), c!.id); }}
+        onUseNew={async (u, p) => {
+          const other = db.users.find((x) => x.username.toLowerCase() === u);
+          if (other) { setConflict(other); return; }
+          setConflict(null);
+          await finalizeSave(u, p);
+        }}
+      />
+    )}
+    </>
+  );
+}
 
-  const restoreAnnouncement = (a: Announcement) => {
-    update((d) => {
-      const i = d.announcements.findIndex((x) => x.id === a.id);
-      if (i >= 0) d.announcements[i] = { ...a, status: "draft" };
-      pushAudit(d, currentUser, "announcement.restore", a.title);
-    });
-    toast("Announcement restored to drafts.");
-  };
+/* ================= student profile (entity-guarded) ================= */
+export function StudentProfilePage() {
+  const { db, currentUser, toast } = useApp();
+  const groupsLoaded = useLazyGroups(["attendance", "academics", "homework", "fees"]);
+  const { id } = useParams();
+  const [tab, setTab] = useState("overview");
+  const [editOpen, setEditOpen] = useState(false);
+  const [idCardOpen, setIdCardOpen] = useState(false);
+  const [payItem, setPayItem] = useState<FeeItem | null>(null);
 
-  const deleteAnnouncement = (a: Announcement) => {
-    update((d) => {
-      d.announcements = d.announcements.filter((x) => x.id !== a.id);
-      pushAudit(d, currentUser, "announcement.delete", a.title);
-    });
-    toast("Announcement deleted.");
-    setConfirmDelete(null);
+  const s = db.students.find((x) => x.id === id);
+
+  const openDocument = async (dc: Student["documents"][number]) => {
+    if (dc.storagePath) {
+      try {
+        const url = await getDownloadUrl("student_document", id!, dc.storagePath);
+        window.open(url, "_blank", "noopener");
+      } catch (e) {
+        toast(`Couldn't open ${dc.name}: ${e instanceof Error ? e.message : String(e)}`, "warn");
+      }
+    } else if (dc.dataUrl) {
+      window.open(dc.dataUrl, "_blank", "noopener");
+    } else {
+      toast("No preview available for this file.", "warn");
+    }
   };
+  if (!s) return <AccessDenied required="A valid student id" reason="No student record matches that address." />;
+
+  // ENTITY-LEVEL authorization: role alone isn't enough — the relationship must hold.
+  if (!canSeeStudent(db, currentUser, s.id)) {
+    const why =
+      currentUser?.role === "teacher"
+        ? "This student isn't in any class section you teach. Teacher access follows your subject assignments."
+        : currentUser?.role === "guardian"
+          ? "This student isn't registered under your guardian account. Guardians can only open their own children."
+          : currentUser?.role === "student"
+            ? "Students can only open their own record."
+            : "You need to sign in to view this record.";
+    return <AccessDenied required="A relationship to this student" reason={why} />;
+  }
+
+  const isAdmin = currentUser?.role === "admin";
+  const isGuardian = currentUser?.role === "guardian";
+  const enr = s.enrollment;
+  const att = attendanceStats(db, s.id);
+  const avg = studentAverage(db, s);
+  const results = studentResults(db, s);
+  const fees = feeStats(db, s.id);
+  const teachers = teachersOfStudent(db, s);
+  const homework = db.homework.filter((h) => h.classId === enr?.classId && h.sectionId === enr?.sectionId);
 
   return (
-    <div className="mx-auto max-w-4xl">
-      <PageHead kicker="Communication" title="Announcements" sub="Official one-to-many notices, targeted through the school's academic structure.">
-        {canCreate && <Btn variant="gold" onClick={() => { setEditing(null); setOpen(true); }}><Megaphone className="h-4 w-4" /> New announcement</Btn>}
-      </PageHead>
+    <div className="mx-auto max-w-6xl">
+      <Panel className="anim-rise overflow-hidden">
+        <div className="relative bg-pine-900 px-4 py-4 sm:px-6 sm:py-5">
+          <div className="pointer-events-none absolute -right-10 -top-14 h-44 w-44 rounded-full border-[18px] border-pine-800/70" />
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+            <Avatar student={s} size={56} className="ring-4 ring-pine-700" />
+            <div className="min-w-0">
+              <h1 className="font-display text-[21px] font-extrabold leading-tight tracking-tight text-white sm:text-[25px]">{fullName(s)}</h1>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <Chip className="!border-pine-700 !bg-pine-800 font-mono !text-gold-300">{s.regId}</Chip>
+                {enr && <Chip tone="gold">{sectionLabel(db, enr.classId, enr.sectionId)}</Chip>}
+                <Chip className="!border-pine-700 !bg-pine-800 !text-pine-200">{s.gender}</Chip>
+                {!isAdmin && <Chip className="!border-pine-700 !bg-pine-800 !text-pine-200"><Lock className="h-3 w-3" /> Read-only for {currentUser?.role}</Chip>}
+              </div>
+            </div>
+            <div className="ml-auto flex gap-2">
+              {(isAdmin || isGuardian) && (
+                <Btn variant="soft" size="sm" onClick={() => setIdCardOpen(true)}><CreditCard className="h-3.5 w-3.5" /> ID card</Btn>
+              )}
+              {isAdmin && (
+                <Btn variant="gold" size="sm" onClick={() => setEditOpen(true)}><Pencil className="h-3.5 w-3.5" /> Edit</Btn>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-px bg-mist sm:grid-cols-4">
+          {[
+            { label: "Attendance", node: groupsLoaded ? <Ring pct={att.pct} size={42} stroke={5} color={att.pct >= 90 ? "var(--color-pine-600)" : "var(--color-gold-500)"} /> : <Skel className="h-[42px] w-[42px] rounded-full" /> },
+            { label: "Average", node: groupsLoaded ? <span className="font-display text-[20px] font-extrabold text-pine-800 sm:text-[24px]">{avg != null ? `${avg}%` : "—"}</span> : <Skel className="h-6 w-12" /> },
+            { label: "Grade", node: groupsLoaded ? <span className="font-display text-[20px] font-extrabold text-ink sm:text-[24px]">{avg != null ? gradeFor(avg, db.grading).grade : "—"}</span> : <Skel className="h-6 w-8" /> },
+            { label: "Guardian", node: <span className="text-[13px] font-bold text-ink">{guardianOfStudent(db, s.id)?.name ?? s.guardian.father}</span> },
+          ].map((x) => (
+            <div key={x.label} className="bg-card px-3.5 py-3 sm:px-4">
+              <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.12em] text-soft">{x.label}</p>
+              {x.node}
+            </div>
+          ))}
+        </div>
+      </Panel>
 
-      <div className="mb-4 flex flex-wrap gap-1.5">
-        {[["all", "All"], ["published", "Published"], ["scheduled", "Scheduled"], ["draft", "Drafts"], ["archived", "Archived"], ["mine", "Mine"]].map(([k, l]) => (
-          <button key={k} onClick={() => setFilter(k)} className={`cursor-pointer rounded-full border px-3 py-1 text-[12px] font-semibold transition-all ${filter === k ? "border-pine-700 bg-pine-800 text-pine-50" : "border-mist bg-card text-soft hover:border-pine-400"}`}>{l}</button>
-        ))}
+      <div className="anim-rise mt-4">
+        <Tabs
+          tabs={[
+            { id: "overview", label: "Overview", icon: <UserIcon className="h-3.5 w-3.5" /> },
+            { id: "grades", label: "Grades", icon: <FileBarChart2 className="h-3.5 w-3.5" /> },
+            { id: "attendance", label: "Attendance", icon: <CalendarCheck2 className="h-3.5 w-3.5" /> },
+            { id: "assignments", label: "Assignments", icon: <Notebook className="h-3.5 w-3.5" /> },
+            ...(isAdmin || isGuardian ? [{ id: "fees", label: "Fees", icon: <Wallet className="h-3.5 w-3.5" /> }] : []),
+            { id: "documents", label: "Documents", icon: <Inbox className="h-3.5 w-3.5" /> },
+            { id: "history", label: "History", icon: <History className="h-3.5 w-3.5" /> },
+          ]}
+          active={tab}
+          onChange={setTab}
+        />
       </div>
 
-      <div className="space-y-3">
-        {!groupsLoaded ? (
-          <SkeletonPanel rows={4} />
+      <div className="mt-4 space-y-4">
+        {!groupsLoaded && tab !== "overview" ? (
+          <SkeletonPanel rows={5} />
         ) : (
         <>
-        {list.map((a) => {
-          const st = effectiveAnnouncementStatus(a);
-          const cm = CAT_META[a.category] ?? CAT_META.General;
-          const sender = db.users.find((u) => u.id === a.senderId);
-          const readCount = a.readBy?.length ?? 0;
-          const reach = audienceSize(db, a.audience);
-          return (
-            <Panel key={a.id} className="anim-rise overflow-hidden">
-              <div className="flex gap-3 p-4">
-                <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${cm.dot}`} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="font-display text-[15.5px] font-bold tracking-tight text-ink">{a.title}</h3>
-                    {a.pinned && <Chip tone="gold">Pinned</Chip>}
-                    <Chip tone={st === "published" ? "pine" : st === "scheduled" ? "steel" : st === "draft" ? "gray" : "rust"}>{st}</Chip>
-                  </div>
-                  <p className="mt-1 whitespace-pre-line text-[13px] leading-relaxed text-soft">{a.body}</p>
-                  <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-soft">
-                    <span className={`rounded-md border px-1.5 py-0.5 text-[10.5px] font-semibold ${cm.bg}`}>{a.category}</span>
-                    <span>{sender?.name ?? "—"}</span>
-                    <span>{st === "scheduled" && a.scheduledFor ? `scheduled ${fmtShort(a.scheduledFor)}` : timeAgo(a.createdAt)}</span>
-                    {a.editedAt && <span>(edited {timeAgo(a.editedAt)})</span>}
-                    <span>→ {audienceLabel(db, a.audience)}</span>
-                    {st === "published" && <span className="flex items-center gap-1"><Eye className="h-3 w-3" /> {readCount}/{reach} read</span>}
-                  </div>
+        {tab === "overview" && (
+          <div className="anim-rise grid gap-4 md:grid-cols-3">
+            <Panel className="p-5">
+              <h3 className="mb-3 font-display text-[14px] font-bold">Personal</h3>
+              <dl className="space-y-2.5 text-[13px]">
+                <div><dt className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Date of birth</dt><dd className="font-semibold text-ink">{fmtDate(s.dob)}</dd></div>
+                <div><dt className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Address</dt><dd className="font-semibold text-ink">{s.address || "—"}</dd></div>
+                <div><dt className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Student email</dt><dd className="font-semibold text-ink">{s.email || "—"}</dd></div>
+              </dl>
+            </Panel>
+            <Panel className="p-5">
+              <h3 className="mb-3 font-display text-[14px] font-bold">Family</h3>
+              <dl className="space-y-2.5 text-[13px]">
+                <div><dt className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Guardian ({s.guardian.relation})</dt><dd className="font-semibold text-ink">{s.guardian.father}</dd></div>
+                <div><dt className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Mother</dt><dd className="font-semibold text-ink">{s.guardian.mother || "—"}</dd></div>
+                <div><dt className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Phone</dt><dd className="font-semibold text-ink">{s.guardian.phone || "—"}</dd></div>
+                <div><dt className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Linked account</dt><dd>{guardianOfStudent(db, s.id) ? <Chip tone="gold"><Baby className="h-3 w-3" /> {guardianOfStudent(db, s.id)!.username}</Chip> : <Chip tone="gray">none</Chip>}</dd></div>
+              </dl>
+            </Panel>
+            <Panel className="p-5">
+              <h3 className="mb-3 font-display text-[14px] font-bold">Placement & teachers</h3>
+              <dl className="space-y-2.5 text-[13px]">
+                <div><dt className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Class</dt><dd className="font-semibold text-ink">{enr ? sectionLabel(db, enr.classId, enr.sectionId) : "—"}</dd></div>
+                <div><dt className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Admitted</dt><dd className="font-semibold text-ink">{fmtDate(s.admission.date)} · {s.admission.type}</dd></div>
+                <div>
+                  <dt className="mb-1 text-[10.5px] font-bold uppercase tracking-wider text-soft">Teachers</dt>
+                  <dd className="flex flex-wrap gap-1">{teachers.map(({ teacher, subjectIds }) => <Chip key={teacher.id} tone="pine">{teacher.name} · {subjectIds.map((x) => getSubject(db, x)?.code).join("/")}</Chip>)}</dd>
                 </div>
-                {canManageAnnouncement(db, currentUser, a) && (
-                  <div className="flex shrink-0 flex-col gap-1.5">
-                    {st !== "archived" && (
-                      <Btn size="sm" variant="soft" onClick={() => { setEditing(a); setOpen(true); }} data-edit={a.id}>Edit</Btn>
-                    )}
-                    {st !== "published" && st !== "archived" && (
-                      <Btn size="sm" onClick={() => saveAnnouncement({ ...a, status: "published", publishedAt: new Date().toISOString(), scheduledFor: undefined })}>Publish</Btn>
-                    )}
-                    {st !== "archived" && (
-                      <Btn size="sm" variant="ghost" onClick={() => archiveAnnouncement(a)}>Archive</Btn>
-                    )}
-                    {st === "archived" && (
-                      <Btn size="sm" variant="soft" onClick={() => restoreAnnouncement(a)}>Restore</Btn>
-                    )}
-                    <Btn size="sm" variant="dangerSoft" onClick={() => setConfirmDelete(a)}><Trash2 className="h-3.5 w-3.5" /> Delete</Btn>
-                  </div>
-                )}
+              </dl>
+            </Panel>
+          </div>
+        )}
+
+        {tab === "grades" && (
+          <Panel className="anim-rise overflow-hidden">
+            <div className="border-b border-mist px-5 py-3.5">
+              <h3 className="font-display text-[15px] font-bold">Assessment results</h3>
+              <p className="text-[11.5px] text-soft">Totals and percentages are weighted from each subject's assessment structure.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[620px]">
+                <thead className="border-b border-mist bg-paper/60">
+                  <tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={thCls()}>Structure</th><th className={thCls()}>%</th><th className={thCls()}>Grade</th><th className={thCls()}>Position</th></tr>
+                </thead>
+                <tbody className="divide-y divide-mist/70">
+                  {results.map(({ st, calc, subject }) => {
+                    const ranks = structureRanks(db, st);
+                    const band = gradeFor(calc.pct, db.grading);
+                    return (
+                      <tr key={st.id} className="transition-colors hover:bg-pine-50/50">
+                        <td className={tdCls()}><span className="flex items-center gap-2 font-bold text-ink"><span className="h-4 w-1 rounded-full" style={{ background: subject?.color }} />{subject?.name}</span></td>
+                        <td className={`${tdCls()} text-soft`}>{st.period}</td>
+                        <td className={`${tdCls()} text-[11.5px] text-soft`}>{st.items.map((i) => i.name).join(" · ")}</td>
+                        <td className={`${tdCls()} font-mono text-[12.5px] font-bold ${calc.complete ? "text-pine-800" : "text-gold-600"}`}>{calc.complete ? `${calc.pct}%` : "in progress"}</td>
+                        <td className={tdCls()}>{calc.complete ? <Chip tone={calc.pct >= 80 ? "pine" : calc.pct >= 50 ? "gold" : "rust"}>{band.grade}</Chip> : "—"}</td>
+                        <td className={`${tdCls()} text-soft`}>{calc.complete && ranks[s.id] ? `${ordinal(ranks[s.id])} of ${Object.keys(ranks).length}` : "—"}</td>
+                      </tr>
+                    );
+                  })}
+                  {results.length === 0 && <tr><td colSpan={6} className="px-5 py-10 text-center text-[12.5px] text-soft">No assessment structures for this class yet.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+        )}
+
+        {tab === "attendance" && (
+          <div className="anim-rise grid gap-4 md:grid-cols-3">
+            <Panel className="flex flex-col items-center justify-center gap-2 p-6">
+              <Ring pct={att.pct} size={110} stroke={9} color={att.pct >= 90 ? "var(--color-pine-600)" : att.pct >= 75 ? "var(--color-gold-500)" : "var(--color-rust-500)"} />
+              <p className="font-display text-[15px] font-bold">Overall attendance</p>
+              <div className="mt-1 flex gap-2">
+                <Chip tone="pine">{att.present} present</Chip>
+                <Chip tone="gold">{att.late} late</Chip>
+                <Chip tone="rust">{att.absent} absent</Chip>
               </div>
             </Panel>
-          );
-        })}
-        {list.length === 0 && (
-          <Panel><EmptyState icon={<Megaphone className="h-5 w-5" />} title="No announcements here" body="Announcements for your audience will appear on this board." /></Panel>
+            <Panel className="overflow-hidden md:col-span-2">
+              <div className="border-b border-mist px-5 py-3.5"><h3 className="font-display text-[15px] font-bold">Register history</h3></div>
+              <ul className="max-h-[360px] divide-y divide-mist/70 overflow-y-auto">
+                {db.attendance
+                  .filter((r) => r.classId === enr?.classId && r.sectionId === enr?.sectionId && r.marks[s.id])
+                  .sort((a, b) => b.date.localeCompare(a.date))
+                  .map((r) => (
+                    <li key={r.date} className="flex items-center justify-between px-5 py-2.5">
+                      <span className="text-[13px] font-semibold text-ink">{fmtDate(r.date)}</span>
+                      <Chip tone={r.marks[s.id] === "present" ? "pine" : r.marks[s.id] === "late" ? "gold" : "rust"}>{r.marks[s.id]}</Chip>
+                    </li>
+                  ))}
+                {db.attendance.filter((r) => r.marks[s.id]).length === 0 && <li className="px-5 py-10 text-center text-[12.5px] text-soft">No registers recorded yet.</li>}
+              </ul>
+            </Panel>
+          </div>
+        )}
+
+        {tab === "assignments" && (
+          <Panel className="anim-rise overflow-hidden">
+            <ul className="divide-y divide-mist/70">
+              {homework.map((h) => {
+                const done = h.submitted.includes(s.id);
+                return (
+                  <li key={h.id} className="flex items-center gap-3 px-5 py-3">
+                    <span className="h-8 w-1 shrink-0 rounded-full" style={{ background: getSubject(db, h.subjectId)?.color }} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[13.5px] font-bold text-ink">{h.title}</p>
+                      <p className="text-[11.5px] text-soft">{getSubject(db, h.subjectId)?.name} · issued {fmtDate(h.issued)} · due {fmtDate(h.due)}</p>
+                    </div>
+                    <Chip tone={done ? "pine" : h.due < todayISO() ? "rust" : "gold"}>{done ? "Submitted" : h.due < todayISO() ? "Overdue" : "Pending"}</Chip>
+                  </li>
+                );
+              })}
+              {homework.length === 0 && <li className="px-5 py-10 text-center text-[12.5px] text-soft">No assignments for this class yet.</li>}
+            </ul>
+          </Panel>
+        )}
+
+        {tab === "fees" && (
+          <Panel className="anim-rise overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-mist px-4 py-3.5 sm:px-5">
+              <h3 className="font-display text-[15px] font-bold">Fee ledger</h3>
+              <div className="flex flex-wrap gap-2">
+                <Chip tone="gray">Billed ETB {fees.billed.toLocaleString()}</Chip>
+                <Chip tone="pine">Paid ETB {fees.paid.toLocaleString()}</Chip>
+                <Chip tone={fees.outstanding > 0 ? "rust" : "pine"}>Due ETB {fees.outstanding.toLocaleString()}</Chip>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[540px]">
+                <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Item</th><th className={thCls()}>Amount</th><th className={thCls()}>Paid</th><th className={thCls()}>Due</th><th className={thCls()}>Status</th>{isGuardian && <th className={thCls()}></th>}</tr></thead>
+                <tbody className="divide-y divide-mist/70">
+                  {fees.items.map((f) => {
+                    const pending = pendingRequestFor(db, f.id);
+                    const due = f.amount - f.paid > 0;
+                    return (
+                      <tr key={f.id}>
+                        <td className={`${tdCls()} font-bold text-ink`}>{f.label}</td>
+                        <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.amount.toLocaleString()}</td>
+                        <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.paid.toLocaleString()}</td>
+                        <td className={`${tdCls()} text-soft`}>{fmtDate(f.due)}</td>
+                        <td className={tdCls()}>
+                          {pending ? <Chip tone="gold">Pending review</Chip> : due ? <Chip tone="rust">ETB {(f.amount - f.paid).toLocaleString()} due</Chip> : <Chip tone="pine">Settled</Chip>}
+                        </td>
+                        {isGuardian && (
+                          <td className={`${tdCls()} text-right`}>
+                            {due && !pending && <Btn size="sm" variant="soft" onClick={() => setPayItem(f)}><Wallet className="h-3.5 w-3.5" /> Pay</Btn>}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+        )}
+
+        {tab === "documents" && (
+          <Panel className="anim-rise overflow-hidden">
+            <ul className="divide-y divide-mist/70">
+              {s.documents.map((dc) => (
+                <li key={dc.id} className="flex items-center gap-3 px-5 py-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-pine-100 text-pine-700"><Notebook className="h-4 w-4" /></span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-bold text-ink">{dc.name}</p>
+                    <p className="text-[11px] text-soft">{dc.kind} · {dc.size} · {fmtDate(dc.date)}</p>
+                  </div>
+                  <Chip tone="gray">{dc.kind}</Chip>
+                  {(dc.storagePath || dc.dataUrl) && (
+                    <Btn size="sm" variant="ghost" onClick={() => openDocument(dc)}><Eye className="h-3.5 w-3.5" /> Open</Btn>
+                  )}
+                </li>
+              ))}
+              {s.documents.length === 0 && <li className="px-5 py-10 text-center text-[12.5px] text-soft">No documents on file.</li>}
+            </ul>
+          </Panel>
+        )}
+
+        {tab === "history" && (
+          <Panel className="anim-rise p-6">
+            <h3 className="mb-1 font-display text-[15px] font-bold">Academic history</h3>
+            <p className="mb-5 text-[12px] text-soft">Placements are appended each year — the record is never overwritten.</p>
+            <ol className="relative ml-3 space-y-5 border-l-2 border-pine-200 pl-6">
+              {[...s.history].sort((a, b) => a.yearId.localeCompare(b.yearId)).map((h, i, arr) => {
+                const yr = db.years.find((y) => y.id === h.yearId);
+                const current = i === arr.length - 1;
+                return (
+                  <li key={h.yearId + i} className="relative">
+                    <span className={`absolute -left-[31px] top-1 h-4 w-4 rounded-full border-4 ${current ? "border-gold-300 bg-gold-500" : "border-pine-200 bg-pine-600"}`} />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-[12px] font-bold text-pine-700">{yr?.name}</span>
+                      <span className="font-display text-[15px] font-bold text-ink">{sectionLabel(db, h.classId, h.sectionId)}</span>
+                      {current && <Chip tone="gold">Current year</Chip>}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </Panel>
         )}
         </>
         )}
       </div>
 
-      {open && <AnnouncementModal announcement={editing} onClose={closeModal} onSave={saveAnnouncement} />}
-      {confirmDelete && (
-        <Modal title="Delete this announcement?" kicker={confirmDelete.title} onClose={() => setConfirmDelete(null)}
-          footer={<><Btn variant="ghost" onClick={() => setConfirmDelete(null)}>Cancel</Btn><Btn variant="danger" onClick={() => deleteAnnouncement(confirmDelete)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
-          <p className="text-[13px] text-soft">This removes it permanently, including its read receipts. This can't be undone — archive it instead if you just want it off the active list.</p>
+      {editOpen && isAdmin && <RegistrationWizard student={s} onClose={() => setEditOpen(false)} />}
+      {idCardOpen && <IDCardModal student={s} onClose={() => setIdCardOpen(false)} />}
+      {payItem && <PayFeeModal student={s} item={payItem} onClose={() => setPayItem(null)} />}
+    </div>
+  );
+}
+
+/* Guardian self-service: pick the school's bank account, copy it, pay outside
+   the app, then upload the receipt here. Lands as a pending request — it
+   never touches fee_items.paid until an admin reviews the receipt and
+   approves it (guardians don't hold fees.manage, so they couldn't write
+   fee_items directly even if this tried to). */
+function PayFeeModal({ student, item, onClose }: { student: Student; item: FeeItem; onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const accounts = db.settings.bankAccounts ?? [];
+  const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
+  const [reference, setReference] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const outstanding = item.amount - item.paid;
+  const account = accounts.find((a) => a.id === accountId);
+
+  const copyAccount = async () => {
+    if (!account) return;
+    try {
+      await navigator.clipboard.writeText(account.accountNumber);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast("Couldn't copy — select and copy the number manually.", "warn");
+    }
+  };
+
+  const submit = async () => {
+    if (!account) { toast("Choose which bank account you paid into.", "warn"); return; }
+    if (!file) { toast("Upload a photo or PDF of the receipt.", "warn"); return; }
+    setBusy(true);
+    try {
+      let receiptPath: string | undefined;
+      let receiptDataUrl: string | undefined;
+      if (isStorageConfigured) {
+        const { key } = await uploadFile({ file, ownerType: "fee_receipt", ownerId: student.id, kind: "receipt" });
+        receiptPath = key;
+      } else {
+        receiptDataUrl = await new Promise<string>((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = () => reject(new Error("Couldn't read the file."));
+          r.readAsDataURL(file);
+        });
+      }
+      update((d) => {
+        d.paymentRequests.push({
+          id: uid(), studentId: student.id, feeItemId: item.id, amount: outstanding,
+          bankAccountId: account.id, bankName: account.bankName, reference: reference.trim() || undefined,
+          receiptPath, receiptDataUrl, receiptName: file.name,
+          submittedBy: currentUser?.id ?? "", submittedByName: currentUser?.name, submittedAt: new Date().toISOString(),
+          status: "pending",
+        });
+      });
+      toast("Receipt submitted — it'll show as pending until the office confirms it.");
+      onClose();
+    } catch (e) {
+      toast(`Couldn't submit: ${e instanceof Error ? e.message : String(e)}`, "warn");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Pay — ${item.label}`} kicker={`Outstanding: ETB ${outstanding.toLocaleString()}`} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit} busy={busy}><Wallet className="h-4 w-4" /> Submit for review</Btn></>}>
+      {accounts.length === 0 ? (
+        <p className="py-6 text-center text-[12.5px] text-soft">No bank account is set up for transfers yet — please contact the office.</p>
+      ) : (
+        <>
+          <Field label="Pay into" required>
+            <Select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.bankName} — {a.accountName}</option>)}
+            </Select>
+          </Field>
+          {account && (
+            <div className="mt-3 rounded-lg border border-mist bg-paper/60 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Account number</p>
+                  <p className="truncate font-mono text-[15px] font-extrabold text-ink">{account.accountNumber}</p>
+                </div>
+                <Btn size="sm" variant={copied ? "soft" : "gold"} onClick={copyAccount}>{copied ? "Copied" : "Copy"}</Btn>
+              </div>
+              <p className="mt-2 text-[11.5px] text-soft">{account.accountName}{account.branch ? ` · ${account.branch}` : ""}</p>
+              {account.note && <p className="mt-1 text-[11.5px] text-soft">{account.note}</p>}
+            </div>
+          )}
+          <p className="mt-3 text-[12px] text-soft">Transfer ETB {outstanding.toLocaleString()} using your own bank or mobile banking app, then come back and upload the receipt below.</p>
+          <Field label="Your reference / slip number" className="mt-3"><TextInput value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional, if you have one" /></Field>
+          <Field label="Receipt" required className="mt-3">
+            <input type="file" accept="image/*,.pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="w-full rounded-lg border border-mist bg-card px-3 py-2 text-[12.5px]" />
+            {file && <p className="mt-1 text-[11px] text-soft">{file.name}</p>}
+          </Field>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+/* Guardian-facing overview across every registered child — mirrors the
+   admin FeesPage ledger but scoped to this guardian's own children (RLS on
+   fee_items already limits reads to guardian_students, this just gives it a
+   proper sidebar destination instead of only being reachable one child's
+   profile at a time). */
+export function GuardianFeesPage() {
+  const { db, currentUser } = useApp();
+  const groupsLoaded = useLazyGroups("fees");
+  if (!hasPermission(db, currentUser, "fees.view_children")) {
+    return <AccessDenied required="fees.view_children" reason="You don't have permission to view fees." />;
+  }
+  const kids = childrenOf(db, currentUser);
+  const [payItem, setPayItem] = useState<{ student: Student; item: FeeItem } | null>(null);
+
+  const totals = kids.reduce((acc, s) => {
+    const f = feeStats(db, s.id);
+    acc.billed += f.billed; acc.paid += f.paid; acc.outstanding += f.outstanding;
+    return acc;
+  }, { billed: 0, paid: 0, outstanding: 0 });
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <PageHead kicker="Finance" title="Fees" sub="Fee ledgers for your registered children." />
+
+      {!groupsLoaded ? (
+        <SkeletonPanel rows={Math.min(kids.length || 3, 6)} />
+      ) : (
+      <>
+      <div className="anim-rise mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Stat label="Billed" value={`ETB ${totals.billed.toLocaleString()}`} tone="steel" icon={<CreditCard className="h-4.5 w-4.5" />} />
+        <Stat label="Paid" value={`ETB ${totals.paid.toLocaleString()}`} tone="pine" icon={<Wallet className="h-4.5 w-4.5" />} />
+        <Stat label="Outstanding" value={`ETB ${totals.outstanding.toLocaleString()}`} tone="rust" icon={<Notebook className="h-4.5 w-4.5" />} />
+      </div>
+
+      {kids.length === 0 ? (
+        <Panel><EmptyState icon={<Baby className="h-5 w-5" />} title="No children linked" body="Contact the school office if this doesn't look right." /></Panel>
+      ) : (
+        <div className="space-y-4">
+          {kids.map((s) => {
+            const fees = feeStats(db, s.id);
+            return (
+              <Panel key={s.id} className="anim-rise overflow-hidden">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-mist px-4 py-3.5 sm:px-5">
+                  <span className="flex items-center gap-2.5">
+                    <Avatar student={s} size={30} />
+                    <span className="font-display text-[14px] font-bold text-ink">{fullName(s)}</span>
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    <Chip tone="gray">Billed ETB {fees.billed.toLocaleString()}</Chip>
+                    <Chip tone="pine">Paid ETB {fees.paid.toLocaleString()}</Chip>
+                    <Chip tone={fees.outstanding > 0 ? "rust" : "pine"}>Due ETB {fees.outstanding.toLocaleString()}</Chip>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[520px]">
+                    <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Item</th><th className={thCls()}>Amount</th><th className={thCls()}>Paid</th><th className={thCls()}>Due date</th><th className={thCls()}>Status</th><th className={thCls()}></th></tr></thead>
+                    <tbody className="divide-y divide-mist/70">
+                      {fees.items.map((f) => {
+                        const pending = pendingRequestFor(db, f.id);
+                        const due = f.amount - f.paid > 0;
+                        return (
+                          <tr key={f.id}>
+                            <td className={`${tdCls()} font-bold text-ink`}>{f.label}</td>
+                            <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.amount.toLocaleString()}</td>
+                            <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.paid.toLocaleString()}</td>
+                            <td className={`${tdCls()} text-soft`}>{fmtDate(f.due)}</td>
+                            <td className={tdCls()}>
+                              {pending ? <Chip tone="gold">Pending review</Chip> : due ? <Chip tone="rust">ETB {(f.amount - f.paid).toLocaleString()} due</Chip> : <Chip tone="pine">Settled</Chip>}
+                            </td>
+                            <td className={`${tdCls()} text-right`}>
+                              {due && !pending && <Btn size="sm" variant="soft" onClick={() => setPayItem({ student: s, item: f })}><Wallet className="h-3.5 w-3.5" /> Pay</Btn>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {fees.items.length === 0 && <tr><td colSpan={6} className="py-6 text-center text-[12px] text-soft">No fee items yet.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </Panel>
+            );
+          })}
+        </div>
+      )}
+      </>
+      )}
+
+      {payItem && <PayFeeModal student={payItem.student} item={payItem.item} onClose={() => setPayItem(null)} />}
+    </div>
+  );
+}
+
+function EditStudentModal({ student, onClose }: { student: Student; onClose: () => void }) {
+  const { update, toast, db } = useApp();
+  const [f, setF] = useState({
+    firstName: student.firstName, middleName: student.middleName, lastName: student.lastName,
+    phone: student.phone ?? "", address: student.address ?? "",
+    classId: student.enrollment?.classId ?? "", sectionId: student.enrollment?.sectionId ?? "",
+    gFather: student.guardian.father, gPhone: student.guardian.phone ?? "",
+  });
+  const save = () => {
+    if (!f.firstName.trim() || !f.lastName.trim() || !f.classId || !f.sectionId) { toast("Names and placement are required.", "warn"); return; }
+    update((d) => {
+      const st = d.students.find((x) => x.id === student.id)!;
+      st.firstName = f.firstName.trim(); st.middleName = f.middleName.trim(); st.lastName = f.lastName.trim();
+      st.phone = f.phone.trim(); st.address = f.address.trim();
+      st.guardian.father = f.gFather.trim(); st.guardian.phone = f.gPhone.trim();
+      const prev = st.enrollment;
+      if (prev && (prev.classId !== f.classId || prev.sectionId !== f.sectionId)) {
+        // rewrite the current year's history entry; earlier years stay untouched
+        const next: Enrollment = { yearId: prev.yearId, classId: f.classId, sectionId: f.sectionId, status: "active", enrolledOn: prev.enrolledOn };
+        st.enrollment = next;
+        st.history[st.history.length - 1] = next;
+      }
+    });
+    toast("Student record updated.");
+    onClose();
+  };
+  return (
+    <Modal title={`Edit ${shortName(student)}`} kicker="Admin only" onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}>Save changes</Btn></>}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="First name" required><TextInput value={f.firstName} onChange={(e) => setF((p) => ({ ...p, firstName: e.target.value }))} /></Field>
+        <Field label="Middle name"><TextInput value={f.middleName} onChange={(e) => setF((p) => ({ ...p, middleName: e.target.value }))} /></Field>
+        <Field label="Last name" required><TextInput value={f.lastName} onChange={(e) => setF((p) => ({ ...p, lastName: e.target.value }))} /></Field>
+        <Field label="Phone"><TextInput value={f.phone} onChange={(e) => setF((p) => ({ ...p, phone: e.target.value }))} /></Field>
+        <Field label="Grade" required>
+          <Select value={f.classId} onChange={(e) => setF((p) => ({ ...p, classId: e.target.value, sectionId: "" }))}>
+            {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Section" required>
+          <Select value={f.sectionId} onChange={(e) => setF((p) => ({ ...p, sectionId: e.target.value }))}>
+            {getClass(db, f.classId)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Guardian name"><TextInput value={f.gFather} onChange={(e) => setF((p) => ({ ...p, gFather: e.target.value }))} /></Field>
+        <Field label="Guardian phone"><TextInput value={f.gPhone} onChange={(e) => setF((p) => ({ ...p, gPhone: e.target.value }))} /></Field>
+      </div>
+      <p className="mt-3 text-[11px] text-soft">Changing placement rewrites this year's history entry only — earlier years remain intact.</p>
+    </Modal>
+  );
+}
+
+/* ================= teachers + central assignment board (admin) ================= */
+export function TeachersPage() {
+  const { db, currentUser, yearId, update, toast } = useApp();
+  const [editT, setEditT] = useState<{ id?: string; name: string; specialty: string; phone: string; email: string } | null>(null);
+  const [asg, setAsg] = useState({ classId: "c8", sectionId: "sec8b", subjectId: "math", teacherId: "t1" });
+
+  if (!hasPermission(db, currentUser, "teachers.view")) {
+    return <AccessDenied required="teachers.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+  // Level-1 gates for the two write surfaces on this page — the database
+  // enforces these already (teachers.manage / academics.manage); mirror them
+  // here so the buttons don't appear only to fail on save.
+  const canManageTeachers = hasPermission(db, currentUser, "teachers.manage");
+  const canManageAssignments = hasPermission(db, currentUser, "academics.manage");
+
+  const classesInSection = getClass(db, asg.classId)?.sections ?? [];
+
+  const saveTeacher = () => {
+    if (!editT || !editT.name.trim()) { toast("Teacher name is required.", "warn"); return; }
+    update((d) => {
+      if (editT.id) {
+        const t = d.teachers.find((x) => x.id === editT.id)!;
+        t.name = editT.name.trim(); t.specialty = editT.specialty.trim(); t.phone = editT.phone.trim(); t.email = editT.email.trim();
+      } else {
+        d.teachers.push({ id: uid(), name: editT.name.trim(), specialty: editT.specialty.trim(), phone: editT.phone.trim(), email: editT.email.trim() });
+      }
+    });
+    toast(editT.id ? "Teacher updated." : "Teacher added — assign them subjects below.");
+    setEditT(null);
+  };
+
+  const removeTeacher = (id: string) => {
+    if (db.assignments.some((a) => a.teacherId === id)) { toast("Reassign their subjects first — this teacher still holds assignments.", "warn"); return; }
+    update((d) => {
+      d.teachers = d.teachers.filter((t) => t.id !== id);
+      const u = d.users.find((x) => x.teacherId === id);
+      if (u) u.status = "disabled";
+    });
+    toast("Teacher removed.");
+  };
+
+  const setAssignment = () => {
+    update((d) => {
+      const existing = d.assignments.find((a) => a.yearId === yearId && a.classId === asg.classId && a.sectionId === asg.sectionId && a.subjectId === asg.subjectId);
+      if (existing) existing.teacherId = asg.teacherId;
+      else d.assignments.push({ id: uid(), yearId, ...asg });
+    });
+    toast("Assignment saved — timetables, marks access and communication follow it automatically.");
+  };
+
+  return (
+    <div className="mx-auto max-w-6xl">
+      <PageHead kicker="People" title="Teachers" sub="Staff records plus the central subject-assignment board — the single relationship that powers marks access, timetables and communication.">
+        {canManageTeachers && <Btn variant="gold" onClick={() => setEditT({ name: "", specialty: "", phone: "", email: "" })}><Plus className="h-4 w-4" /> Add teacher</Btn>}
+      </PageHead>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Panel className="anim-rise overflow-hidden">
+          <div className="border-b border-mist px-5 py-3.5"><h2 className="font-display text-[15px] font-bold">Staff roster</h2></div>
+          <ul className="divide-y divide-mist/70">
+            {db.teachers.map((t) => {
+              const load = db.assignments.filter((a) => a.yearId === yearId && a.teacherId === t.id);
+              const account = db.users.find((u) => u.teacherId === t.id);
+              return (
+                <li key={t.id} className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-pine-50/50">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-pine-800 font-display text-[12px] font-bold text-white">
+                    {t.name.replace(/^(Mr\.|Ms\.|Mrs\.)\s*/, "").split(" ").map((w) => w[0]).join("")}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center gap-2 text-[13.5px] font-bold text-ink">{t.name}
+                      {account ? <Chip tone={account.status === "active" ? "pine" : "rust"}>{account.status === "active" ? "login active" : "login disabled"}</Chip> : <Chip tone="gray">no login</Chip>}
+                    </p>
+                    <p className="text-[11.5px] text-soft">{t.specialty || "—"} · {load.length} sections · {t.email}</p>
+                  </div>
+                  {canManageTeachers && (
+                    <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                      <button onClick={() => setEditT({ id: t.id, name: t.name, specialty: t.specialty ?? "", phone: t.phone ?? "", email: t.email ?? "" })} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => removeTeacher(t.id)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </Panel>
+
+        <Panel className="anim-rise overflow-hidden">
+          <div className="border-b border-mist px-5 py-3.5">
+            <h2 className="font-display text-[15px] font-bold">Teacher–subject assignments</h2>
+            <p className="text-[11.5px] text-soft">AY {db.years.find((y) => y.id === yearId)?.name} · Grade → Section → Subject → Teacher</p>
+          </div>
+          {canManageAssignments && (
+            <>
+              <div className="grid grid-cols-2 gap-3 p-5">
+                <Field label="Grade">
+                  <Select value={asg.classId} onChange={(e) => setAsg((p) => ({ ...p, classId: e.target.value, sectionId: db.classes.find((c) => c.id === e.target.value)?.sections[0]?.id ?? "" }))}>
+                    {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Section">
+                  <Select value={asg.sectionId} onChange={(e) => setAsg((p) => ({ ...p, sectionId: e.target.value }))}>
+                    {classesInSection.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Subject">
+                  <Select value={asg.subjectId} onChange={(e) => setAsg((p) => ({ ...p, subjectId: e.target.value }))}>
+                    {db.subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Teacher">
+                  <Select value={asg.teacherId} onChange={(e) => setAsg((p) => ({ ...p, teacherId: e.target.value }))}>
+                    {db.teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </Select>
+                </Field>
+              </div>
+              <div className="px-5 pb-4"><Btn onClick={setAssignment}><BadgeCheck className="h-4 w-4" /> Save assignment</Btn></div>
+            </>
+          )}
+          <div className="max-h-[300px] overflow-y-auto border-t border-mist">
+            <ul className="divide-y divide-mist/70">
+              {db.assignments.filter((a) => a.yearId === yearId).map((a) => (
+                <li key={a.id} className="flex items-center gap-2 px-5 py-2 text-[12px]">
+                  <span className="h-4 w-1 rounded-full" style={{ background: getSubject(db, a.subjectId)?.color }} />
+                  <span className="font-bold text-ink">{sectionShort(db, a.classId, a.sectionId)}</span>
+                  <span className="text-soft">· {getSubject(db, a.subjectId)?.name}</span>
+                  <span className="ml-auto font-semibold text-pine-800">{db.teachers.find((t) => t.id === a.teacherId)?.name}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </Panel>
+      </div>
+
+      {editT && canManageTeachers && (
+        <Modal title={editT.id ? "Edit teacher" : "Add teacher"} kicker="People" onClose={() => setEditT(null)}
+          footer={<><Btn variant="ghost" onClick={() => setEditT(null)}>Cancel</Btn><Btn onClick={saveTeacher}>Save</Btn></>}>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Name" required className="sm:col-span-2"><TextInput value={editT.name} onChange={(e) => setEditT({ ...editT, name: e.target.value })} placeholder="Mr. …" /></Field>
+            <Field label="Specialty"><TextInput value={editT.specialty} onChange={(e) => setEditT({ ...editT, specialty: e.target.value })} /></Field>
+            <Field label="Phone"><TextInput value={editT.phone} onChange={(e) => setEditT({ ...editT, phone: e.target.value })} /></Field>
+            <Field label="Email" className="sm:col-span-2"><TextInput value={editT.email} onChange={(e) => setEditT({ ...editT, email: e.target.value })} /></Field>
+          </div>
+          <p className="mt-3 text-[11px] text-soft">Give them a login on the Users & roles page — their access will follow the assignment board above.</p>
         </Modal>
       )}
     </div>
   );
 }
 
-function AnnouncementModal({ announcement, onClose, onSave }: { announcement?: Announcement | null; onClose: () => void; onSave: (a: Announcement) => void }) {
-  const { db, currentUser, toast } = useApp();
-  const isEdit = !!announcement;
-  const [title, setTitle] = useState(announcement?.title ?? "");
-  const [body, setBody] = useState(announcement?.body ?? "");
-  const [category, setCategory] = useState<string>(announcement?.category ?? "General");
-  const [audience, setAudience] = useState<Audience>(announcement?.audience ?? { kind: "everyone" });
-  const [mode, setMode] = useState<"publish" | "schedule" | "draft">(
-    announcement?.status === "scheduled" ? "schedule" : announcement?.status === "draft" ? "draft" : "publish"
-  );
-  const [when, setWhen] = useState(announcement?.scheduledFor ?? "");
+/* ================= reusable: searchable, filterable student picker =================
+   Used anywhere a login needs linking to a student record — guardian children,
+   the standalone "New user" form — so it's one consistent, filterable list
+   instead of a plain <select> that's unusable once a school has a few hundred
+   students. */
+function StudentPicker({
+  db, selectedIds, onToggle, placeholder = "Search name or student ID…",
+}: {
+  db: DB;
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+  placeholder?: string;
+}) {
+  const [q, setQ] = useState("");
+  const [cls, setCls] = useState("");
+  const [sec, setSec] = useState("");
 
-  const submit = () => {
-    if (!title.trim() || !body.trim()) { toast("Add a title and a message.", "warn"); return; }
-    const gate = canTargetAudience(db, currentUser, audience);
-    if (!gate.ok) { toast(gate.reason ?? "Not permitted for that audience.", "warn"); return; }
-    const now = new Date().toISOString();
-    const status: Announcement["status"] = mode === "publish" ? "published" : mode === "schedule" ? "scheduled" : "draft";
-    const prevEditedAt = announcement ? announcement.editedAt : undefined;
-    const prevPublishedAt = announcement ? announcement.publishedAt : undefined;
-    const base: Announcement = {
-      id: announcement?.id ?? uid(),
-      senderId: announcement?.senderId ?? currentUser?.id ?? "",
-      createdAt: announcement?.createdAt ?? now,
-      readBy: announcement?.readBy ?? [currentUser?.id ?? ""],
-      pinned: announcement?.pinned,
-      title: title.trim(), body: body.trim(), category: category as Announcement["category"],
-      audience, status,
-      publishedAt: mode === "publish" ? (prevPublishedAt ?? now) : prevPublishedAt,
-      scheduledFor: mode === "schedule" ? when || undefined : undefined,
-      editedAt: isEdit ? now : prevEditedAt,
-    };
-    if (mode === "schedule" && !base.scheduledFor) { toast("Pick a date and time to schedule.", "warn"); return; }
-    onSave(base);
-  };
+  const rows = db.students
+    .filter((s) => !cls || s.enrollment?.classId === cls)
+    .filter((s) => !sec || s.enrollment?.sectionId === sec)
+    .filter((s) => (q ? shortName(s).toLowerCase().includes(q.toLowerCase()) || s.regId.toLowerCase().includes(q.toLowerCase()) : true))
+    .sort((a, b) => shortName(a).localeCompare(shortName(b)));
 
   return (
-    <Modal title={isEdit ? "Edit announcement" : "New announcement"} kicker="One-to-many" onClose={onClose} wide
-      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit}>{isEdit ? "Save changes" : mode === "publish" ? "Publish now" : mode === "schedule" ? "Schedule" : "Save draft"}</Btn></>}>
-      <div className="grid gap-4">
-        <Field label="Title" required><TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. School closed tomorrow" /></Field>
-        <Field label="Message" required><TextArea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write the announcement…" /></Field>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Category">
-            <Select value={category} onChange={(e) => setCategory(e.target.value)}>
-              {["General", "Urgent", "Academic", "Exams", "Event"].map((c) => <option key={c}>{c}</option>)}
-            </Select>
-          </Field>
-          <Field label="Send as">
-            <Select value={mode} onChange={(e) => setMode(e.target.value as typeof mode)}>
-              <option value="publish">Publish now</option>
-              <option value="schedule">Schedule for later</option>
-              <option value="draft">Save as draft</option>
-            </Select>
-          </Field>
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[160px] flex-1">
+          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-soft" />
+          <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder={placeholder} className="!py-1.5 !pl-8 text-[12.5px]" />
         </div>
-        {mode === "schedule" && (
-          <Field label="Publish at" required><TextInput type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} /></Field>
+        <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); }} className="!w-36 !py-1.5 text-[12.5px]">
+          <option value="">All grades</option>
+          {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Select>
+        <Select value={sec} onChange={(e) => setSec(e.target.value)} className="!w-32 !py-1.5 text-[12.5px]" disabled={!cls}>
+          <option value="">All sections</option>
+          {getClass(db, cls)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+        </Select>
+        {(q || cls || sec) && (
+          <button type="button" onClick={() => { setQ(""); setCls(""); setSec(""); }} className="cursor-pointer text-[11px] font-semibold text-soft hover:text-pine-700">Clear</button>
         )}
-        <AudiencePicker value={audience} onChange={setAudience} />
       </div>
-    </Modal>
+      <div className="grid max-h-64 gap-1.5 overflow-y-auto rounded-lg border border-mist p-2 sm:grid-cols-2">
+        {rows.map((s) => {
+          const on = selectedIds.includes(s.id);
+          return (
+            <button key={s.id} type="button" onClick={() => onToggle(s.id)}
+              className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-all ${on ? "border-gold-400 bg-gold-100/60" : "border-mist bg-card hover:border-pine-300"}`}>
+              <Avatar student={s} size={26} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-bold text-ink">{shortName(s)}</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="font-mono text-[9.5px] text-soft">{s.regId}</span>
+                  <span className="text-[10px] text-soft">· {s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "Unplaced"}</span>
+                </span>
+              </span>
+              {on && <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-gold-600" />}
+            </button>
+          );
+        })}
+        {rows.length === 0 && (
+          <p className="col-span-full rounded-lg bg-paper/60 px-3 py-6 text-center text-[11.5px] text-soft">No students match those filters.</p>
+        )}
+      </div>
+    </div>
   );
 }
 
-/* ================= Messages (inbox + thread) ================= */
-/** "Today" / "Yesterday" / "14 March 2026" — Telegram-style date divider label. */
-function dateDividerLabel(day: string): string {
-  const d = new Date(day + "T00:00:00");
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const yest = new Date(today); yest.setDate(yest.getDate() - 1);
-  d.setHours(0, 0, 0, 0);
-  if (d.getTime() === today.getTime()) return "Today";
-  if (d.getTime() === yest.getTime()) return "Yesterday";
-  return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: d.getFullYear() !== today.getFullYear() ? "numeric" : undefined });
-}
-const fmtClock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+/* ================= families (admin) ================= */
+export function FamiliesPage() {
+  const { db, currentUser, update, toast, reconnect } = useApp();
+  const [edit, setEdit] = useState<{ id?: string; name: string; username: string; password: string; phone: string; email: string; childrenIds: string[] } | null>(null);
+  const guardians = db.users.filter((u) => u.role === "guardian");
 
-export function MessagesPage() {
-  const { db, currentUser, update, toast, onlineUserIds } = useApp();
-  const groupsLoaded = useLazyGroups("messaging");
-  const { id } = useParams();
-  const nav = useNavigate();
-  const [composeWith, setComposeWith] = useState<User | null>(null);
-  const [reportMsg, setReportMsg] = useState<{ conv: Conversation; messageId: string } | null>(null);
-  const [draft, setDraft] = useState("");
-  const [inboxQuery, setInboxQuery] = useState("");
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  const convs = conversationsFor(db, currentUser);
-  const active = id ? db.conversations.find((c) => c.id === id) : undefined;
-
-  // Deep-link protection: verify membership + permission before rendering a conversation.
-  if (id && (!active || !canViewConversation(db, currentUser, id))) {
-    return <AccessDenied required="Conversation access" reason="You don't have permission to access this conversation. It may involve people you aren't connected to." />;
+  if (!hasPermission(db, currentUser, "families.view")) {
+    return <AccessDenied required="families.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
   }
+  // The database only allows creating/editing guardian accounts with users.manage —
+  // mirror that here so the buttons don't appear only to fail on save.
+  const canManageGuardians = hasPermission(db, currentUser, "users.manage");
 
-  const messages = active ? db.messages.filter((m) => m.conversationId === active.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : [];
+  const toggleChild = (id: string) =>
+    setEdit((p) => p && { ...p, childrenIds: p.childrenIds.includes(id) ? p.childrenIds.filter((x) => x !== id) : [...p.childrenIds, id] });
 
-  // Mark incoming messages read when the conversation is opened (also fires
-  // live as new messages stream in via realtime while it's already open).
-  useEffect(() => {
-    if (!active || !currentUser) return;
-    const unread = db.messages.some((m) => m.conversationId === active.id && m.senderId !== currentUser.id && !m.readBy.includes(currentUser.id));
-    if (unread) {
-      update((d) => {
-        d.messages.forEach((m) => {
-          if (m.conversationId === active.id && m.senderId !== currentUser.id && !m.readBy.includes(currentUser.id)) {
-            m.readBy.push(currentUser.id);
-            m.status = "read";
-          }
-        });
-      });
-    }
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.id, messages.length]);
+  const [conflict, setConflict] = useState<User | null>(null);
 
-  // On phones, the open thread takes over the whole screen (see below) —
-  // lock the page underneath so it can't be scrolled behind it, Telegram-style.
-  useEffect(() => {
-    if (!active || !window.matchMedia("(max-width: 1023px)").matches) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
-  }, [active?.id]);
-
-  const openDirect = async (target: User) => {
-    if (!currentUser) return;
-    const gate = canSendMessage(db, currentUser, target);
-    if (!gate.ok) { toast(gate.reason ?? "Not permitted.", "warn"); return; }
-    const existing = findDirectConversation(db, currentUser.id, target.id);
-    if (existing) { nav(`/messages/${existing.id}`); return; }
-
-    // Ask the server to actually create (or find) this conversation and
-    // wait for the real id back, rather than inventing a local one and
-    // navigating there optimistically — see startConversation()'s comment
-    // in lib/backend.ts for why that silently broke.
-    const result = await startConversation(target.id);
-    if ("error" in result) { toast(result.error || "Couldn't start that conversation.", "warn"); return; }
-    const cid = result.conversationId;
-    await update((d) => {
-      if (!d.conversations.some((c) => c.id === cid)) {
-        d.conversations.unshift({ id: cid, type: "direct", participants: [currentUser.id, target.id], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "active" });
-      }
-      pushAudit(d, currentUser, "conversation.open", target.name);
-    });
-    nav(`/messages/${cid}`);
-  };
-
-  const send = async () => {
-    if (!active || !currentUser || !draft.trim()) return;
-    const other = active.participants.find((p) => p !== currentUser.id);
-    const target = db.users.find((u) => u.id === other);
-    const gate = canSendMessage(db, currentUser, target ?? null);
-    if (!gate.ok) { toast(gate.reason ?? "Not permitted.", "warn"); return; }
-    const body = draft.trim();
-    setDraft("");
+  const finalizeSave = async (loginUsername: string, loginPassword: string, replaceId?: string) => {
+    if (!edit) return;
+    const isNew = !edit.id;
     const errors = await update((d) => {
-      d.messages.push({ id: uid(), conversationId: active.id, senderId: currentUser.id, body, createdAt: new Date().toISOString(), readBy: [currentUser.id], status: "sent" });
-      const c = d.conversations.find((x) => x.id === active.id);
-      if (c) c.updatedAt = new Date().toISOString();
-      if (other) pushNotifications(d, [other], "message", `${currentUser.name} sent you a message`, body.slice(0, 90));
+      if (replaceId) {
+        const ridx = d.users.findIndex((u) => u.id === replaceId);
+        if (ridx >= 0) d.users.splice(ridx, 1);
+      }
+      if (edit.id) {
+        const u = d.users.find((x) => x.id === edit.id)!;
+        u.name = edit.name.trim(); u.username = loginUsername; u.password = loginPassword;
+        u.phone = edit.phone.trim(); u.email = edit.email.trim(); u.childrenIds = edit.childrenIds;
+      } else {
+        d.users.push({ id: uid(), name: edit.name.trim(), username: loginUsername, password: loginPassword, role: "guardian", roleId: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
+      }
     });
-    if (errors.length) { toast(describeSyncErrors(errors), "warn"); setDraft(body); }
+    if (errors.length) {
+      toast(describeSyncErrors(errors), "warn");
+    } else {
+      toast(edit.id ? "Guardian updated." : "Guardian account created.");
+      if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
+    }
+    setEdit(null);
   };
 
-  const other = active ? db.users.find((u) => u.id === active.participants.find((p) => p !== currentUser?.id)) : undefined;
-  const relatedStudent = active?.relatedStudentId ? db.students.find((s) => s.id === active.relatedStudentId) : undefined;
-  const otherOnline = other ? onlineUserIds.has(other.id) : false;
-
-  const filteredConvs = convs.filter((c) => {
-    if (!inboxQuery.trim()) return true;
-    const peer = db.users.find((u) => u.id === c.participants.find((p) => p !== currentUser?.id));
-    return (peer?.name ?? "").toLowerCase().includes(inboxQuery.trim().toLowerCase());
-  });
-
-  // Rows for the thread: date dividers inserted between days, and
-  // consecutive same-sender messages "grouped" (tighter spacing, name/avatar
-  // shown once) the way Telegram groups a quick back-to-back burst.
-  const threadRows: Array<{ kind: "date"; key: string; label: string } | { kind: "msg"; key: string; m: (typeof messages)[number]; grouped: boolean }> = [];
-  {
-    let lastDay = "";
-    let lastSender = "";
-    for (const m of messages) {
-      const day = m.createdAt.slice(0, 10);
-      if (day !== lastDay) {
-        threadRows.push({ kind: "date", key: `d-${day}`, label: dateDividerLabel(day) });
-        lastDay = day;
-        lastSender = "";
-      }
-      threadRows.push({ kind: "msg", key: m.id, m, grouped: m.senderId === lastSender });
-      lastSender = m.senderId;
-    }
-  }
-
-  const threadHeader = active && (
-    <div className="flex shrink-0 items-center gap-3 border-b border-mist bg-card/95 px-4 py-3 backdrop-blur-sm">
-      <button onClick={() => nav("/messages")} className="cursor-pointer rounded-full p-1.5 text-soft transition-colors hover:bg-paper lg:hidden" aria-label="Back to inbox">
-        <ArrowLeft className="h-4.5 w-4.5" />
-      </button>
-      <div className="relative shrink-0">
-        <UserAvatar name={other?.name ?? "?"} role={other?.role ?? "admin"} size={40} />
-        {otherOnline && <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card bg-pine-500" />}
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-display text-[15px] font-bold leading-tight text-ink">{other?.name}</p>
-        <p className={`truncate text-[11.5px] leading-tight ${otherOnline ? "font-semibold text-pine-600" : "text-soft"}`}>
-          {otherOnline ? "online" : (other && contactContext(db, currentUser, other))}
-          {relatedStudent && ` · about ${relatedStudent.firstName} ${relatedStudent.lastName}`}
-        </p>
-      </div>
-      {other && <RoleBadge role={other.role} full />}
-    </div>
-  );
-
-  const threadBody = (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto bg-paper/50 px-3 py-4 sm:px-4">
-      {threadRows.map((row) =>
-        row.kind === "date" ? (
-          <div key={row.key} className="my-3 flex items-center justify-center first:mt-0">
-            <span className="rounded-full border border-mist bg-card/90 px-3 py-1 text-[10.5px] font-bold uppercase tracking-wide text-soft shadow-sm">{row.label}</span>
-          </div>
-        ) : (
-          (() => {
-            const m = row.m;
-            const mine = m.senderId === currentUser?.id;
-            const sender = db.users.find((u) => u.id === m.senderId);
-            return (
-              <div key={row.key} className={`group flex ${mine ? "justify-end" : "justify-start"} ${row.grouped ? "mt-0.5" : "mt-3"}`}>
-                <div
-                  className={`anim-bubble max-w-[82%] rounded-2xl border px-3.5 py-2 shadow-sm sm:max-w-[72%] ${
-                    mine ? `chat-tail-mine border-pine-800 bg-pine-800 text-pine-50 ${row.grouped ? "rounded-br-2xl" : ""}` : `chat-tail-theirs border-mist bg-card text-ink ${row.grouped ? "rounded-bl-2xl" : ""}`
-                  }`}
-                >
-                  {!mine && !row.grouped && <p className="mb-0.5 text-[10.5px] font-bold text-pine-700">{sender?.name}</p>}
-                  <p className="whitespace-pre-line text-[13.5px] leading-relaxed">{m.body}</p>
-                  <p className={`mt-1 flex items-center justify-end gap-1 text-[10px] tnum ${mine ? "text-pine-300" : "text-soft"}`}>
-                    {fmtClock(m.createdAt)}
-                    {mine && (m.status === "read" ? <CheckCheck className="h-3.5 w-3.5 text-gold-300" /> : <Check className="h-3.5 w-3.5 opacity-80" />)}
-                  </p>
-                </div>
-                {!mine && (
-                  <button onClick={() => active && setReportMsg({ conv: active, messageId: m.id })} title="Report message" className="ml-1.5 self-center rounded p-1 text-soft opacity-0 transition-opacity hover:bg-rust-100 hover:text-rust-600 group-hover:opacity-100">
-                    <Flag className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-            );
-          })()
-        )
-      )}
-      {messages.length === 0 && <p className="pt-16 text-center text-[12.5px] text-soft">Say hello — messages stay private to this conversation.</p>}
-    </div>
-  );
-
-  const threadInput = active && (
-    <div className="shrink-0 border-t border-mist bg-card px-3 py-3 sm:px-4" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
-      {canSendMessage(db, currentUser, other ?? null).ok ? (
-        <div className="flex items-end gap-2">
-          <button className="mb-1 hidden shrink-0 cursor-pointer rounded-full p-2 text-soft transition-colors hover:bg-paper hover:text-pine-700 sm:flex" title="Attach (coming soon)" disabled>
-            <Paperclip className="h-4.5 w-4.5" />
-          </button>
-          <TextArea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Message…"
-            className="!min-h-[42px] flex-1 !rounded-2xl !py-2.5"
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-          />
-          <Btn onClick={send} disabled={!draft.trim()} className="!rounded-full !p-0" size="md" style={{ width: 40, height: 40 }}>
-            <Send className="h-4 w-4" />
-          </Btn>
-        </div>
-      ) : (
-        <p className="flex items-center gap-2 text-[12.5px] text-soft"><Lock className="h-4 w-4 text-rust-500" /> {canSendMessage(db, currentUser, other ?? null).reason ?? "You can't message this person."}</p>
-      )}
-    </div>
-  );
-
-  const threadEmpty = !groupsLoaded ? (
-    <SkeletonPanel rows={5} />
-  ) : (
-    <EmptyState icon={<Inbox className="h-5 w-5" />} title="Select a conversation" body="Pick a conversation from the inbox, or start a new one with someone you're connected to." />
-  );
+  const save = async () => {
+    if (!edit || !edit.name.trim() || !edit.username.trim() || !edit.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
+    if (!edit.id && edit.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
+    const loginUsername = edit.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername && u.id !== edit.id);
+    if (existing) { setConflict(existing); return; }
+    await finalizeSave(loginUsername, edit.password.trim());
+  };
 
   return (
     <div className="mx-auto max-w-6xl">
-      <PageHead kicker="Communication" title="Messages" sub={`Direct conversations, limited to people you're actually connected to. ${totalUnreadMessages(db, currentUser)} unread.`}>
-        <Btn variant="gold" onClick={() => setComposeWith(currentUser ?? null)}><Send className="h-4 w-4" /> New message</Btn>
+      <PageHead kicker="People" title="Families" sub="Guardian accounts and the children connected to them. A guardian sees exactly these children — nothing more.">
+        {canManageGuardians && <Btn variant="gold" onClick={() => setEdit({ name: "", username: "", password: "fam123", phone: "", email: "", childrenIds: [] })}><Plus className="h-4 w-4" /> Add guardian</Btn>}
       </PageHead>
 
-      <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
-        {/* conversation list — hidden on phones once a chat is open full-screen */}
-        <Panel className={`anim-rise h-fit overflow-hidden ${active ? "hidden lg:block" : ""}`}>
-          <div className="border-b border-mist bg-paper/60 px-4 py-3">
-            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-soft">Inbox</p>
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-soft" />
-              <input
-                value={inboxQuery}
-                onChange={(e) => setInboxQuery(e.target.value)}
-                placeholder="Search chats…"
-                className="w-full rounded-full border border-mist bg-card py-1.5 pl-8 pr-3 text-[12.5px] text-ink outline-none transition-shadow placeholder:text-soft/60 focus:border-pine-500 focus:ring-2 focus:ring-pine-500/20"
-              />
-            </div>
-          </div>
-          <ul className="max-h-[600px] divide-y divide-mist/70 overflow-y-auto">
-            {!groupsLoaded ? (
-              <li className="p-3"><SkeletonPanel rows={4} /></li>
-            ) : (
-            <>
-            {filteredConvs.map((c) => {
-              const peer = db.users.find((u) => u.id === c.participants.find((p) => p !== currentUser?.id));
-              const last = [...db.messages.filter((m) => m.conversationId === c.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-              const un = unreadInConversation(db, currentUser, c);
-              const peerOnline = peer ? onlineUserIds.has(peer.id) : false;
-              return (
-                <li key={c.id}>
-                  <button onClick={() => nav(`/messages/${c.id}`)} className={`flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-pine-50/60 ${active?.id === c.id ? "bg-pine-50" : ""}`}>
-                    <span className="relative shrink-0">
-                      <UserAvatar name={peer?.name ?? "?"} role={peer?.role ?? "admin"} size={40} />
-                      {peerOnline && <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-card bg-pine-500" />}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center justify-between">
-                        <span className={`truncate text-[13.5px] ${un ? "font-bold text-ink" : "font-semibold text-ink"}`}>{peer?.name ?? "—"}</span>
-                        {last && <span className="ml-2 shrink-0 tnum text-[10.5px] text-soft">{timeAgo(last.createdAt)}</span>}
-                      </span>
-                      <span className={`block truncate text-[11.5px] ${un ? "font-semibold text-pine-800" : "text-soft"}`}>{last ? last.body : "No messages yet"}</span>
-                    </span>
-                    {un > 0 && <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-pine-700 px-1.5 font-mono text-[10px] font-bold text-white">{un}</span>}
-                  </button>
-                </li>
-              );
-            })}
-            {filteredConvs.length === 0 && (
-              <li className="px-4 py-10 text-center text-[12.5px] text-soft">{convs.length === 0 ? "No conversations yet." : "No chats match your search."}</li>
-            )}
-            </>
-            )}
-          </ul>
-        </Panel>
-
-        {/* thread — a normal panel on desktop; on phones it becomes its own
-           full-screen view (fixed, above everything) the instant a chat is
-           opened, exactly like Telegram, instead of stacking under the inbox. */}
-        <div
-          className={
-            active
-              ? "anim-chat-screen fixed inset-0 z-[60] flex flex-col bg-card lg:static lg:z-auto lg:flex lg:min-h-[600px] lg:animate-none lg:overflow-hidden lg:rounded-xl lg:border lg:border-mist lg:shadow-[0_1px_2px_rgba(13,33,26,0.05)]"
-              : "hidden lg:flex lg:min-h-[600px] lg:flex-col lg:overflow-hidden lg:rounded-xl lg:border lg:border-mist lg:bg-card lg:shadow-[0_1px_2px_rgba(13,33,26,0.05)]"
-          }
-        >
-          {!active ? threadEmpty : (
-            <>
-              {threadHeader}
-              {threadBody}
-              {threadInput}
-            </>
-          )}
-        </div>
-      </div>
-
-      {composeWith && <ContactPicker onClose={() => setComposeWith(null)} onPick={(u) => { setComposeWith(null); openDirect(u); }} />}
-      {reportMsg && <ReportModal onClose={() => setReportMsg(null)} conv={reportMsg.conv} messageId={reportMsg.messageId} />}
-    </div>
-  );
-}
-
-function ContactPicker({ onClose, onPick }: { onClose: () => void; onPick: (u: User) => void }) {
-  const { db, currentUser } = useApp();
-  const [q, setQ] = useState("");
-  const groups = useMemo(() => contactGroups(db, currentUser), [db, currentUser]);
-  return (
-    <Modal title="Start a conversation" kicker="Only people you're connected to" onClose={onClose}>
-      <div className="relative mb-3">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
-        <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search authorized contacts…" className="!pl-9" />
-      </div>
-      <div className="max-h-[52vh] space-y-4 overflow-y-auto pr-1">
-        {groups.map((g) => {
-          const users = g.users.filter((u) => u.name.toLowerCase().includes(q.toLowerCase()));
-          if (!users.length) return null;
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {guardians.map((g, i) => {
+          const kids = childrenOf(db, g);
           return (
-            <div key={g.label}>
-              <p className="mb-1.5 text-[10.5px] font-bold uppercase tracking-[0.12em] text-soft">{g.label}</p>
-              <ul className="space-y-1">
-                {users.map((u) => (
-                  <li key={u.id}>
-                    <button onClick={() => onPick(u)} className="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-mist bg-card px-3 py-2 text-left transition-all hover:border-pine-400 hover:bg-pine-50">
-                      <UserAvatar name={u.name} role={u.role} size={32} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-bold text-ink">{u.name}</span>
-                        <span className="block truncate text-[11px] text-soft">{contactContext(db, currentUser, u)}</span>
-                      </span>
-                      <RoleBadge role={u.role} />
-                    </button>
-                  </li>
+            <Panel key={g.id} className="anim-rise group overflow-hidden">
+              <div className="flex items-center gap-3 border-b border-mist px-5 py-4">
+                <UserAvatar name={g.name} role="guardian" size={42} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-bold text-ink">{g.name}</p>
+                  <p className="font-mono text-[11px] text-soft">@{g.username} · {g.status}</p>
+                </div>
+                {canManageGuardians && (
+                  <button onClick={() => setEdit({ id: g.id, name: g.name, username: g.username, password: g.password, phone: g.phone ?? "", email: g.email ?? "", childrenIds: g.childrenIds ?? [] })}
+                    className="cursor-pointer rounded p-1.5 text-soft opacity-0 transition-all hover:bg-pine-100 hover:text-pine-700 group-hover:opacity-100"><Pencil className="h-3.5 w-3.5" /></button>
+                )}
+              </div>
+              <div className="space-y-2 p-4">
+                <p className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-soft">{kids.length} registered child{kids.length === 1 ? "" : "ren"}</p>
+                {kids.map((k) => (
+                  <div key={k.id} className="flex items-center gap-2.5 rounded-lg border border-mist bg-paper/60 px-3 py-2">
+                    <Avatar student={k} size={28} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[12.5px] font-bold text-ink">{shortName(k)}</p>
+                      <p className="text-[10.5px] text-soft">{sectionShort(db, k.enrollment?.classId, k.enrollment?.sectionId)}</p>
+                    </div>
+                  </div>
                 ))}
-              </ul>
-            </div>
+                {kids.length === 0 && <p className="rounded-lg bg-gold-100/60 px-3 py-2 text-[11.5px] font-semibold text-gold-700">No children linked yet.</p>}
+              </div>
+            </Panel>
           );
         })}
-        {groups.every((g) => !g.users.some((u) => u.name.toLowerCase().includes(q.toLowerCase()))) && (
-          <p className="py-8 text-center text-[12.5px] text-soft">No matching authorized users found.</p>
-        )}
+        {guardians.length === 0 && <Panel className="md:col-span-2 xl:col-span-3"><EmptyState icon={<Baby className="h-5 w-5" />} title="No guardian accounts" body="Create a guardian account and connect one or more children." /></Panel>}
       </div>
-    </Modal>
-  );
-}
 
-function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: Conversation; messageId: string }) {
-  const { currentUser, update, toast } = useApp();
-  const [reason, setReason] = useState("Inappropriate content");
-  const [detail, setDetail] = useState("");
-  const submit = async () => {
-    const errors = await update((d) => {
-      d.reports.unshift({ id: uid(), messageId, conversationId: conv.id, reporterId: currentUser?.id ?? "", reason, detail: detail.trim() || undefined, at: new Date().toISOString(), status: "open" });
-      pushAudit(d, currentUser, "message.report", reason);
-    });
-    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
-    toast("Report submitted to moderators.");
-    onClose();
-  };
-  return (
-    <Modal title="Report message" kicker="Goes to authorized moderators" onClose={onClose}
-      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn variant="danger" onClick={submit}><Flag className="h-4 w-4" /> Submit report</Btn></>}>
-      <Field label="Reason" required>
-        <Select value={reason} onChange={(e) => setReason(e.target.value)}>
-          {["Inappropriate content", "Harassment", "Spam", "Other"].map((r) => <option key={r}>{r}</option>)}
-        </Select>
-      </Field>
-      <div className="mt-3">
-        <Field label="Details"><TextArea value={detail} onChange={(e) => setDetail(e.target.value)} placeholder="Optional context…" /></Field>
-      </div>
-    </Modal>
-  );
-}
-
-/* ================= Notifications ================= */
-export function NotificationsPage() {
-  const { db, currentUser, update } = useApp();
-  const groupsLoaded = useLazyGroups("notifications");
-  const list = userNotifications(db, currentUser);
-  const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, system: Bell };
-  const markAll = () => update((d) => { d.notifications.forEach((n) => { if (n.userId === currentUser?.id) n.read = true; }); });
-  return (
-    <div className="mx-auto max-w-3xl">
-      <PageHead kicker="Communication" title="Notifications" sub={`${unreadNotifications(db, currentUser)} unread — system-generated updates about homework, results, attendance and announcements.`}>
-        <Btn variant="soft" onClick={markAll}>Mark all read</Btn>
-      </PageHead>
-      <Panel className="anim-rise overflow-hidden">
-        <ul className="divide-y divide-mist/70">
-          {!groupsLoaded ? (
-            <li className="p-3"><SkeletonPanel rows={4} /></li>
-          ) : (
-          <>
-          {list.map((n) => {
-            const I = ICON[n.type] ?? Bell;
-            return (
-              <li key={n.id} className={`flex items-start gap-3 px-4 py-3.5 transition-colors ${n.read ? "" : "bg-pine-50/60"}`}>
-                <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${n.read ? "bg-paper text-soft" : "bg-pine-800 text-pine-50"}`}><I className="h-4 w-4" /></span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center justify-between gap-2">
-                    <span className={`text-[13px] ${n.read ? "font-semibold text-soft" : "font-bold text-ink"}`}>{n.title}</span>
-                    <span className="shrink-0 text-[10.5px] text-soft">{timeAgo(n.at)}</span>
-                  </span>
-                  <span className="mt-0.5 block text-[12px] leading-relaxed text-soft">{n.body}</span>
-                </span>
-                {!n.read && (
-                  <button onClick={() => update((d) => { const x = d.notifications.find((y) => y.id === n.id); if (x) x.read = true; })} className="mt-1 shrink-0 cursor-pointer text-[11px] font-bold text-pine-700 hover:underline">Mark read</button>
-                )}
-              </li>
-            );
-          })}
-          {list.length === 0 && <li><EmptyState icon={<Bell className="h-5 w-5" />} title="All caught up" body="You have no notifications right now." /></li>}
-          </>
-          )}
-        </ul>
-      </Panel>
+      {edit && canManageGuardians && (
+        <Modal title={edit.id ? "Edit guardian" : "New guardian"} kicker="Families" onClose={() => setEdit(null)} wide
+          footer={<><Btn variant="ghost" onClick={() => setEdit(null)}>Cancel</Btn><Btn onClick={save}><Baby className="h-4 w-4" /> Save guardian</Btn></>}>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Full name" required><TextInput value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></Field>
+            <Field label="Phone"><TextInput value={edit.phone} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} /></Field>
+            <Field label="Username" required><TextInput value={edit.username} onChange={(e) => setEdit({ ...edit, username: e.target.value })} className="font-mono" /></Field>
+            <Field label="Password" required><TextInput value={edit.password} onChange={(e) => setEdit({ ...edit, password: e.target.value })} className="font-mono" /></Field>
+          </div>
+          <div className="mt-4">
+            <p className="mb-2 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Connected children — {edit.childrenIds.length} selected</p>
+            <StudentPicker db={db} selectedIds={edit.childrenIds} onToggle={toggleChild} placeholder="Search a child by name or student ID…" />
+          </div>
+        </Modal>
+      )}
+      {conflict && edit && (
+        <UsernameConflictModal
+          existing={conflict}
+          username={edit.username.trim().toLowerCase()}
+          password={edit.password.trim()}
+          onCancel={() => setConflict(null)}
+          onReplace={async () => { const c = conflict; setConflict(null); await finalizeSave(edit.username.trim().toLowerCase(), edit.password.trim(), c!.id); }}
+          onUseNew={async (u, p) => {
+            const other = db.users.find((x) => x.username.toLowerCase() === u && x.id !== edit.id);
+            if (other) { setConflict(other); return; }
+            setConflict(null);
+            await finalizeSave(u, p);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-/* ================= Events ================= */
-export function EventsPage() {
-  const { db, currentUser, update, toast } = useApp();
-  const groupsLoaded = useLazyGroups("events");
-  const [open, setOpen] = useState(false);
-  const canManage = hasPermission(db, currentUser, "events.manage");
-  const visible = db.events
-    .filter((e) => audienceSize(db, e.audience) >= 0 && (canManage || e.audience.kind === "everyone" || true))
-    .sort((a, b) => a.date.localeCompare(b.date));
-  return (
-    <div className="mx-auto max-w-3xl">
-      <PageHead kicker="Communication" title="School calendar" sub="Upcoming events and key dates.">
-        {canManage && <Btn variant="gold" onClick={() => setOpen(true)}><CalendarDays className="h-4 w-4" /> Add event</Btn>}
-      </PageHead>
-      <Panel className="anim-rise overflow-hidden">
-        <ul className="divide-y divide-mist/70">
-          {!groupsLoaded ? (
-            <li className="p-3"><SkeletonPanel rows={4} /></li>
-          ) : (
-          <>
-          {visible.map((e) => {
-            const cm = CAT_META[e.category] ?? CAT_META.General;
-            const d = new Date(e.date + "T00:00:00");
-            return (
-              <li key={e.id} className="flex items-center gap-4 px-4 py-3.5">
-                <span className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-lg border border-mist bg-paper">
-                  <span className="font-display text-[16px] font-extrabold leading-none text-ink">{d.getDate()}</span>
-                  <span className="text-[9px] font-bold uppercase tracking-wider text-soft">{d.toLocaleDateString("en-GB", { month: "short" })}</span>
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="text-[13.5px] font-bold text-ink">{e.title}</span>
-                    <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${cm.bg}`}>{e.category}</span>
-                  </span>
-                  <span className="mt-0.5 block text-[11.5px] text-soft">{e.time ? `${e.time} · ` : ""}{e.location ? `${e.location} · ` : ""}{audienceLabel(db, e.audience)}</span>
-                </span>
-              </li>
-            );
-          })}
-          {visible.length === 0 && <li><EmptyState icon={<CalendarDays className="h-5 w-5" />} title="No events scheduled" body="The calendar is clear." /></li>}
-          </>
-          )}
-        </ul>
-      </Panel>
-      {open && <EventModal onClose={() => setOpen(false)} onSave={(ev) => { update((d) => { d.events.push(ev); pushAudit(d, currentUser, "event.create", ev.title); }); toast("Event added."); setOpen(false); }} />}
-    </div>
-  );
-}
-
-function EventModal({ onClose, onSave }: { onClose: () => void; onSave: (e: import("../types").SchoolEvent) => void }) {
-  const { db, currentUser, toast } = useApp();
-  const [f, setF] = useState({ title: "", date: "", time: "", location: "", category: "Event", description: "" });
-  const [audience, setAudience] = useState<Audience>({ kind: "everyone" });
-  return (
-    <Modal title="Add event" kicker="School calendar" onClose={onClose} wide
-      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={() => {
-        if (!f.title.trim() || !f.date) { toast("Title and date are required.", "warn"); return; }
-        onSave({ id: uid(), title: f.title.trim(), date: f.date, time: f.time || undefined, location: f.location || undefined, category: f.category as import("../types").NoticeCategory, audience, createdBy: currentUser?.id ?? "", description: f.description || undefined });
-      }}>Save event</Btn></>}>
-      <div className="grid gap-4">
-        <Field label="Title" required><TextInput value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></Field>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="Date" required><TextInput type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></Field>
-          <Field label="Time"><TextInput type="time" value={f.time} onChange={(e) => setF({ ...f, time: e.target.value })} /></Field>
-          <Field label="Location"><TextInput value={f.location} onChange={(e) => setF({ ...f, location: e.target.value })} /></Field>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Category"><Select value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}>{["Event", "Exams", "Academic", "General", "Urgent"].map((c) => <option key={c}>{c}</option>)}</Select></Field>
-        </div>
-        <Field label="Description"><TextArea value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
-        <AudiencePicker value={audience} onChange={setAudience} />
-      </div>
-    </Modal>
-  );
-}
-
-/* ================= Contacts ================= */
-export function ContactsPage() {
-  const { db, currentUser } = useApp();
-  const nav = useNavigate();
+/* ================= user management (admin, req 16) ================= */
+export function UsersPage() {
+  const { db, currentUser, update, toast, reconnect } = useApp();
+  const [edit, setEdit] = useState<User | "new" | null>(null);
+  const [conflict, setConflict] = useState<User | null>(null);
+  const [tab, setTab] = useState<"all" | "teacher" | "student" | "guardian" | "admin">("all");
   const [q, setQ] = useState("");
-  const groups = contactGroups(db, currentUser);
-  const [tab, setTab] = useState(groups[0]?.label ?? "");
   const [cls, setCls] = useState("");
   const [sec, setSec] = useState("");
-  const active = groups.find((g) => g.label === tab) ?? groups[0];
-  const showClassFilter = active?.role === "student" || active?.role === "teacher";
 
-  const inClassFilter = (u: User) => {
-    if (!showClassFilter || !cls) return true;
-    if (u.role === "student") {
-      const s = db.students.find((x) => x.id === u.studentId);
-      return s?.enrollment?.classId === cls && (!sec || s.enrollment.sectionId === sec);
+  // Route-level Guard only checks the coarse base role ("admin"), which
+  // several role profiles share (Admin, Super Admin, Coordinator, …) without
+  // all having users.manage — the same gap that let a Coordinator reach the
+  // student-login checkbox despite the server rejecting it. RolesPage and
+  // AuditPage already check their fine-grained permission internally; this
+  // page hadn't, so anyone with a base "admin" role could open it and start
+  // creating/editing/"deleting" accounts the server would just reject.
+  // (Placed after every hook in the component — an early return before a
+  // useState call would break React's rule that hooks run in the same order
+  // on every render.)
+  if (!hasPermission(db, currentUser, "users.manage")) {
+    return <AccessDenied required="users.manage" reason="Your role doesn't include account administration. Ask an administrator to make changes here." />;
+  }
+
+  const blank: User = { id: "", name: "", username: "", password: "", role: "student", roleId: "student", status: "active", createdAt: todayISO() };
+  const draft = edit === "new" ? blank : edit;
+
+  const set = (patch: Partial<User>) => setEdit((p) => (p && p !== "new" ? { ...p, ...patch } : p === "new" ? { ...blank, ...patch } : p));
+
+  const finalizeSave = async (loginUsername: string, loginPassword: string, replaceId?: string) => {
+    if (!draft) return;
+    const isNew = !draft.id;
+    const errors = await update((d) => {
+      if (replaceId) {
+        const ridx = d.users.findIndex((u) => u.id === replaceId);
+        if (ridx >= 0) d.users.splice(ridx, 1);
+      }
+      if (draft.id) {
+        const u = d.users.find((x) => x.id === draft.id)!;
+        Object.assign(u, { ...draft, name: draft.name.trim(), username: loginUsername, password: loginPassword });
+      } else {
+        d.users.push({ ...draft, id: uid(), name: draft.name.trim(), username: loginUsername, password: loginPassword });
+      }
+    });
+    if (errors.length) {
+      toast(describeSyncErrors(errors), "warn");
+    } else {
+      toast(draft.id ? "User updated." : `User created with role "${draft.role}".`);
+      if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
     }
-    if (u.role === "teacher") {
-      return db.assignments.some((a) => a.teacherId === u.teacherId && a.classId === cls && (!sec || a.sectionId === sec));
-    }
-    return true;
+    setEdit(null);
   };
 
-  const users = (active?.users ?? [])
-    .filter((u) => u.name.toLowerCase().includes(q.toLowerCase()))
-    .filter(inClassFilter);
+  const save = async () => {
+    if (!draft) return;
+    if (!draft.name.trim() || !draft.username.trim() || !draft.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
+    if (!draft.id && draft.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
+    if (draft.role === "teacher" && !draft.teacherId) { toast("Pick a staff record to link — a teacher account needs one.", "warn"); return; }
+    if (draft.role === "student" && !draft.studentId) { toast("Pick a student record to link — a student account needs one.", "warn"); return; }
+    const loginUsername = draft.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername && u.id !== draft.id);
+    if (existing) { setConflict(existing); return; }
+    await finalizeSave(loginUsername, draft.password.trim());
+  };
+
+  const toggleStatus = (u: User) => {
+    if (u.id === currentUser?.id) { toast("You can't disable your own account.", "warn"); return; }
+    update((d) => {
+      const x = d.users.find((y) => y.id === u.id)!;
+      x.status = x.status === "active" ? "disabled" : "active";
+    });
+    toast(u.status === "active" ? `${u.name} disabled — their next request is rejected.` : `${u.name} re-activated.`);
+  };
+
+  const removeUser = async (u: User) => {
+    if (u.id === currentUser?.id) { toast("You can't delete your own account.", "warn"); return; }
+    if (u.role === "admin" && db.users.filter((x) => x.role === "admin" && x.status === "active").length <= 1) {
+      toast("The school needs at least one active administrator.", "warn"); return;
+    }
+    const errors = await update((d) => { d.users = d.users.filter((x) => x.id !== u.id); });
+    if (errors.length) {
+      // Nothing was actually removed server-side — undo the optimistic local
+      // removal so the list doesn't keep showing an account that's still live.
+      toast(describeSyncErrors(errors), "warn");
+      await reconnect();
+    } else {
+      toast("User deleted.");
+    }
+  };
+
+  const relLabel = (u: User) => {
+    if (u.role === "teacher") {
+      const t = db.teachers.find((x) => x.id === u.teacherId);
+      return t ? `Staff: ${t.name}` : "No staff record linked";
+    }
+    if (u.role === "student") {
+      const s = db.students.find((x) => x.id === u.studentId);
+      return s ? `Record: ${shortName(s)} · ${sectionShort(db, s.enrollment?.classId, s.enrollment?.sectionId)}` : "No student record linked";
+    }
+    if (u.role === "guardian") return `${(u.childrenIds ?? []).length} child(ren) linked`;
+    return "Manages the whole school";
+  };
+
+  const showClassFilter = tab === "student" || tab === "teacher";
+  const rows = db.users
+    .filter((u) => tab === "all" || u.role === tab)
+    .filter((u) => (q ? u.name.toLowerCase().includes(q.toLowerCase()) || u.username.toLowerCase().includes(q.toLowerCase()) : true))
+    .filter((u) => {
+      if (!showClassFilter || !cls) return true;
+      if (u.role === "student") {
+        const s = db.students.find((x) => x.id === u.studentId);
+        return s?.enrollment?.classId === cls && (!sec || s.enrollment.sectionId === sec);
+      }
+      if (u.role === "teacher") {
+        return db.assignments.some((a) => a.teacherId === u.teacherId && a.classId === cls && (!sec || a.sectionId === sec));
+      }
+      return true;
+    });
 
   return (
-    <div className="mx-auto max-w-3xl">
-      <PageHead kicker="Communication" title="Contacts" sub="A role-aware directory — only people you're authorized to reach are listed, so nobody's existence is leaked." />
+    <div className="mx-auto max-w-6xl">
+      <PageHead kicker="Administration" title="Users & roles" sub="One authentication system, four roles. Links to staff, student and guardian records drive each account's access.">
+        <Btn variant="gold" onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> New user</Btn>
+      </PageHead>
 
-      <div className="mb-4"><Tabs tabs={groups.map((g) => ({ id: g.label, label: `${g.label} · ${g.users.length}` }))} active={tab} onChange={(id) => { setTab(id); setCls(""); setSec(""); }} /></div>
+      <div className="mb-4">
+        <Tabs
+          tabs={[
+            { id: "all", label: `All · ${db.users.length}` },
+            { id: "teacher", label: `Teachers · ${db.users.filter((u) => u.role === "teacher").length}` },
+            { id: "student", label: `Students · ${db.users.filter((u) => u.role === "student").length}` },
+            { id: "guardian", label: `Families · ${db.users.filter((u) => u.role === "guardian").length}` },
+            { id: "admin", label: `Admins · ${db.users.filter((u) => u.role === "admin").length}` },
+          ]}
+          active={tab}
+          onChange={(id) => { setTab(id as typeof tab); setCls(""); setSec(""); }}
+        />
+      </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="relative min-w-[200px] flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
-          <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search contacts…" className="!pl-9" />
+          <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or username…" className="!pl-9" />
         </div>
         {showClassFilter && (
           <>
@@ -829,89 +1348,251 @@ export function ContactsPage() {
         )}
       </div>
 
-      {users.length === 0 ? (
-        <Panel><EmptyState icon={<Users className="h-5 w-5" />} title="No matching authorized users found" body="Contacts are limited to people connected to you through the school." /></Panel>
-      ) : (
-        <div className="grid gap-2 sm:grid-cols-2">
-          {users.map((u) => {
-            const s = u.role === "student" ? db.students.find((x) => x.id === u.studentId) : undefined;
-            return (
-              <button key={u.id} onClick={() => nav("/messages")} className="anim-rise flex cursor-pointer items-center gap-3 rounded-xl border border-mist bg-card px-3.5 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-pine-400 hover:shadow-md">
-                <UserAvatar name={u.name} role={u.role} size={38} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-bold text-ink">{u.name}</span>
-                  <span className="block truncate text-[11px] text-soft">
-                    {s?.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : contactContext(db, currentUser, u)}
-                  </span>
-                </span>
-                <RoleBadge role={u.role} />
-              </button>
-            );
-          })}
+      <Panel className="anim-rise overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px]">
+            <thead className="border-b border-mist bg-paper/60">
+              <tr><th className={thCls()}>User</th><th className={thCls()}>Role</th><th className={`${thCls()} hidden md:table-cell`}>Relationship</th><th className={thCls()}>Status</th><th className={thCls()}></th></tr>
+            </thead>
+            <tbody className="divide-y divide-mist/70">
+              {rows.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-[12.5px] text-soft">No users match these filters.</td></tr>
+              )}
+              {rows.map((u) => (
+                <tr key={u.id} className="transition-colors hover:bg-pine-50/50">
+                  <td className={tdCls()}>
+                    <span className="flex items-center gap-3">
+                      <UserAvatar name={u.name} role={u.role} size={34} />
+                      <span>
+                        <span className="block font-bold text-ink">{u.name}{u.id === currentUser?.id && <span className="ml-1.5 text-[10.5px] font-semibold text-gold-600">(you)</span>}</span>
+                        <span className="font-mono text-[11px] text-soft">@{u.username}</span>
+                      </span>
+                    </span>
+                  </td>
+                  <td className={tdCls()}><RoleBadge role={u.role} full /></td>
+                  <td className={`${tdCls()} hidden text-soft md:table-cell`}>{relLabel(u)}</td>
+                  <td className={tdCls()}>
+                    <button onClick={() => toggleStatus(u)} className="cursor-pointer" title="Toggle status">
+                      <Chip tone={u.status === "active" ? "pine" : "rust"}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${u.status === "active" ? "bg-pine-500 live-dot" : "bg-rust-500"}`} /> {u.status}
+                      </Chip>
+                    </button>
+                  </td>
+                  <td className={`${tdCls()} text-right whitespace-nowrap`}>
+                    <span className="inline-flex gap-1">
+                      <button onClick={() => setEdit({ ...u })} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => removeUser(u)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
+      </Panel>
+
+      {draft && (
+        <Modal title={draft.id ? `Edit ${draft.name}` : "New user"} kicker="Authentication & access" onClose={() => setEdit(null)} wide
+          footer={<><Btn variant="ghost" onClick={() => setEdit(null)}>Cancel</Btn><Btn onClick={save}><ShieldCheck className="h-4 w-4" /> Save user</Btn></>}>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Full name" required><TextInput value={draft.name} onChange={(e) => set({ name: e.target.value })} /></Field>
+            <Field label="Email"><TextInput value={draft.email ?? ""} onChange={(e) => set({ email: e.target.value })} /></Field>
+            <Field label="Username" required><TextInput value={draft.username} onChange={(e) => set({ username: e.target.value })} className="font-mono" /></Field>
+            <Field label="Password" required><TextInput value={draft.password} onChange={(e) => set({ password: e.target.value })} className="font-mono" /></Field>
+            <Field label="Base role" required hint="drives relationships">
+              <Select value={draft.role} onChange={(e) => { const r = e.target.value as Role; set({ role: r, roleId: defaultRoleIdFor(r), teacherId: undefined, studentId: undefined, childrenIds: r === "guardian" ? [] : undefined }); }}>
+                <option value="admin">Administrator</option>
+                <option value="teacher">Teacher</option>
+                <option value="student">Student</option>
+                <option value="guardian">Guardian</option>
+              </Select>
+            </Field>
+            <Field label="Permission profile" required hint="drives what they can do">
+              <Select value={draft.roleId} onChange={(e) => set({ roleId: e.target.value })}>
+                {db.roles.filter((r) => r.status === "active" && r.appliesTo.includes(draft.role)).map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}{r.system ? "" : " · custom"}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Status" required>
+              <Select value={draft.status} onChange={(e) => set({ status: e.target.value as UserStatus })}>
+                <option value="active">Active</option>
+                <option value="disabled">Disabled</option>
+              </Select>
+            </Field>
+          </div>
+
+          <div className="mt-4 rounded-lg border border-pine-200 bg-pine-50 p-3.5">
+            <p className="mb-2 text-[11.5px] font-bold uppercase tracking-[0.1em] text-pine-800">Relationship — what this account can reach</p>
+            {draft.role === "teacher" && (
+              <Field label="Link to staff record" hint="class access follows their subject assignments">
+                <Select value={draft.teacherId ?? ""} onChange={(e) => set({ teacherId: e.target.value || undefined })}>
+                  <option value="">— none —</option>
+                  {db.teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </Select>
+              </Field>
+            )}
+            {draft.role === "student" && (
+              <div>
+                <p className="mb-1.5 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">
+                  Link to student record{draft.studentId ? " — 1 selected" : ""}
+                </p>
+                <StudentPicker
+                  db={db}
+                  selectedIds={draft.studentId ? [draft.studentId] : []}
+                  onToggle={(id) => set({ studentId: id === draft.studentId ? undefined : id })}
+                  placeholder="Search the student by name or ID…"
+                />
+              </div>
+            )}
+            {draft.role === "guardian" && (
+              <div>
+                <p className="mb-1.5 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Children — {(draft.childrenIds ?? []).length} selected</p>
+                <StudentPicker
+                  db={db}
+                  selectedIds={draft.childrenIds ?? []}
+                  onToggle={(id) => set({ childrenIds: (draft.childrenIds ?? []).includes(id) ? (draft.childrenIds ?? []).filter((x) => x !== id) : [...(draft.childrenIds ?? []), id] })}
+                  placeholder="Search a child by name or student ID…"
+                />
+              </div>
+            )}
+            {draft.role === "admin" && <p className="text-[12px] text-pine-800">Administrators manage the whole school — users, records, settings and communication.</p>}
+          </div>
+        </Modal>
+      )}
+      {conflict && draft && (
+        <UsernameConflictModal
+          existing={conflict}
+          username={draft.username.trim().toLowerCase()}
+          password={draft.password.trim()}
+          onCancel={() => setConflict(null)}
+          onReplace={async () => { const c = conflict; setConflict(null); await finalizeSave(draft.username.trim().toLowerCase(), draft.password.trim(), c!.id); }}
+          onUseNew={async (u, p) => {
+            const other = db.users.find((x) => x.username.toLowerCase() === u && x.id !== draft.id);
+            if (other) { setConflict(other); return; }
+            setConflict(null);
+            await finalizeSave(u, p);
+          }}
+        />
       )}
     </div>
   );
 }
 
-/* ================= Moderation (for communication.moderate) ================= */
-export function ModerationPage() {
-  const { db, currentUser, update, toast } = useApp();
-  const groupsLoaded = useLazyGroups(["messaging", "reports"]);
-  if (!hasPermission(db, currentUser, "communication.moderate")) {
-    return <AccessDenied required="communication.moderate" reason="Only authorized moderators can review reported communication." />;
-  }
-  const reports = db.reports;
-  const resolve = (id: string, status: "resolved" | "dismissed") => {
-    update((d) => { const r = d.reports.find((x) => x.id === id); if (r) r.status = status; pushAudit(d, currentUser, `report.${status}`, id); });
-    toast(status === "resolved" ? "Report resolved." : "Report dismissed.");
+/* ================= profile (any role) ================= */
+export function ProfilePage() {
+  const { db, currentUser, update, toast, logout } = useApp();
+  useLazyGroups("academics");
+  const nav = useNavigate();
+  const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
+  if (!currentUser) return null;
+  const u = currentUser;
+
+  const changePw = () => {
+    if (pw.current !== u.password) { toast("Current password is incorrect.", "warn"); return; }
+    if (pw.next.length < 6) { toast("New password must be at least 6 characters.", "warn"); return; }
+    if (pw.next !== pw.confirm) { toast("New passwords don't match.", "warn"); return; }
+    update((d) => { d.users.find((x) => x.id === u.id)!.password = pw.next; });
+    setPw({ current: "", next: "", confirm: "" });
+    toast("Password changed.");
   };
-  const hideConversation = (convId: string) => {
-    update((d) => { const c = d.conversations.find((x) => x.id === convId); if (c) c.status = "hidden"; pushAudit(d, currentUser, "conversation.hide", convId); });
-    toast("Conversation hidden from participants.");
-  };
+
+  const pairs = teacherPairs(db, u);
+  const me = studentOf(db, u);
+  const kids = childrenOf(db, u);
+
   return (
-    <div className="mx-auto max-w-3xl">
-      <PageHead kicker="Communication" title="Moderation" sub="Review reported messages. Actions are written to the audit log." />
-      <Panel className="anim-rise overflow-hidden">
-        <table className="w-full">
-          <thead className="border-b border-mist bg-paper/60">
-            <tr><th className={thCls()}>Message</th><th className={thCls()}>Reason</th><th className={thCls()}>Reported by</th><th className={thCls()}>Status</th><th className={thCls()}></th></tr>
-          </thead>
-          <tbody className="divide-y divide-mist/70">
-            {!groupsLoaded ? (
-              <SkeletonRows rows={4} cols={5} />
-            ) : (
-            <>
-            {reports.map((r) => {
-              const msg = db.messages.find((m) => m.id === r.messageId);
-              const reporter = db.users.find((u) => u.id === r.reporterId);
-              return (
-                <tr key={r.id}>
-                  <td className={`${tdCls()} max-w-[220px] truncate text-soft`}>{msg?.body ?? "(removed)"}</td>
-                  <td className={tdCls()}><Chip tone={r.status === "open" ? "rust" : "gray"}>{r.reason}</Chip></td>
-                  <td className={`${tdCls()} text-soft`}>{reporter?.name ?? "—"}<span className="block text-[10.5px]">{timeAgo(r.at)}</span></td>
-                  <td className={tdCls()}><Chip tone={r.status === "open" ? "gold" : r.status === "resolved" ? "pine" : "gray"}>{r.status}</Chip></td>
-                  <td className={`${tdCls()} whitespace-nowrap text-right`}>
-                    {r.status === "open" && (
-                      <span className="flex justify-end gap-1.5">
-                        <Btn size="sm" variant="soft" onClick={() => resolve(r.id, "resolved")}>Resolve</Btn>
-                        <Btn size="sm" variant="ghost" onClick={() => resolve(r.id, "dismissed")}>Dismiss</Btn>
-                        <Btn size="sm" variant="dangerSoft" onClick={() => hideConversation(r.conversationId)}>Hide</Btn>
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-            {reports.length === 0 && <tr><td colSpan={5}><EmptyState icon={<ShieldAlert className="h-5 w-5" />} title="Nothing to review" body="No messages have been reported." /></td></tr>}
-            </>
-            )}
-          </tbody>
-        </table>
-      </Panel>
+    <div className="mx-auto max-w-4xl">
+      <PageHead kicker="Account" title="My profile" sub="Your identity, role and the relationships that shape your access." />
+      <div className="grid gap-4 md:grid-cols-5">
+        <Panel className="anim-rise p-5 md:col-span-2">
+          <div className="flex items-center gap-3">
+            <UserAvatar name={u.name} role={u.role} size={54} />
+            <div>
+              <p className="font-display text-[17px] font-extrabold text-ink">{u.name}</p>
+              <div className="mt-1 flex items-center gap-1.5"><RoleBadge role={u.role} full /> <Chip tone={u.status === "active" ? "pine" : "rust"}>{u.status}</Chip></div>
+            </div>
+          </div>
+          <dl className="mt-4 space-y-2.5 text-[13px]">
+            <div className="flex justify-between gap-3"><dt className="text-soft">Username</dt><dd className="font-mono font-semibold text-ink">@{u.username}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-soft">Email</dt><dd className="font-semibold text-ink">{u.email || "—"}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-soft">Phone</dt><dd className="font-semibold text-ink">{u.phone || "—"}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-soft">Member since</dt><dd className="font-semibold text-ink">{fmtDate(u.createdAt)}</dd></div>
+          </dl>
+          <div className="mt-4 rounded-lg bg-paper p-3">
+            <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.1em] text-soft"><KeyRound className="h-3.5 w-3.5" /> What I can access</p>
+            <ul className="space-y-1 text-[12px] text-soft">
+              {u.role === "admin" && <><li>· Every record and setting in the school</li><li>· User accounts, roles and statuses</li></>}
+              {u.role === "teacher" && <>
+                <li>· {pairs.length} class section{pairs.length === 1 ? "" : "s"}: {pairs.map((p) => sectionShort(db, p.classId, p.sectionId)).join(", ") || "none yet"}</li>
+                <li>· Students enrolled in those sections only</li>
+              </>}
+              {u.role === "student" && <>
+                <li>· My record: {me ? `${shortName(me)} · ${sectionShort(db, me.enrollment?.classId, me.enrollment?.sectionId)}` : "not linked"}</li>
+                <li>· My grades, attendance, assignments & teachers</li>
+              </>}
+              {u.role === "guardian" && <>
+                <li>· {kids.length} child{kids.length === 1 ? "" : "ren"}: {kids.map((k) => shortName(k)).join(", ") || "none yet"}</li>
+                <li>· Their grades, attendance & assignments only</li>
+              </>}
+            </ul>
+          </div>
+        </Panel>
+
+        <Panel className="anim-rise p-5 md:col-span-3">
+          <h2 className="font-display text-[15px] font-bold">Change password</h2>
+          <p className="mt-0.5 text-[11.5px] text-soft">Credentials are checked against this account only — one authentication system for every role.</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            <Field label="Current"><TextInput type="password" value={pw.current} onChange={(e) => setPw((p) => ({ ...p, current: e.target.value }))} className="font-mono" /></Field>
+            <Field label="New"><TextInput type="password" value={pw.next} onChange={(e) => setPw((p) => ({ ...p, next: e.target.value }))} className="font-mono" /></Field>
+            <Field label="Confirm new"><TextInput type="password" value={pw.confirm} onChange={(e) => setPw((p) => ({ ...p, confirm: e.target.value }))} className="font-mono" /></Field>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Btn onClick={changePw}><Lock className="h-4 w-4" /> Update password</Btn>
+            <Btn variant="outline" onClick={() => { logout(); nav("/login", { replace: true }); }}><X className="h-4 w-4" /> Sign out</Btn>
+          </div>
+
+          {u.role === "teacher" && (
+            <div className="mt-6 border-t border-mist pt-4">
+              <h3 className="mb-2 font-display text-[14px] font-bold">My classes</h3>
+              <div className="flex flex-wrap gap-1.5">
+                {pairs.map((p) => (
+                  <Chip key={p.classId + p.sectionId} tone="pine" className="!text-[11.5px]">
+                    <Layers className="h-3 w-3" /> {sectionShort(db, p.classId, p.sectionId)} · {p.subjectIds.map((s) => getSubject(db, s)?.code).join("/")}
+                  </Chip>
+                ))}
+                {pairs.length === 0 && <Chip tone="gray">No assignments yet</Chip>}
+              </div>
+            </div>
+          )}
+          {u.role === "guardian" && (
+            <div className="mt-6 border-t border-mist pt-4">
+              <h3 className="mb-2 font-display text-[14px] font-bold">My children</h3>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {kids.map((k) => (
+                  <button key={k.id} onClick={() => nav(`/guardian/children/${k.id}`)} className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-mist bg-paper/60 px-3 py-2.5 text-left transition-all hover:-translate-y-0.5 hover:border-gold-400 hover:shadow-md">
+                    <Avatar student={k} size={32} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-bold text-ink">{shortName(k)}</span>
+                      <span className="text-[10.5px] text-soft">{sectionShort(db, k.enrollment?.classId, k.enrollment?.sectionId)}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {u.role === "student" && me && (
+            <div className="mt-6 border-t border-mist pt-4">
+              <h3 className="mb-2 font-display text-[14px] font-bold">My placement</h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <Chip tone="pine" className="!text-[11.5px]"><BookOpen className="h-3 w-3" /> {sectionLabel(db, me.enrollment?.classId, me.enrollment?.sectionId)}</Chip>
+                <Chip tone="gray" className="font-mono">{me.regId}</Chip>
+                <Chip tone="gold">Avg {studentAverage(db, me) ?? "—"}%</Chip>
+              </div>
+            </div>
+          )}
+        </Panel>
+      </div>
     </div>
   );
 }
-
-

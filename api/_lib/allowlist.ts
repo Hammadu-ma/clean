@@ -280,6 +280,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
 
   /* ---------- communication ---------- */
   save_announcement: { read: false, rateLimit: 30, args: { p_payload: { type: "json", maxKeys: 15 } } },
+  delete_announcement: { read: false, rateLimit: 30, args: { p_announcement_id: { type: "string", maxLength: 128 } } },
   save_event: { read: false, rateLimit: 30, args: { p_payload: { type: "json", maxKeys: 15 } } },
   delete_event: { read: false, rateLimit: 30, args: { p_event_id: { type: "string", maxLength: 128 } } },
   start_conversation: {

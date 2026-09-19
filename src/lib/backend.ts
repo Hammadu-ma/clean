@@ -1249,8 +1249,11 @@ async function syncAnnouncements(oldDB: DB, newDB: DB, errors: string[]) {
     });
     if (error) errors.push(`announcement "${a.title}": ${error.message}`);
   }
-  // No delete op: the app has only ever offered to archive an announcement
-  // (a status change, already covered above), never to remove one outright.
+  for (const before of oldDB.announcements) {
+    if (newDB.announcements.some((a) => a.id === before.id)) continue;
+    const { error } = await sb()!.rpc("delete_announcement", { p_announcement_id: before.id });
+    if (error) { console.warn("[backend] delete_announcement:", error.message); errors.push(`deleting "${before.title}": ${error.message}`); }
+  }
 }
 
 async function syncEvents(oldDB: DB, newDB: DB, errors: string[]) {

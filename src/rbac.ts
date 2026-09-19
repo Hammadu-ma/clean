@@ -106,41 +106,45 @@ export function relationshipAllows(db: DB, actor: User, target: User): boolean {
   return false;
 }
 
-/** The specific target-direction permission needed to message a given role. */
-const DIRECTION_PERMISSION: Record<User["role"], string> = {
-  student: "communication.message_student",
-  guardian: "communication.message_parent",
-  teacher: "communication.message_teacher",
-  admin: "communication.message_admin",
-};
-
 export interface AuthzResult {
   ok: boolean;
   reason?: string;
 }
 
 /**
- * Full two-level check for opening/sending a one-to-one conversation.
- * Level 1: communication.send + the direction permission for the target's role.
- * Level 2: a current school relationship must exist.
+ * Full check for opening/sending a one-to-one conversation.
+ *
+ * Administrators can always reach anyone — no relationship or per-audience
+ * grant needed; being an admin *is* the school-wide link.
+ *
+ * For everyone else: `communication.send` is the coarse "messaging is on
+ * for your role at all" switch. Once that's on, an existing structural
+ * relationship (relationshipAllows, checked both directions so it's never
+ * one-sided) is enough on its own to message someone — no separate
+ * per-audience "communication.message_x" grant is required on top of an
+ * already-established link. Those message_x permissions still matter
+ * indirectly: they're what relationshipAllows' role-pairings were modeled
+ * on, so they continue to define which pairs of roles can ever be linked
+ * in the first place (a guardian is still never linked to another guardian
+ * or to a student, for instance) — they just aren't re-checked as a
+ * second gate once a link exists.
  */
 export function canSendMessage(db: DB, actor: User | null, target: User | null): AuthzResult {
   if (!actor || !target) return { ok: false, reason: "Not signed in." };
   if (actor.id === target.id) return { ok: false, reason: "You can't message yourself." };
-  if (target.status !== "active") return { ok: false, reason: "That account is inactive, so new messages aren't allowed." };
   if (actor.status !== "active") return { ok: false, reason: "Your account is inactive." };
+
+  if (actor.role === "admin") return { ok: true };
+
+  if (target.status !== "active") return { ok: false, reason: "That account is inactive, so new messages aren't allowed." };
 
   if (!hasPermission(db, actor, "communication.send"))
     return { ok: false, reason: "Your role doesn't permit sending messages." };
 
-  const dir = DIRECTION_PERMISSION[target.role];
-  if (dir && !hasPermission(db, actor, dir))
-    return { ok: false, reason: "Your role doesn't permit messaging that group." };
+  if (relationshipAllows(db, actor, target) || relationshipAllows(db, target, actor))
+    return { ok: true };
 
-  if (!relationshipAllows(db, actor, target))
-    return { ok: false, reason: "No current school relationship connects you to that person." };
-
-  return { ok: true };
+  return { ok: false, reason: "No current school relationship connects you to that person." };
 }
 
 export const canMessageUser = canSendMessage;

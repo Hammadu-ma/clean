@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Bell, CalendarDays, Check, CheckCheck, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2,
 } from "lucide-react";
-import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, timeAgo, uid } from "../store";
+import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, getClass, sectionShort, timeAgo, uid } from "../store";
 import { startConversation } from "../lib/backend";
 import {
   canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canSendMessage, canTargetAudience,
@@ -782,39 +782,74 @@ export function ContactsPage() {
   const nav = useNavigate();
   const [q, setQ] = useState("");
   const groups = contactGroups(db, currentUser);
+  const [tab, setTab] = useState(groups[0]?.label ?? "");
+  const [cls, setCls] = useState("");
+  const [sec, setSec] = useState("");
+  const active = groups.find((g) => g.label === tab) ?? groups[0];
+  const showClassFilter = active?.role === "student" || active?.role === "teacher";
+
+  const inClassFilter = (u: User) => {
+    if (!showClassFilter || !cls) return true;
+    if (u.role === "student") {
+      const s = db.students.find((x) => x.id === u.studentId);
+      return s?.enrollment?.classId === cls && (!sec || s.enrollment.sectionId === sec);
+    }
+    if (u.role === "teacher") {
+      return db.assignments.some((a) => a.teacherId === u.teacherId && a.classId === cls && (!sec || a.sectionId === sec));
+    }
+    return true;
+  };
+
+  const users = (active?.users ?? [])
+    .filter((u) => u.name.toLowerCase().includes(q.toLowerCase()))
+    .filter(inClassFilter);
+
   return (
     <div className="mx-auto max-w-3xl">
       <PageHead kicker="Communication" title="Contacts" sub="A role-aware directory — only people you're authorized to reach are listed, so nobody's existence is leaked." />
-      <div className="relative mb-4 max-w-sm">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
-        <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search contacts…" className="!pl-9" />
-      </div>
-      <div className="space-y-5">
-        {groups.map((g) => {
-          const users = g.users.filter((u) => u.name.toLowerCase().includes(q.toLowerCase()));
-          if (!users.length) return null;
-          return (
-            <div key={g.label}>
-              <h3 className="mb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-soft">{g.label} · {users.length}</h3>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {users.map((u) => (
-                  <button key={u.id} onClick={() => nav("/messages")} className="anim-rise flex cursor-pointer items-center gap-3 rounded-xl border border-mist bg-card px-3.5 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-pine-400 hover:shadow-md">
-                    <UserAvatar name={u.name} role={u.role} size={38} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-bold text-ink">{u.name}</span>
-                      <span className="block truncate text-[11px] text-soft">{contactContext(db, currentUser, u)}</span>
-                    </span>
-                    <RoleBadge role={u.role} />
-                  </button>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-        {groups.every((g) => !g.users.some((u) => u.name.toLowerCase().includes(q.toLowerCase()))) && (
-          <Panel><EmptyState icon={<Users className="h-5 w-5" />} title="No matching authorized users found" body="Contacts are limited to people connected to you through the school." /></Panel>
+
+      <div className="mb-4"><Tabs tabs={groups.map((g) => ({ id: g.label, label: `${g.label} · ${g.users.length}` }))} active={tab} onChange={(id) => { setTab(id); setCls(""); setSec(""); }} /></div>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[200px] flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
+          <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search contacts…" className="!pl-9" />
+        </div>
+        {showClassFilter && (
+          <>
+            <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); }} className="!w-40">
+              <option value="">All grades</option>
+              {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+            <Select value={sec} onChange={(e) => setSec(e.target.value)} className="!w-36" disabled={!cls}>
+              <option value="">All sections</option>
+              {getClass(db, cls)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+            </Select>
+          </>
         )}
       </div>
+
+      {users.length === 0 ? (
+        <Panel><EmptyState icon={<Users className="h-5 w-5" />} title="No matching authorized users found" body="Contacts are limited to people connected to you through the school." /></Panel>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {users.map((u) => {
+            const s = u.role === "student" ? db.students.find((x) => x.id === u.studentId) : undefined;
+            return (
+              <button key={u.id} onClick={() => nav("/messages")} className="anim-rise flex cursor-pointer items-center gap-3 rounded-xl border border-mist bg-card px-3.5 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-pine-400 hover:shadow-md">
+                <UserAvatar name={u.name} role={u.role} size={38} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-bold text-ink">{u.name}</span>
+                  <span className="block truncate text-[11px] text-soft">
+                    {s?.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : contactContext(db, currentUser, u)}
+                  </span>
+                </span>
+                <RoleBadge role={u.role} />
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

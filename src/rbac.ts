@@ -247,6 +247,9 @@ export function audienceUserIds(db: DB, aud: Audience): string[] {
 /* ================= contacts (relationship-filtered directory) ================= */
 export interface ContactGroup {
   label: string;
+  /** The single role every user in this group shares — lets a UI decide,
+   *  e.g., whether a class/section filter makes sense for this tab. */
+  role: User["role"];
   users: User[];
 }
 
@@ -269,26 +272,26 @@ export function contactGroups(db: DB, user: User | null): ContactGroup[] {
   if (!user) return [];
   if (user.role === "admin")
     return [
-      { label: "Teachers", users: by("teacher") },
-      { label: "Students", users: by("student") },
-      { label: "Families", users: by("guardian") },
-      { label: "Administration", users: by("admin") },
+      { label: "Teachers", role: "teacher", users: by("teacher") },
+      { label: "Students", role: "student", users: by("student") },
+      { label: "Families", role: "guardian", users: by("guardian") },
+      { label: "Administration", role: "admin", users: by("admin") },
     ];
   if (user.role === "teacher")
     return [
-      { label: "My students", users: by("student") },
-      { label: "My students' families", users: by("guardian") },
-      { label: "Colleagues", users: by("teacher") },
-      { label: "Administration", users: by("admin") },
+      { label: "My students", role: "student", users: by("student") },
+      { label: "My students' families", role: "guardian", users: by("guardian") },
+      { label: "Colleagues", role: "teacher", users: by("teacher") },
+      { label: "Administration", role: "admin", users: by("admin") },
     ];
   if (user.role === "student")
     return [
-      { label: "My teachers", users: by("teacher") },
-      { label: "Administration", users: by("admin") },
+      { label: "My teachers", role: "teacher", users: by("teacher") },
+      { label: "Administration", role: "admin", users: by("admin") },
     ];
   return [
-    { label: "My children's teachers", users: by("teacher") },
-    { label: "Administration", users: by("admin") },
+    { label: "My children's teachers", role: "teacher", users: by("teacher") },
+    { label: "Administration", role: "admin", users: by("admin") },
   ];
 }
 

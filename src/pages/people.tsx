@@ -1195,6 +1195,10 @@ export function UsersPage() {
   const { db, currentUser, update, toast, reconnect } = useApp();
   const [edit, setEdit] = useState<User | "new" | null>(null);
   const [conflict, setConflict] = useState<User | null>(null);
+  const [tab, setTab] = useState<"all" | "teacher" | "student" | "guardian" | "admin">("all");
+  const [q, setQ] = useState("");
+  const [cls, setCls] = useState("");
+  const [sec, setSec] = useState("");
 
   // Route-level Guard only checks the coarse base role ("admin"), which
   // several role profiles share (Admin, Super Admin, Coordinator, …) without
@@ -1289,11 +1293,60 @@ export function UsersPage() {
     return "Manages the whole school";
   };
 
+  const showClassFilter = tab === "student" || tab === "teacher";
+  const rows = db.users
+    .filter((u) => tab === "all" || u.role === tab)
+    .filter((u) => (q ? u.name.toLowerCase().includes(q.toLowerCase()) || u.username.toLowerCase().includes(q.toLowerCase()) : true))
+    .filter((u) => {
+      if (!showClassFilter || !cls) return true;
+      if (u.role === "student") {
+        const s = db.students.find((x) => x.id === u.studentId);
+        return s?.enrollment?.classId === cls && (!sec || s.enrollment.sectionId === sec);
+      }
+      if (u.role === "teacher") {
+        return db.assignments.some((a) => a.teacherId === u.teacherId && a.classId === cls && (!sec || a.sectionId === sec));
+      }
+      return true;
+    });
+
   return (
     <div className="mx-auto max-w-6xl">
       <PageHead kicker="Administration" title="Users & roles" sub="One authentication system, four roles. Links to staff, student and guardian records drive each account's access.">
         <Btn variant="gold" onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> New user</Btn>
       </PageHead>
+
+      <div className="mb-4">
+        <Tabs
+          tabs={[
+            { id: "all", label: `All · ${db.users.length}` },
+            { id: "teacher", label: `Teachers · ${db.users.filter((u) => u.role === "teacher").length}` },
+            { id: "student", label: `Students · ${db.users.filter((u) => u.role === "student").length}` },
+            { id: "guardian", label: `Families · ${db.users.filter((u) => u.role === "guardian").length}` },
+            { id: "admin", label: `Admins · ${db.users.filter((u) => u.role === "admin").length}` },
+          ]}
+          active={tab}
+          onChange={(id) => { setTab(id as typeof tab); setCls(""); setSec(""); }}
+        />
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[200px] flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
+          <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or username…" className="!pl-9" />
+        </div>
+        {showClassFilter && (
+          <>
+            <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); }} className="!w-40">
+              <option value="">All grades</option>
+              {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+            <Select value={sec} onChange={(e) => setSec(e.target.value)} className="!w-36" disabled={!cls}>
+              <option value="">All sections</option>
+              {getClass(db, cls)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+            </Select>
+          </>
+        )}
+      </div>
 
       <Panel className="anim-rise overflow-hidden">
         <div className="overflow-x-auto">
@@ -1302,7 +1355,10 @@ export function UsersPage() {
               <tr><th className={thCls()}>User</th><th className={thCls()}>Role</th><th className={`${thCls()} hidden md:table-cell`}>Relationship</th><th className={thCls()}>Status</th><th className={thCls()}></th></tr>
             </thead>
             <tbody className="divide-y divide-mist/70">
-              {db.users.map((u) => (
+              {rows.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-[12.5px] text-soft">No users match these filters.</td></tr>
+              )}
+              {rows.map((u) => (
                 <tr key={u.id} className="transition-colors hover:bg-pine-50/50">
                   <td className={tdCls()}>
                     <span className="flex items-center gap-3">

@@ -63,15 +63,22 @@ export default async function handler(req: Request): Promise<Response> {
     // Resolve username → login email. The service role is needed here because
     // the caller has no session yet, so there is no user context to run as.
     const admin = adminClient();
-    const { data: profile } = await admin
+    const { data: profile, error: profileError } = await admin
       .from("profiles")
-      .select("id, email, username, status, role, full_name")
+      .select("id, username, status")
       .eq("username", username)
       .maybeSingle();
+    if (profileError) {
+      // Wrong service-role key, missing table, or RLS/grants problem. Server
+      // log only; the client still gets the generic message below.
+      console.error("[login] profile lookup failed:", profileError.code, profileError.message);
+    }
 
-    const email =
-      profile?.email ??
-      (username.includes("@") ? username : `${username}@riverside.school`);
+    // The Auth identity is ALWAYS `username@riverside.school` (migration 0018).
+    // Do NOT use profiles.email here: that column is the *contact* address an
+    // admin typed into the form (e.g. a guardian's gmail) and it never matches
+    // the Auth email, so using it made every such account fail with a 401.
+    const email = username.includes("@") ? username : `${username}@riverside.school`;
 
     if (profile && profile.status !== "active") {
       // Deliberately the same message: whether an account is disabled is not
@@ -87,6 +94,16 @@ export default async function handler(req: Request): Promise<Response> {
     const { data, error } = await auth.auth.signInWithPassword({ email, password });
 
     if (error || !data.session || !data.user) {
+      // The client only ever sees GENERIC. The real reason goes to the
+      // function log so "wrong password" can be told apart from "Database
+      // error querying schema" (migrations 0005/0008 missing) or a bad key.
+      // Usernames are deliberately not logged.
+      console.error("[login] auth rejected:", {
+        profileFound: !!profile,
+        status: error?.status,
+        code: (error as { code?: string } | null)?.code,
+        message: error?.message,
+      });
       return fail("unauthenticated", GENERIC);
     }
 

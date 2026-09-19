@@ -1424,7 +1424,15 @@ async function syncProfiles(oldDB: DB, newDB: DB, errors: string[]) {
       });
       if (error) { console.warn("[backend] create_user_account:", error.message); errors.push(`login for ${u.name}: ${error.message}`); continue; }
       if (u.role === "guardian" && u.childrenIds?.length && newId) {
-        await upsert("guardian_students", u.childrenIds.map((sid) => ({ guardian_id: newId as string, student_id: sid, relation: "Guardian" })), undefined, errors);
+        // Link the new guardian to their children through the same
+        // SECURITY DEFINER RPC used when *editing* a guardian below
+        // (update_user_account already replaces guardian_students as an
+        // atomic set when the payload includes `children`) — rather than
+        // the deprecated raw upsert(), which no longer writes anywhere.
+        const { error: linkErr } = await sb()!.rpc("update_user_account", {
+          p_payload: { id: newId, children: u.childrenIds },
+        });
+        if (linkErr) { console.warn("[backend] update_user_account (link children):", linkErr.message); errors.push(`guardian links for ${u.name}: ${linkErr.message}`); }
       }
       continue;
     }

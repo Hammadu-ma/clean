@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft, Bell, CalendarDays, Check, CheckCheck, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye,
+  ArrowLeft, Bell, CalendarDays, Check, CheckCheck, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2,
 } from "lucide-react";
 import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, timeAgo, uid } from "../store";
 import {
@@ -77,8 +77,12 @@ export function AnnouncementsPage() {
   const { db, currentUser, update, toast } = useApp();
   const groupsLoaded = useLazyGroups("announcements");
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Announcement | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Announcement | null>(null);
   const [filter, setFilter] = useState("all");
   const canCreate = canCreateAnnouncement(db, currentUser);
+
+  const closeModal = () => { setOpen(false); setEditing(null); };
 
   const list = visibleAnnouncements(db, currentUser)
     .filter((a) => filter === "all" || (filter === "mine" ? a.senderId === currentUser?.id : effectiveAnnouncementStatus(a) === filter))
@@ -98,17 +102,44 @@ export function AnnouncementsPage() {
       }
     });
     toast(a.status === "published" ? "Announcement published." : a.status === "scheduled" ? "Announcement scheduled." : "Draft saved.");
-    setOpen(false);
+    closeModal();
+  };
+
+  const archiveAnnouncement = (a: Announcement) => {
+    update((d) => {
+      const i = d.announcements.findIndex((x) => x.id === a.id);
+      if (i >= 0) d.announcements[i] = { ...a, status: "archived" };
+      pushAudit(d, currentUser, "announcement.archive", a.title);
+    });
+    toast("Announcement archived.");
+  };
+
+  const restoreAnnouncement = (a: Announcement) => {
+    update((d) => {
+      const i = d.announcements.findIndex((x) => x.id === a.id);
+      if (i >= 0) d.announcements[i] = { ...a, status: "draft" };
+      pushAudit(d, currentUser, "announcement.restore", a.title);
+    });
+    toast("Announcement restored to drafts.");
+  };
+
+  const deleteAnnouncement = (a: Announcement) => {
+    update((d) => {
+      d.announcements = d.announcements.filter((x) => x.id !== a.id);
+      pushAudit(d, currentUser, "announcement.delete", a.title);
+    });
+    toast("Announcement deleted.");
+    setConfirmDelete(null);
   };
 
   return (
     <div className="mx-auto max-w-4xl">
       <PageHead kicker="Communication" title="Announcements" sub="Official one-to-many notices, targeted through the school's academic structure.">
-        {canCreate && <Btn variant="gold" onClick={() => setOpen(true)}><Megaphone className="h-4 w-4" /> New announcement</Btn>}
+        {canCreate && <Btn variant="gold" onClick={() => { setEditing(null); setOpen(true); }}><Megaphone className="h-4 w-4" /> New announcement</Btn>}
       </PageHead>
 
       <div className="mb-4 flex flex-wrap gap-1.5">
-        {[["all", "All"], ["published", "Published"], ["scheduled", "Scheduled"], ["draft", "Drafts"], ["mine", "Mine"]].map(([k, l]) => (
+        {[["all", "All"], ["published", "Published"], ["scheduled", "Scheduled"], ["draft", "Drafts"], ["archived", "Archived"], ["mine", "Mine"]].map(([k, l]) => (
           <button key={k} onClick={() => setFilter(k)} className={`cursor-pointer rounded-full border px-3 py-1 text-[12px] font-semibold transition-all ${filter === k ? "border-pine-700 bg-pine-800 text-pine-50" : "border-mist bg-card text-soft hover:border-pine-400"}`}>{l}</button>
         ))}
       </div>
@@ -139,19 +170,26 @@ export function AnnouncementsPage() {
                     <span className={`rounded-md border px-1.5 py-0.5 text-[10.5px] font-semibold ${cm.bg}`}>{a.category}</span>
                     <span>{sender?.name ?? "—"}</span>
                     <span>{st === "scheduled" && a.scheduledFor ? `scheduled ${fmtShort(a.scheduledFor)}` : timeAgo(a.createdAt)}</span>
+                    {a.editedAt && <span>(edited {timeAgo(a.editedAt)})</span>}
                     <span>→ {audienceLabel(db, a.audience)}</span>
                     {st === "published" && <span className="flex items-center gap-1"><Eye className="h-3 w-3" /> {readCount}/{reach} read</span>}
                   </div>
                 </div>
                 {canManageAnnouncement(db, currentUser, a) && (
                   <div className="flex shrink-0 flex-col gap-1.5">
-                    <Btn size="sm" variant="soft" onClick={() => setOpen(true)} data-edit={a.id}>Edit</Btn>
-                    {st !== "published" && (
+                    {st !== "archived" && (
+                      <Btn size="sm" variant="soft" onClick={() => { setEditing(a); setOpen(true); }} data-edit={a.id}>Edit</Btn>
+                    )}
+                    {st !== "published" && st !== "archived" && (
                       <Btn size="sm" onClick={() => saveAnnouncement({ ...a, status: "published", publishedAt: new Date().toISOString(), scheduledFor: undefined })}>Publish</Btn>
                     )}
-                    {st === "published" && (
-                      <Btn size="sm" variant="ghost" onClick={() => saveAnnouncement({ ...a, status: "archived" })}>Archive</Btn>
+                    {st !== "archived" && (
+                      <Btn size="sm" variant="ghost" onClick={() => archiveAnnouncement(a)}>Archive</Btn>
                     )}
+                    {st === "archived" && (
+                      <Btn size="sm" variant="soft" onClick={() => restoreAnnouncement(a)}>Restore</Btn>
+                    )}
+                    <Btn size="sm" variant="dangerSoft" onClick={() => setConfirmDelete(a)}><Trash2 className="h-3.5 w-3.5" /> Delete</Btn>
                   </div>
                 )}
               </div>
@@ -165,39 +203,56 @@ export function AnnouncementsPage() {
         )}
       </div>
 
-      {open && <AnnouncementModal onClose={() => setOpen(false)} onSave={saveAnnouncement} />}
+      {open && <AnnouncementModal announcement={editing} onClose={closeModal} onSave={saveAnnouncement} />}
+      {confirmDelete && (
+        <Modal title="Delete this announcement?" kicker={confirmDelete.title} onClose={() => setConfirmDelete(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDelete(null)}>Cancel</Btn><Btn variant="danger" onClick={() => deleteAnnouncement(confirmDelete)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
+          <p className="text-[13px] text-soft">This removes it permanently, including its read receipts. This can't be undone — archive it instead if you just want it off the active list.</p>
+        </Modal>
+      )}
     </div>
   );
 }
 
-function AnnouncementModal({ onClose, onSave }: { onClose: () => void; onSave: (a: Announcement) => void }) {
+function AnnouncementModal({ announcement, onClose, onSave }: { announcement?: Announcement | null; onClose: () => void; onSave: (a: Announcement) => void }) {
   const { db, currentUser, toast } = useApp();
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [category, setCategory] = useState("General");
-  const [audience, setAudience] = useState<Audience>({ kind: "everyone" });
-  const [mode, setMode] = useState<"publish" | "schedule" | "draft">("publish");
-  const [when, setWhen] = useState("");
+  const isEdit = !!announcement;
+  const [title, setTitle] = useState(announcement?.title ?? "");
+  const [body, setBody] = useState(announcement?.body ?? "");
+  const [category, setCategory] = useState<string>(announcement?.category ?? "General");
+  const [audience, setAudience] = useState<Audience>(announcement?.audience ?? { kind: "everyone" });
+  const [mode, setMode] = useState<"publish" | "schedule" | "draft">(
+    announcement?.status === "scheduled" ? "schedule" : announcement?.status === "draft" ? "draft" : "publish"
+  );
+  const [when, setWhen] = useState(announcement?.scheduledFor ?? "");
 
   const submit = () => {
     if (!title.trim() || !body.trim()) { toast("Add a title and a message.", "warn"); return; }
     const gate = canTargetAudience(db, currentUser, audience);
     if (!gate.ok) { toast(gate.reason ?? "Not permitted for that audience.", "warn"); return; }
     const now = new Date().toISOString();
+    const status: Announcement["status"] = mode === "publish" ? "published" : mode === "schedule" ? "scheduled" : "draft";
+    const prevEditedAt = announcement ? announcement.editedAt : undefined;
+    const prevPublishedAt = announcement ? announcement.publishedAt : undefined;
     const base: Announcement = {
-      id: uid(), title: title.trim(), body: body.trim(), category: category as Announcement["category"],
-      senderId: currentUser?.id ?? "", audience, createdAt: now, readBy: [currentUser?.id ?? ""],
-      status: mode === "publish" ? "published" : mode === "schedule" ? "scheduled" : "draft",
-      publishedAt: mode === "publish" ? now : undefined,
+      id: announcement?.id ?? uid(),
+      senderId: announcement?.senderId ?? currentUser?.id ?? "",
+      createdAt: announcement?.createdAt ?? now,
+      readBy: announcement?.readBy ?? [currentUser?.id ?? ""],
+      pinned: announcement?.pinned,
+      title: title.trim(), body: body.trim(), category: category as Announcement["category"],
+      audience, status,
+      publishedAt: mode === "publish" ? (prevPublishedAt ?? now) : prevPublishedAt,
       scheduledFor: mode === "schedule" ? when || undefined : undefined,
+      editedAt: isEdit ? now : prevEditedAt,
     };
     if (mode === "schedule" && !base.scheduledFor) { toast("Pick a date and time to schedule.", "warn"); return; }
     onSave(base);
   };
 
   return (
-    <Modal title="New announcement" kicker="One-to-many" onClose={onClose} wide
-      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit}>{mode === "publish" ? "Publish now" : mode === "schedule" ? "Schedule" : "Save draft"}</Btn></>}>
+    <Modal title={isEdit ? "Edit announcement" : "New announcement"} kicker="One-to-many" onClose={onClose} wide
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit}>{isEdit ? "Save changes" : mode === "publish" ? "Publish now" : mode === "schedule" ? "Schedule" : "Save draft"}</Btn></>}>
       <div className="grid gap-4">
         <Field label="Title" required><TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. School closed tomorrow" /></Field>
         <Field label="Message" required><TextArea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write the announcement…" /></Field>
@@ -814,3 +869,4 @@ export function ModerationPage() {
     </div>
   );
 }
+

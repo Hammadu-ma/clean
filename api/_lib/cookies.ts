@@ -27,7 +27,9 @@ import { env } from "./env";
  * The CSRF token is deliberately NOT httpOnly: the client must read it to echo
  * it back in a header. That is the double-submit pattern, and it is safe
  * because an attacker on another origin can neither read the cookie nor set
- * the header.
+ * the header. It is also the one cookie set at Path=/ (like the hint): a
+ * script can only read cookies whose path matches the page's, and the page
+ * lives at "/".
  */
 
 const ACCESS = "sms_at";
@@ -111,7 +113,14 @@ export function sessionCookies(
   return [
     serialize(ACCESS, tokens.accessToken, { maxAge: accessTtlSeconds, httpOnly: true }),
     serialize(REFRESH, tokens.refreshToken, { maxAge: refreshTtl, httpOnly: true }),
-    serialize(CSRF, csrfToken, { maxAge: refreshTtl, httpOnly: false }),
+    // Path=/ (not /api): the app is served from "/", and document.cookie only
+    // exposes cookies whose Path covers the *page*, not the request URL. With
+    // Path=/api the client could never read this token, never sent the
+    // x-csrf-token header, and every write / upload came back 403.
+    serialize(CSRF, csrfToken, { maxAge: refreshTtl, httpOnly: false, path: "/" }),
+    // Expire the earlier Path=/api copy so two cookies of the same name can't
+    // both be sent to /api and race each other.
+    serialize(CSRF, "", { maxAge: 0, httpOnly: false, path: "/api" }),
     // The hint is readable by the app and sent on every path, because the
     // page itself (not just /api) needs it to decide what to render first.
     serialize(HINT, JSON.stringify(hint), { maxAge: refreshTtl, httpOnly: false, path: "/" }),
@@ -124,7 +133,8 @@ export function clearCookies(): string[] {
   return [
     kill(ACCESS, "/api", true),
     kill(REFRESH, "/api", true),
-    kill(CSRF, "/api", false),
+    kill(CSRF, "/", false),
+    kill(CSRF, "/api", false), // legacy path, see sessionCookies()
     kill(HINT, "/", false),
   ];
 }

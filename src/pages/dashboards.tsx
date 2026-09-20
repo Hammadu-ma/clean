@@ -4,7 +4,7 @@ import {
   ArrowRight, Baby, BookOpen, CalendarCheck2, ClipboardList, Clock, FileBarChart2, Inbox, Layers, Megaphone,
   PenLine as NotebookPen, Table2, Users, Wallet, GraduationCap, CheckCircle2, AlertCircle,
 } from "lucide-react";
-import { DAYS, PERIODS } from "../data/seed";
+import { PERIODS } from "../data/seed";
 import {
   attendanceStats, childrenOf, fmtShort, getSubject, guardianOfStudent, sectionShort, shortName, studentAverage,
   studentOf, studentResults, teacherPairs, teacherStudentIds, teachersOfStudent, timeAgo, todayISO, useApp, useLazyGroups,

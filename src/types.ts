@@ -413,6 +413,11 @@ export interface Settings {
   motto: string;
   /** Bank accounts guardians can transfer fees into manually. */
   bankAccounts: BankAccount[];
+  /** Which of the 7 calendar weekdays (0=Sunday..6=Saturday, matching
+   *  TimetableEntry.day's existing range) are working days — configurable
+   *  per school rather than a fixed 5 or 6. A subset of a fixed set, not a
+   *  reorderable list, so removing a day can never renumber another one. */
+  workingDays: number[];
 }
 
 export interface Term {

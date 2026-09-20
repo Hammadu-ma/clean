@@ -85,6 +85,7 @@ const TITLES: Record<string, string> = {
   "0036_year_switcher_params.sql": "Fix: the Academic year dropdown stopped working once 0035 scoped reads to a single year — restores it with a real year parameter",
   "0037_fee_payment_requests_in_snapshot.sql": "Fix: guardian bank-transfer fee payment requests were never included in the snapshot read at all — always came back empty",
   "0038_my_permissions_role_status.sql": "Fix: my_permissions() ignored a disabled role — powers the new live permission sync (see store.tsx)",
+  "0039_configurable_working_days.sql": "Timetable working days are now configurable per school instead of fixed to Mon-Fri",
 };
 
 /** Turns "0036_some_new_thing.sql" into "Some new thing" for anything not

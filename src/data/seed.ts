@@ -10,6 +10,14 @@ import type {
 import { DEFAULT_PERMISSIONS } from "../permissions";
 
 export const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+/** Fixed, stable name for each of the 7 possible weekday indices a
+ *  timetable entry's `day` can hold (0=Monday..6=Sunday — see
+ *  0039_configurable_working_days.sql for why Monday-first, not
+ *  JS's Sunday-first Date.getDay()). Settings.workingDays is a subset of
+ *  these 7 indices; this is what turns an index back into a label. Not
+ *  itself configurable — schools choose which of these seven days are
+ *  "working days", not what the seven days are. */
+export const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 export const PERIODS = [
   { period: 1, time: "08:00" },
   { period: 2, time: "09:00" },
@@ -499,6 +507,7 @@ export function buildSeed(): DB {
       bankAccounts: [
         { id: "bank-1", bankName: "Commercial Bank of Ethiopia", accountName: "Riverside Secondary School", accountNumber: "1000123456789", branch: "Bole Branch" },
       ],
+      workingDays: [0, 1, 2, 3, 4],
     },
   };
 }

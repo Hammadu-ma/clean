@@ -115,29 +115,50 @@ export default function App() {
             <Route path="/notifications" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><NotificationsPage /></Guard>} />
             <Route path="/events" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><EventsPage /></Guard>} />
             <Route path="/contacts" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><ContactsPage /></Guard>} />
-            <Route path="/moderation" element={<Guard roles={["admin"]} required="Moderator"><ModerationPage /></Guard>} />
+            <Route path="/moderation" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="communication.moderate permission"><ModerationPage /></Guard>} />
             <Route path="/profile" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><ProfilePage /></Guard>} />
 
-            {/* system administration — permission-checked inside as well */}
-            <Route path="/admin/roles" element={<Guard roles={["admin"]} required="Super Admin"><RolesPage /></Guard>} />
-            <Route path="/admin/audit" element={<Guard roles={["admin"]} required="Administrator"><AuditPage /></Guard>} />
+            {/*
+              system administration & the /admin/* pages below: guarded here
+              by "any signed-in role" rather than roles={["admin"]} — each of
+              these components already does its own internal
+              hasPermission()/relationship check (verified: roles.manage,
+              audit.view, students.view, teachers.view, families.view,
+              academics.view/manage_years, exams.view, assignments.view,
+              homework.view, results.view, attendance.view, fees.view,
+              users.manage), which is the REAL gate. Previously this literal
+              roles={["admin"]} wrapper meant a custom role built on "teacher"
+              or "guardian" could be granted e.g. students.view directly and
+              still never reach the page that permission is for — the
+              sidebar (Layout.tsx) only ever showed items from a fixed list
+              per base role, and even a fixed sidebar link would have hit
+              this exact wall. Scaling a role's permissions up now actually
+              unlocks the matching page instead of silently doing nothing.
+              /admin/dashboard is deliberately NOT included: AdminDashboard
+              has no internal permission check of its own (it's a pure
+              aggregate-stats view with no single permission it naturally
+              maps to), so loosening it would remove its only access check
+              entirely rather than replace it with a better one.
+            */}
+            <Route path="/admin/roles" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="roles.manage permission"><RolesPage /></Guard>} />
+            <Route path="/admin/audit" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="audit.view permission"><AuditPage /></Guard>} />
 
             {/* administrator */}
             <Route path="/admin/dashboard" element={<Guard roles={["admin"]} required="Administrator"><AdminDashboard /></Guard>} />
-            <Route path="/admin/students" element={<Guard roles={["admin"]} required="Administrator"><StudentsPage /></Guard>} />
-            <Route path="/admin/students/:id" element={<Guard roles={["admin"]} required="Administrator"><StudentProfilePage /></Guard>} />
-            <Route path="/admin/teachers" element={<Guard roles={["admin"]} required="Administrator"><TeachersPage /></Guard>} />
-            <Route path="/admin/families" element={<Guard roles={["admin"]} required="Administrator"><FamiliesPage /></Guard>} />
-            <Route path="/admin/classes" element={<Guard roles={["admin"]} required="Administrator"><ClassesPage /></Guard>} />
-            <Route path="/admin/academic-years" element={<Guard roles={["admin"]} required="Administrator"><AcademicYearsPage /></Guard>} />
-            <Route path="/admin/timetable" element={<Guard roles={["admin"]} required="Administrator"><TimetablePage /></Guard>} />
-            <Route path="/admin/marks" element={<Guard roles={["admin"]} required="Administrator"><MarkEntryPage /></Guard>} />
-            <Route path="/admin/assignments" element={<Guard roles={["admin"]} required="Administrator"><AssignmentsPage /></Guard>} />
-            <Route path="/admin/homework" element={<Guard roles={["admin"]} required="Administrator"><HomeworkPage /></Guard>} />
-            <Route path="/admin/reports" element={<Guard roles={["admin"]} required="Administrator"><ReportsPage /></Guard>} />
-            <Route path="/admin/attendance" element={<Guard roles={["admin"]} required="Administrator"><AttendancePage /></Guard>} />
-            <Route path="/admin/fees" element={<Guard roles={["admin"]} required="Administrator"><FeesPage /></Guard>} />
-            <Route path="/admin/users" element={<Guard roles={["admin"]} required="Administrator"><UsersPage /></Guard>} />
+            <Route path="/admin/students" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="students.view permission"><StudentsPage /></Guard>} />
+            <Route path="/admin/students/:id" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="A relationship to this student, or students.view"><StudentProfilePage /></Guard>} />
+            <Route path="/admin/teachers" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="teachers.view permission"><TeachersPage /></Guard>} />
+            <Route path="/admin/families" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="families.view permission"><FamiliesPage /></Guard>} />
+            <Route path="/admin/classes" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="academics.view permission"><ClassesPage /></Guard>} />
+            <Route path="/admin/academic-years" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="academics.manage_years permission"><AcademicYearsPage /></Guard>} />
+            <Route path="/admin/timetable" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="academics.view permission"><TimetablePage /></Guard>} />
+            <Route path="/admin/marks" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="exams.view permission"><MarkEntryPage /></Guard>} />
+            <Route path="/admin/assignments" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="assignments.view permission"><AssignmentsPage /></Guard>} />
+            <Route path="/admin/homework" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="homework.view permission"><HomeworkPage /></Guard>} />
+            <Route path="/admin/reports" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="results.view permission"><ReportsPage /></Guard>} />
+            <Route path="/admin/attendance" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="attendance.view permission"><AttendancePage /></Guard>} />
+            <Route path="/admin/fees" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="fees.view permission"><FeesPage /></Guard>} />
+            <Route path="/admin/users" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="users.manage permission"><UsersPage /></Guard>} />
 
             {/* teacher — scoped to assigned classes/students inside each page */}
             <Route path="/teacher/dashboard" element={<Guard roles={["teacher"]} required="Teacher"><TeacherDashboard /></Guard>} />

@@ -156,7 +156,37 @@ export function AppShell() {
 
   if (!currentUser) return <Navigate to="/login" replace />;
 
-  const groups = NAV[currentUser.role];
+  // Each role's own list first — unchanged from before, so the ordinary
+  // case (someone with exactly their role's usual permissions) looks
+  // exactly like it always has.
+  const ownGroups = NAV[currentUser.role];
+
+  // Additive extras: a custom role can be granted permissions beyond what
+  // its base role (admin/teacher/student/guardian) normally has — e.g. a
+  // "teacher" profile granted the admin-level students.view. Previously
+  // the sidebar only ever showed items from NAV[currentUser.role]'s fixed
+  // list, so a scaled-up permission had nothing to attach a link to: it
+  // could only ever hide items the role's own list already had, never add
+  // one from outside it. This scans every OTHER role's item list (the
+  // *only* places those extra pages' links live) for anything not already
+  // in ownGroups, and includes it if the permission that gates it is
+  // actually held — matched against src/App.tsx's now permission-checked
+  // /admin/* routes, so a link that appears here is guaranteed to actually
+  // open rather than immediately 403.
+  const ownPaths = new Set(ownGroups.flatMap((g) => g.items.map((it) => it.to)));
+  const seenExtra = new Set<string>();
+  const extraItems = (Object.keys(NAV) as Role[])
+    .filter((r) => r !== currentUser.role)
+    .flatMap((r) => NAV[r].flatMap((g) => g.items))
+    .filter((it) => {
+      if (!it.to.startsWith("/admin/")) return false; // only /admin/* was actually loosened in App.tsx — anything else would 403 regardless
+      if (ownPaths.has(it.to) || seenExtra.has(it.to)) return false;
+      if (!it.perm || !hasPermission(db, currentUser, it.perm)) return false;
+      seenExtra.add(it.to);
+      return true;
+    });
+  const groups = extraItems.length ? [...ownGroups, { group: "Additional access", items: extraItems }] : ownGroups;
+
   const unreadMsgs = totalUnreadMessages(db, currentUser);
   const unreadNotifs = unreadNotifications(db, currentUser);
   const year = db.years.find((y) => y.id === yearId);

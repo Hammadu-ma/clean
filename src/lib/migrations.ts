@@ -86,6 +86,8 @@ const TITLES: Record<string, string> = {
   "0037_fee_payment_requests_in_snapshot.sql": "Fix: guardian bank-transfer fee payment requests were never included in the snapshot read at all — always came back empty",
   "0038_my_permissions_role_status.sql": "Fix: my_permissions() ignored a disabled role — powers the new live permission sync (see store.tsx)",
   "0039_configurable_working_days.sql": "Timetable working days are now configurable per school instead of fixed to Mon-Fri",
+  "0040_message_report_rpcs.sql": "Fix: filing or reviewing a reported message has always failed outright — adds the missing RPCs",
+  "0041_submit_fee_payment_request.sql": "Fix: a guardian's bank-transfer payment submission never actually reached the server — adds the missing RPC",
 };
 
 /** Turns "0036_some_new_thing.sql" into "Some new thing" for anything not

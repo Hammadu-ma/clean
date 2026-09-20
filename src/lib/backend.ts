@@ -668,35 +668,19 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
    RLS — which is precisely the "one boundary, and it had better be perfect"
    situation the move to a server backend exists to end.
 
-   So each write becomes a named operation instead, with its own permission
-   check, in supabase/migrations/0026_write_api.sql, 0027 and 0028:
+   So each write is a named operation instead, with its own permission
+   check, in supabase/migrations/0026 through 0040. As of 0040, every
+   table the app actually writes to has one — this file's upsert()/remove()
+   below now have zero real callers and exist only as a defensive fallback
+   (a loud, immediately-visible failure) should a future change accidentally
+   introduce a raw write again, not as an expected code path:
 
-       students          -> save_student, set_student_status        [wired]
-       marks             -> save_student_marks, set_submission_status [wired]
-       attendance        -> save_register                           [wired]
-       fees              -> record_fee_payment, create_fee_item,
-                            delete_fee_item, apply_fee_template      [wired]
-       messages          -> send_message, mark_message_read         [wired]
-       roles             -> save_role, delete_role                  [wired]
-       notifications     -> mark_notifications_read                 [wired]
-       files             -> register_file, unregister_file          [wired]
-       academic years    -> create_academic_year, set_active_year, close_year,
-                            rollover_year, promote_students   [exist, not called by any page yet]
-       user accounts     -> create_user_account, delete_user_account [wired]
-
-   STILL UNWIRED — no named operation exists for these yet, so a save
-   against any of them still throws the error below: classes, sections,
-   subjects, teachers, teacher_assignments, student_documents (metadata —
-   the file itself already goes through register_file/storage.ts),
-   assessment_structures, assessment_items, grade_bands,
-   fee_payment_requests (the guardian-receipt review flow), homework,
-   timetable_entries, announcements, creating a conversation (sending into
-   an existing one works), events, and settings/bank accounts. Each needs
-   its own SECURITY DEFINER function following the pattern in 0026/0028.
-
-   Until a table is moved onto a named op, its save will throw this error.
-   That is a loud, fixable failure rather than a silent security hole, and
-   the message names what's missing.
+       students, marks, attendance, fees, messages, roles, notifications,
+       files, user accounts, academic years, classes, sections, subjects,
+       teachers, teacher assignments, student documents, assessment
+       structures/items, grade bands, fee payment requests, homework,
+       timetable entries, announcements, events, settings/bank accounts,
+       starting a conversation, message reports (filing and reviewing).
    --------------------------------------------------------------------------- */
 
 /** Tables reaching this file's generic upsert()/remove() still have no named
@@ -1318,10 +1302,29 @@ async function syncEvents(oldDB: DB, newDB: DB, errors: string[]) {
  *  AND, on approval, the matching fee_items credit — atomically, so a
  *  double-click can't credit the same request twice the way two separate
  *  client-driven writes could. */
+/**
+ * Payment requests: submit_fee_payment_request() for a brand-new guardian
+ * submission, review_fee_payment_request() for an admin's approve/reject
+ * decision. Previously only the review half was called — a new request
+ * (status still 'pending') fell through every branch here and was
+ * silently never sent to the server at all; see 0041's header comment.
+ */
 async function syncPaymentRequests(oldDB: DB, newDB: DB, errors: string[]) {
   for (const r of newDB.paymentRequests) {
     const before = oldDB.paymentRequests.find((x) => x.id === r.id);
-    if (before?.status === r.status) continue;
+    if (!before) {
+      // receiptDataUrl is the offline/demo-mode fallback only (see its
+      // comment in types.ts) — there's no column for it server-side, a
+      // real submission always has receiptPath instead.
+      const { error } = await sb()!.rpc("submit_fee_payment_request", {
+        p_student_id: r.studentId, p_fee_item_id: r.feeItemId, p_amount: r.amount,
+        p_bank_account_id: r.bankAccountId, p_bank_name: r.bankName, p_reference: r.reference ?? null,
+        p_receipt_path: r.receiptPath ?? null, p_receipt_name: r.receiptName ?? null,
+      });
+      if (error) errors.push(`submitting payment request: ${error.message}`);
+      continue;
+    }
+    if (before.status === r.status) continue;
     if (r.status !== "approved" && r.status !== "rejected") continue;
     const { error } = await sb()!.rpc("review_fee_payment_request", {
       p_request_id: r.id, p_status: r.status, p_note: r.reviewNote ?? null,
@@ -1447,25 +1450,68 @@ async function syncNotifications(oldDB: DB, newDB: DB, errors: string[]) {
   // notifications has no direct insert policy by design — it's written only
   // via notify_users(), a SECURITY DEFINER RPC that enforces who's allowed
   // to notify whom (admins can notify anyone; everyone else only people
-  // they're actually allowed to message). A raw upsert here would always be
-  // rejected by RLS regardless of payload, so call the RPC instead, once per
-  // new local notification.
+  // they're actually allowed to message).
+  //
+  // diff() doesn't distinguish "brand new row" from "existing row that
+  // changed" — both come back in `up`. Marking a notification read (the
+  // *only* way an existing notification ever changes here — see markAll()
+  // and the per-row "Mark read" button in communication.tsx) was being
+  // treated exactly like creating a new one: notify_users() got called
+  // again with the same title/body, which just inserts a duplicate
+  // notification. The "read" flag itself was never actually sent to the
+  // server at all, on top of that. Split by whether an old copy existed.
   const { up } = diff(oldDB.notifications, newDB.notifications);
-  for (const n of up) {
+  const created = up.filter((n) => !oldDB.notifications.some((o) => o.id === n.id));
+  const nowRead = up.filter((n) => {
+    const o = oldDB.notifications.find((x) => x.id === n.id);
+    return o && !o.read && n.read;
+  });
+
+  for (const n of created) {
     const { error } = await sb()!.rpc("notify_users", { p_ids: [n.userId], p_type: n.type, p_title: n.title, p_body: n.body });
     if (error) errors.push(`notifications: ${error.message}`);
   }
+  if (nowRead.length) {
+    const { error } = await sb()!.rpc("mark_notifications_read", { p_ids: nowRead.map((n) => n.id) });
+    if (error) errors.push(`marking notifications read: ${error.message}`);
+  }
 }
 
-// Append-only log of message reports for moderators — entries are only ever
-// added, never edited, so a plain diff-by-id upsert is all that's needed.
-// (audit_log is intentionally NOT synced this way: it has no insert policy
-// at all — it's written only by trusted SECURITY DEFINER functions like
-// create_user_account, so the client can never write to it directly. The
-// in-app Audit log page's own history stays session-local by design.)
+/**
+ * Message reports: a report is filed once (file_message_report — the
+ * reporter, membership-checked) and later resolved or dismissed
+ * (review_message_report — moderators only, via communication.moderate).
+ * Both are real writes, not an append-only log — the previous comment
+ * here claiming entries are "only ever added, never edited" was wrong:
+ * ModerationPage's resolve/dismiss buttons edit an existing report's
+ * status. That, plus this calling the deprecated raw upsert() (which
+ * unconditionally throws for every table now — see backend.ts's own
+ * upsert() comment), meant BOTH filing and reviewing a report have
+ * always failed outright. Same new-vs-modified split as syncNotifications
+ * above, since diff() doesn't distinguish them itself.
+ * (audit_log is intentionally NOT synced this way: it has no insert policy
+ * at all — it's written only by trusted SECURITY DEFINER functions like
+ * create_user_account, so the client can never write to it directly. The
+ * in-app Audit log page's own history stays session-local by design.)
+ */
 async function syncReports(oldDB: DB, newDB: DB, errors: string[]) {
   const { up } = diff(oldDB.reports, newDB.reports);
-  if (up.length) await upsert("message_reports", up.map((r) => ({ id: r.id, message_id: r.messageId, conversation_id: r.conversationId, reporter_id: r.reporterId, reason: r.reason, detail: r.detail, status: r.status, created_at: r.at })), undefined, errors);
+  const filed = up.filter((r) => !oldDB.reports.some((o) => o.id === r.id));
+  const reviewed = up.filter((r) => {
+    const o = oldDB.reports.find((x) => x.id === r.id);
+    return o && o.status !== r.status;
+  });
+
+  for (const r of filed) {
+    const { error } = await sb()!.rpc("file_message_report", {
+      p_message_id: r.messageId, p_conversation_id: r.conversationId, p_reason: r.reason, p_detail: r.detail ?? null,
+    });
+    if (error) errors.push(`reporting message: ${error.message}`);
+  }
+  for (const r of reviewed) {
+    const { error } = await sb()!.rpc("review_message_report", { p_report_id: r.id, p_status: r.status });
+    if (error) errors.push(`reviewing report: ${error.message}`);
+  }
 }
 
 /**

@@ -303,6 +303,24 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_status: { type: "string", maxLength: 20 },
     },
   },
+  file_message_report: {
+    read: false,
+    rateLimit: 20,
+    args: {
+      p_message_id: { type: "string", maxLength: 64 },
+      p_conversation_id: { type: "string", maxLength: 128 },
+      p_reason: { type: "string", maxLength: 300 },
+      p_detail: { type: "string", optional: true, maxLength: 2000 },
+    },
+  },
+  review_message_report: {
+    read: false,
+    rateLimit: 30,
+    args: {
+      p_report_id: { type: "string", maxLength: 64 },
+      p_status: { type: "string", maxLength: 20 },
+    },
+  },
 
   /* ---------- fees ---------- */
   review_fee_payment_request: {
@@ -312,6 +330,20 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_request_id: { type: "string", maxLength: 128 },
       p_status: { type: "string", maxLength: 20 },
       p_note: { type: "string", optional: true, maxLength: 500 },
+    },
+  },
+  submit_fee_payment_request: {
+    read: false,
+    rateLimit: 20,
+    args: {
+      p_student_id: { type: "string", maxLength: 128 },
+      p_fee_item_id: { type: "string", maxLength: 128 },
+      p_amount: { type: "number", min: 0, max: 100_000_000 },
+      p_bank_account_id: { type: "string", maxLength: 128 },
+      p_bank_name: { type: "string", maxLength: 200 },
+      p_reference: { type: "string", optional: true, maxLength: 200 },
+      p_receipt_path: { type: "string", optional: true, maxLength: 500 },
+      p_receipt_name: { type: "string", optional: true, maxLength: 300 },
     },
   },
 

@@ -54,6 +54,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
   get_bootstrap: { read: true, args: { p_year_id: ID } },
   get_reference: { read: true, args: { p_year_id: ID } },
   my_scope: { read: true, args: { p_year_id: ID } },
+  my_permissions: { read: true, args: {} },
 
   /* ---------- students ---------- */
   list_students: {
@@ -339,7 +340,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
      limit is deliberately low: it should be called once per session at
      most, never in a loop. Delete this entry once no page needs it.
      ---------------------------------------------------------------------- */
-  get_app_snapshot: { read: true, rateLimit: 10, args: {} },
+  get_app_snapshot: { read: true, rateLimit: 10, args: { p_year_id: ID } },
 
   /* ----------------------------------------------------------------------
      Also deprecated, and the reason the app reported itself unable to
@@ -348,7 +349,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
      request of every session came back 404 "Unknown operation". Publishing
      it restores the fast boot path. It goes away with the legacy read path.
      ---------------------------------------------------------------------- */
-  get_app_bootstrap: { read: true, rateLimit: 30, args: {} },
+  get_app_bootstrap: { read: true, rateLimit: 30, args: { p_year_id: ID } },
 
   /* Used by the notification write path in backend.ts. */
   notify_users: {

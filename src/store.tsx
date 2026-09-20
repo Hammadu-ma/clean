@@ -6,7 +6,7 @@ import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
 import {
   hydrate, hydrateCore, hydrateGroup, ALL_LAZY_GROUPS, sync, setProfileId, loadProfileForSession,
-  mapConversations, mapMessages, dbCache,
+  mapConversations, mapMessages, dbCache, fetchMyPermissions,
   type DbMode, type LazyGroup,
 } from "./lib/backend";
 
@@ -698,6 +698,55 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, sessionUserId, db]);
+
+  /**
+   * Keeps the signed-in user's OWN permission set in sync with whatever an
+   * admin most recently saved on RolesPage — that page's own copy claims
+   * "permissions apply immediately" / a disabled role's users "lose access
+   * immediately", but role_defs is only ever loaded once, at boot (as part
+   * of core). Without this, that claim was only true for the editing
+   * admin's own tab (via the normal optimistic update()); everyone else
+   * kept operating on whatever permission set they'd had since they opened
+   * the app, until they happened to reload the page.
+   *
+   * A full core re-hydrate would work too but is overkill for "did my
+   * permissions change" — my_permissions() is a few bytes back for exactly
+   * that question, so this polls it: once when the tab regains focus (the
+   * common case — someone gets told "try again now" and switches back to
+   * an already-open tab) and every few minutes as a backstop for a tab
+   * that's never lost focus. Patches only the current user's own role_def
+   * in place; if that role turns out to be shared with other signed-in
+   * users, each of their own tabs does the same check independently.
+   */
+  useEffect(() => {
+    if (modeRef.current !== "live" || !sessionUserId) return;
+
+    const syncPermissions = async () => {
+      if (modeRef.current !== "live") return;
+      const fresh = await fetchMyPermissions();
+      if (!fresh) return;
+      const cur = dbRef.current;
+      const me = getUser(cur, sessionUserId);
+      if (!me) return;
+      const i = cur.roles.findIndex((r) => r.id === me.roleId);
+      if (i < 0) return;
+      const before = cur.roles[i].permissions;
+      const same = before.length === fresh.length && new Set(before).size === new Set(fresh).size
+        && before.every((p) => fresh.includes(p));
+      if (same) return;
+      const roles = [...cur.roles];
+      roles[i] = { ...roles[i], permissions: fresh };
+      const next: DB = { ...cur, roles };
+      dbRef.current = next;
+      setDb(next);
+      toast("Your permissions were just updated.");
+    };
+
+    const onFocus = () => { void syncPermissions(); };
+    window.addEventListener("focus", onFocus);
+    const interval = window.setInterval(() => { void syncPermissions(); }, 3 * 60 * 1000);
+    return () => { window.removeEventListener("focus", onFocus); window.clearInterval(interval); };
+  }, [sessionUserId]);
 
   const modeRef = useRef(mode);
   modeRef.current = mode;

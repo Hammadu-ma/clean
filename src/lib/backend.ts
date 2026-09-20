@@ -480,6 +480,28 @@ async function hydrateCoreViaTables(seed: DB): Promise<{ db: DB; remote: boolean
  *  flag is cleared so the next call re-probes properly. */
 let knownLive = false;
 
+/**
+ * Lightweight poll for "did my own permission set change" — a few bytes
+ * (a permission-id array) instead of a full core re-hydrate. Used to make
+ * RolesPage's own claim true: it tells the admin granting a role
+ * "permissions apply immediately" and a disabled role's users "lose
+ * access immediately", but until this was wired in, that was only ever
+ * true for the editing admin's own tab (via the normal optimistic
+ * update()) — everyone else's already-open session kept whatever
+ * role_defs it loaded at boot until they manually reloaded the page.
+ * Returns null on any failure so callers can just skip that sync tick.
+ */
+export async function fetchMyPermissions(): Promise<string[] | null> {
+  try {
+    const { data, error } = await sb()!.rpc("my_permissions", {});
+    if (error || !Array.isArray(data)) return null;
+    return data as string[];
+  } catch (e) {
+    console.warn("[backend] fetchMyPermissions failed:", e);
+    return null;
+  }
+}
+
 export async function hydrateCore(yearId?: string): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean; transientError: boolean }> {
   const seed = buildSeed();
   const probe = knownLive ? "live" : await checkSchema();

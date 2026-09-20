@@ -719,7 +719,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * users, each of their own tabs does the same check independently.
    */
   useEffect(() => {
-    if (modeRef.current !== "live" || !sessionUserId) return;
+    // Note: only gate on sessionUserId, not modeRef.current — mode only
+    // flips to "live" after hydrateCore() resolves, which happens *after*
+    // sessionUserId is already set during boot. Gating effect setup itself
+    // on mode here would mean this effect fires once, while mode is still
+    // whatever it starts as, sees "not live", and returns — registering
+    // neither listener for the rest of the session, since sessionUserId
+    // won't change again after login. syncPermissions() below re-checks
+    // mode itself, at the moment it actually runs, which is what matters.
+    if (!sessionUserId) return;
 
     const syncPermissions = async () => {
       if (modeRef.current !== "live") return;

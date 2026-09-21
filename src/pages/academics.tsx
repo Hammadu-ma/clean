@@ -18,6 +18,7 @@ import {
 } from "../store";
 import { hasPermission, isSuperAdmin, pushAudit, pushNotifications } from "../rbac";
 import { WEEKDAYS } from "../data/seed";
+import { DEFAULT_PERIODS } from "../lib/backend";
 import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
 import { getDownloadUrl } from "../lib/storage";
 import {
@@ -1095,21 +1096,26 @@ export function TimetablePage() {
   }, [classId]);
   const [editCell, setEditCell] = useState<{ day: number; period: number } | null>(null);
   const [editDays, setEditDays] = useState(false);
+  const [editPeriods, setEditPeriods] = useState(false);
 
   const activeDays = [...(db.settings.workingDays?.length ? db.settings.workingDays : [0, 1, 2, 3, 4])].sort((a, b) => a - b);
+  const activePeriods = [...(db.settings.periods?.length ? db.settings.periods : DEFAULT_PERIODS)].sort((a, b) => a.period - b.period);
 
   const entryFor = (day: number, period: number) => db.timetable.find((t) => t.classId === classId && t.sectionId === sectionId && t.day === day && t.period === period);
 
   const availableSubjects = [...new Set(db.assignments.filter((a) => a.classId === classId && a.sectionId === sectionId).map((a) => a.subjectId))];
 
+  const activePeriodNums = new Set(activePeriods.map((p) => p.period));
   const removedDays = db.timetable.filter((t) => t.classId === classId && t.sectionId === sectionId && !activeDays.includes(t.day));
+  const removedPeriods = db.timetable.filter((t) => t.classId === classId && t.sectionId === sectionId && !activePeriodNums.has(t.period));
 
   return (
     <div className="mx-auto max-w-6xl">
-      <PageHead kicker="Academics" title="Timetable" sub={`One grid per class & section — ${activeDays.map((d) => WEEKDAYS[d]).join(", ")}, ${PERIODS.length} periods a day.`}>
+      <PageHead kicker="Academics" title="Timetable" sub={`One grid per class & section — ${activeDays.map((d) => WEEKDAYS[d]).join(", ")}, ${activePeriods.length} periods a day.`}>
         <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => setClassId(e.target.value)}>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
         <Field label="Section" className="w-28"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)}>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
         {canManage && <Btn variant="soft" onClick={() => setEditDays(true)}><CalendarRange className="h-4 w-4" /> Working days</Btn>}
+        {canManage && <Btn variant="soft" onClick={() => setEditPeriods(true)}><ClockIcon className="h-4 w-4" /> Periods</Btn>}
       </PageHead>
 
       {availableSubjects.length === 0 && canManage && (
@@ -1120,22 +1126,27 @@ export function TimetablePage() {
           {removedDays.length} period{removedDays.length > 1 ? "s are" : " is"} scheduled on a day that's no longer a working day ({[...new Set(removedDays.map((t) => WEEKDAYS[t.day]))].join(", ")}) — they're kept, just hidden below. Re-add that day to see them again.
         </p>
       )}
+      {removedPeriods.length > 0 && canManage && (
+        <p className="anim-rise mb-3 rounded-lg border border-gold-200 bg-gold-100/60 px-3 py-2 text-[12px] font-semibold text-gold-700">
+          {removedPeriods.length} lesson{removedPeriods.length > 1 ? "s are" : " is"} scheduled in a period that no longer exists (P{[...new Set(removedPeriods.map((t) => t.period))].sort((a, b) => a - b).join(", P")}) — kept, just hidden below. Add that period back to see them again.
+        </p>
+      )}
 
       {!groupsLoaded ? (
-        <SkeletonPanel rows={PERIODS.length} />
+        <SkeletonPanel rows={activePeriods.length} />
       ) : (
       <Panel className="anim-rise overflow-x-auto">
         <table className="w-full min-w-[720px]">
           <thead className="border-b border-mist bg-paper/60">
             <tr>
-              <th className={`${thCls()} w-20`}>Period</th>
+              <th className={`${thCls()} w-24`}>Period</th>
               {activeDays.map((day) => <th key={day} className={thCls()}>{WEEKDAYS[day]}</th>)}
             </tr>
           </thead>
           <tbody className="divide-y divide-mist/70">
-            {PERIODS.map((p) => (
+            {activePeriods.map(({ period: p, time }) => (
               <tr key={p}>
-                <td className={`${tdCls()} font-mono text-[12px] font-bold text-soft`}>P{p}</td>
+                <td className={`${tdCls()} font-mono text-[12px] font-bold text-soft`}>P{p}<span className="block font-normal text-soft/70">{time}</span></td>
                 {activeDays.map((day) => {
                   const e = entryFor(day, p);
                   const subj = e ? getSubject(db, e.subjectId) : null;
@@ -1178,6 +1189,18 @@ export function TimetablePage() {
         />
       )}
 
+      {editPeriods && (
+        <PeriodsModal
+          selected={activePeriods}
+          onClose={() => setEditPeriods(false)}
+          onSave={(periods) => {
+            update((d) => { d.settings.periods = periods; });
+            toast("Periods updated.");
+            setEditPeriods(false);
+          }}
+        />
+      )}
+
       {editCell && (
         <TimetableCellModal
           day={editCell.day} period={editCell.period} classId={classId} sectionId={sectionId}
@@ -1210,6 +1233,37 @@ function WorkingDaysModal({ selected, onClose, onSave }: { selected: number[]; o
         ))}
       </div>
       {!days.length && <p className="mt-2 text-[11.5px] font-semibold text-rust-600">Pick at least one day.</p>}
+    </Modal>
+  );
+}
+
+function PeriodsModal({ selected, onClose, onSave }: { selected: { period: number; time: string }[]; onClose: () => void; onSave: (periods: { period: number; time: string }[]) => void }) {
+  const [rows, setRows] = useState(selected.map((p) => ({ ...p })));
+  const setTime = (i: number, time: string) => setRows((cur) => cur.map((r, idx) => idx === i ? { ...r, time } : r));
+  const removeRow = (i: number) => setRows((cur) => cur.filter((_, idx) => idx !== i));
+  const addRow = () => setRows((cur) => [...cur, { period: (cur.at(-1)?.period ?? 0) + 1, time: "" }]);
+  const save = () => {
+    if (!rows.length || rows.some((r) => !r.time.trim())) return;
+    // Renumber 1..N in the order shown, rather than trusting stale numbers
+    // after rows have been added/removed — a period's number is just its
+    // position, same as before, only the count is no longer fixed.
+    onSave(rows.map((r, i) => ({ period: i + 1, time: r.time.trim() })));
+  };
+  return (
+    <Modal title="Periods" kicker="Timetable" onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save} disabled={!rows.length || rows.some((r) => !r.time.trim())}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <p className="mb-3 text-[12.5px] text-soft">Add or remove periods, and set each one's start time. A period you remove isn't deleted — any lessons already scheduled in it stay in place, just hidden, until you add it back.</p>
+      <div className="space-y-2">
+        {rows.map((r, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <span className="w-10 shrink-0 font-mono text-[12px] font-bold text-soft">P{i + 1}</span>
+            <TextInput type="time" value={r.time} onChange={(e) => setTime(i, e.target.value)} className="flex-1" />
+            <Btn size="sm" variant="ghost" onClick={() => removeRow(i)}><Trash2 className="h-3.5 w-3.5" /></Btn>
+          </div>
+        ))}
+      </div>
+      <Btn size="sm" variant="soft" className="mt-3" onClick={addRow}><Plus className="h-3.5 w-3.5" /> Add period</Btn>
+      {(!rows.length || rows.some((r) => !r.time.trim())) && <p className="mt-2 text-[11.5px] font-semibold text-rust-600">Every period needs a start time.</p>}
     </Modal>
   );
 }

@@ -418,6 +418,12 @@ export interface Settings {
    *  per school rather than a fixed 5 or 6. A subset of a fixed set, not a
    *  reorderable list, so removing a day can never renumber another one. */
   workingDays: number[];
+  /** The school's timetable periods, in order — each a period NUMBER
+   *  (matching TimetableEntry.period, unchanged) paired with its start
+   *  time. Unlike workingDays this is a free-form list, not a subset of a
+   *  fixed set: a school day has no natural fixed ceiling on periods, so
+   *  add/remove/reorder freely. */
+  periods: { period: number; time: string }[];
 }
 
 export interface Term {

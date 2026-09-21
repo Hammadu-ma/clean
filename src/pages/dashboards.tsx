@@ -4,7 +4,6 @@ import {
   ArrowRight, Baby, BookOpen, CalendarCheck2, ClipboardList, Clock, FileBarChart2, Inbox, Layers, Megaphone,
   PenLine as NotebookPen, Table2, Users, Wallet, GraduationCap, CheckCircle2, AlertCircle,
 } from "lucide-react";
-import { PERIODS } from "../data/seed";
 import {
   attendanceStats, childrenOf, fmtShort, getSubject, guardianOfStudent, sectionShort, shortName, studentAverage,
   studentOf, studentResults, teacherPairs, teacherStudentIds, teachersOfStudent, timeAgo, todayISO, useApp, useLazyGroups,
@@ -133,7 +132,7 @@ export function AdminDashboard() {
                 const subj = getSubject(db, t.subjectId);
                 return (
                   <li key={t.id} className="flex items-center gap-3 px-5 py-2.5 transition-colors hover:bg-pine-50/60">
-                    <span className="tnum w-12 shrink-0 font-mono text-[12px] font-semibold text-soft">{PERIODS[t.period - 1].time}</span>
+                    <span className="tnum w-12 shrink-0 font-mono text-[12px] font-semibold text-soft">{db.settings.periods.find((p) => p.period === t.period)?.time ?? ""}</span>
                     <span className="h-6 w-1 shrink-0 rounded-full" style={{ background: subj?.color }} />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-[13.5px] font-bold text-ink">{subj?.name}</p>
@@ -259,7 +258,7 @@ export function TeacherDashboard() {
                 const mine = currentUser?.teacherId && db.assignments.some((a) => a.classId === t.classId && a.sectionId === t.sectionId && a.subjectId === t.subjectId && a.teacherId === currentUser.teacherId);
                 return (
                   <li key={t.id} className="flex items-center gap-3 px-5 py-2.5 transition-colors hover:bg-pine-50/60">
-                    <span className="tnum w-12 shrink-0 font-mono text-[12px] font-semibold text-soft">{PERIODS[t.period - 1].time}</span>
+                    <span className="tnum w-12 shrink-0 font-mono text-[12px] font-semibold text-soft">{db.settings.periods.find((p) => p.period === t.period)?.time ?? ""}</span>
                     <span className="h-6 w-1 shrink-0 rounded-full" style={{ background: subj?.color }} />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-[13.5px] font-bold text-ink">{subj?.name}</p>
@@ -393,7 +392,7 @@ export function StudentDashboard() {
                 const teacher = db.assignments.find((a) => a.classId === t.classId && a.sectionId === t.sectionId && a.subjectId === t.subjectId);
                 return (
                   <li key={t.id} className="flex items-center gap-3 px-5 py-2.5 transition-colors hover:bg-pine-50/60">
-                    <span className="tnum w-12 shrink-0 font-mono text-[12px] font-semibold text-soft">{PERIODS[t.period - 1].time}</span>
+                    <span className="tnum w-12 shrink-0 font-mono text-[12px] font-semibold text-soft">{db.settings.periods.find((p) => p.period === t.period)?.time ?? ""}</span>
                     <span className="h-6 w-1 shrink-0 rounded-full" style={{ background: subj?.color }} />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-[13.5px] font-bold text-ink">{subj?.name}</p>

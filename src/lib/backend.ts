@@ -26,12 +26,16 @@ import type {
  */
 
 const SCHOOL_ID = "school-1";
-/** Falls back to this only if a school row genuinely has no working_days
- *  set yet (e.g. this migration hasn't been applied). Once set, a school's
- *  own configured days (however many, whichever ones) always win. Monday
- *  first (0-4), matching the fixed weekday indexing in 0039 — see that
- *  migration for why this isn't Sunday-first. */
+/** Falls back to these only if a school row genuinely has none set yet
+ *  (e.g. these migrations haven't been applied). Once set, a school's own
+ *  configured days/periods (however many, whichever ones) always win.
+ *  Monday first (0-4) for days, matching the fixed weekday indexing in
+ *  0039 — see that migration for why this isn't Sunday-first. */
 export const DEFAULT_WORKING_DAYS = [0, 1, 2, 3, 4];
+export const DEFAULT_PERIODS = [
+  { period: 1, time: "08:00" }, { period: 2, time: "09:00" }, { period: 3, time: "10:30" },
+  { period: 4, time: "11:30" }, { period: 5, time: "13:30" }, { period: 6, time: "14:30" },
+];
 const sb = () => supabase;
 
 export type DbMode = "live" | "local" | "off";
@@ -380,7 +384,8 @@ function applyCoreRows(seed: DB, rows: CoreRows): { db: DB; remote: boolean } {
     const s = schools.find((x: any) => x.id === SCHOOL_ID);
     if (s) {
       const days = Array.isArray(s.working_days) && s.working_days.length ? s.working_days : DEFAULT_WORKING_DAYS;
-      db.settings = { schoolName: s.name, motto: s.motto ?? "", bankAccounts: mapBankAccounts(s.bank_accounts ?? []), workingDays: days };
+      const periods = Array.isArray(s.periods) && s.periods.length ? s.periods : DEFAULT_PERIODS;
+      db.settings = { schoolName: s.name, motto: s.motto ?? "", bankAccounts: mapBankAccounts(s.bank_accounts ?? []), workingDays: days, periods };
     }
   }
   if (years) db.years = years.map((y: any) => ({ id: y.id, name: y.name, start: y.start_date, end: y.end_date, active: y.is_active }));
@@ -1339,6 +1344,7 @@ async function syncSettings(oldDB: DB, newDB: DB, errors: string[]) {
     p_name: newDB.settings.schoolName, p_motto: newDB.settings.motto,
     p_bank_accounts: JSON.stringify(newDB.settings.bankAccounts ?? []),
     p_working_days: JSON.stringify(newDB.settings.workingDays?.length ? newDB.settings.workingDays : DEFAULT_WORKING_DAYS),
+    p_periods: JSON.stringify(newDB.settings.periods?.length ? newDB.settings.periods : DEFAULT_PERIODS),
   });
   if (error) errors.push(`settings: ${error.message}`);
 }

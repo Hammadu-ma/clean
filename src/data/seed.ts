@@ -508,6 +508,7 @@ export function buildSeed(): DB {
         { id: "bank-1", bankName: "Commercial Bank of Ethiopia", accountName: "Riverside Secondary School", accountNumber: "1000123456789", branch: "Bole Branch" },
       ],
       workingDays: [0, 1, 2, 3, 4],
+      periods: PERIODS,
     },
   };
 }

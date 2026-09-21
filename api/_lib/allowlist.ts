@@ -356,6 +356,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_motto: { type: "string", optional: true, maxLength: 300 },
       p_bank_accounts: { type: "string", optional: true, maxLength: 20_000 },
       p_working_days: { type: "string", optional: true, maxLength: 2_000 },
+      p_periods: { type: "string", optional: true, maxLength: 5_000 },
     },
   },
 

@@ -3,7 +3,7 @@ import {
   Banknote, BookOpen, CalendarCheck2, CalendarRange, Check, CheckCheck, CheckCircle2,
   ClipboardList, Clock as ClockIcon, Eye, FileBarChart2, FileDown, Globe2, Layers,
   PenLine, Pencil, Plus, Printer, Receipt, RotateCcw, Save, Send, ShieldCheck, Table2, Tag, Trash2,
-  Undo2, UserCheck, UserX, Wallet,
+  Undo2, UserCheck, UserX, Wallet, AlertTriangle,
 } from "lucide-react";
 import type {
   AcademicYear, AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, DB, FeeItem, Homework,
@@ -1086,9 +1086,24 @@ export function TimetablePage() {
     return <AccessDenied required="academics.view" reason="You don't have permission to view the timetable." />;
   }
   const canManage = hasPermission(db, currentUser, "academics.manage");
-  const [classId, setClassId] = useState(db.classes[0]?.id ?? "");
+  const defaultClassSection = (() => {
+    if (currentUser?.role === "student") {
+      const s = studentOf(db, currentUser);
+      if (s?.enrollment) return { classId: s.enrollment.classId, sectionId: s.enrollment.sectionId };
+    }
+    if (currentUser?.role === "guardian") {
+      const c = childrenOf(db, currentUser)[0];
+      if (c?.enrollment) return { classId: c.enrollment.classId, sectionId: c.enrollment.sectionId };
+    }
+    if (currentUser?.role === "teacher") {
+      const p = teacherPairs(db, currentUser)[0];
+      if (p) return { classId: p.classId, sectionId: p.sectionId };
+    }
+    return { classId: db.classes[0]?.id ?? "", sectionId: "" };
+  })();
+  const [classId, setClassId] = useState(defaultClassSection.classId);
   const cls = getClass(db, classId);
-  const [sectionId, setSectionId] = useState(cls?.sections[0]?.id ?? "");
+  const [sectionId, setSectionId] = useState(defaultClassSection.sectionId || cls?.sections[0]?.id || "");
   useEffect(() => {
     const c = getClass(db, classId);
     if (c && !c.sections.some((s) => s.id === sectionId)) setSectionId(c.sections[0]?.id ?? "");
@@ -1274,9 +1289,24 @@ function TimetableCellModal({ day, period, classId, sectionId, existing, availab
   const { db, update, toast, currentUser } = useApp();
   const [subjectId, setSubjectId] = useState(existing?.subjectId ?? availableSubjects[0] ?? "");
   const [room, setRoom] = useState(existing?.room ?? "");
+  const [confirmConflict, setConfirmConflict] = useState(false);
+  const yearId = db.years.find((y) => y.active)?.id ?? "";
 
-  const save = () => {
-    if (!subjectId) { toast("Choose a subject.", "warn"); return; }
+  const teacher = subjectId ? teacherFor(db, yearId, classId, sectionId, subjectId) : undefined;
+  // Same teacher, same day & period, some OTHER class/section — a double
+  // booking. Looked up by resolving each other slot's own teacher the same
+  // way (timetable entries don't store a teacher id directly, only a
+  // subject — the teacher comes from that class/section/subject's
+  // assignment), not by anything TimetableCellModal already had cached.
+  const conflicts = teacher
+    ? db.timetable.filter((t) => {
+        if (t.day !== day || t.period !== period) return false;
+        if (t.classId === classId && t.sectionId === sectionId) return false;
+        return teacherFor(db, yearId, t.classId, t.sectionId, t.subjectId)?.id === teacher.id;
+      })
+    : [];
+
+  const doSave = () => {
     update((d) => {
       const i = d.timetable.findIndex((t) => t.classId === classId && t.sectionId === sectionId && t.day === day && t.period === period);
       if (i >= 0) d.timetable[i] = { ...d.timetable[i], subjectId, room: room.trim() };
@@ -1285,6 +1315,12 @@ function TimetableCellModal({ day, period, classId, sectionId, existing, availab
     });
     toast("Timetable updated.");
     onClose();
+  };
+
+  const save = () => {
+    if (!subjectId) { toast("Choose a subject.", "warn"); return; }
+    if (conflicts.length && !confirmConflict) { setConfirmConflict(true); return; }
+    doSave();
   };
   const clear = () => {
     update((d) => { d.timetable = d.timetable.filter((t) => !(t.classId === classId && t.sectionId === sectionId && t.day === day && t.period === period)); });
@@ -1300,12 +1336,48 @@ function TimetableCellModal({ day, period, classId, sectionId, existing, availab
         <Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn>
       </>}>
       <Field label="Subject" required>
-        <Select value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>
+        <Select value={subjectId} onChange={(e) => { setSubjectId(e.target.value); setConfirmConflict(false); }}>
           {availableSubjects.length === 0 && <option value="">No assignments for this class/section</option>}
           {availableSubjects.map((sid) => <option key={sid} value={sid}>{getSubject(db, sid)?.name}</option>)}
         </Select>
       </Field>
       <Field label="Room" className="mt-3"><TextInput value={room} onChange={(e) => setRoom(e.target.value)} placeholder="e.g. R-201" /></Field>
+
+      {conflicts.length > 0 && (
+        <div className="anim-rise mt-3 flex gap-2.5 rounded-xl border border-rust-200 bg-rust-50 px-3.5 py-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rust-600" />
+          <div className="min-w-0 text-[12.5px] leading-relaxed text-rust-800">
+            <p className="font-bold">{teacher!.name} is already teaching this period</p>
+            <ul className="mt-1 space-y-0.5">
+              {conflicts.map((t) => (
+                <li key={t.id}>{sectionLabel(db, t.classId, t.sectionId)} · {getSubject(db, t.subjectId)?.name}{t.room ? ` · ${t.room}` : ""}</li>
+              ))}
+            </ul>
+            <p className="mt-1.5 text-rust-700/80">Pick a different subject, or Save again to assign them here too.</p>
+          </div>
+        </div>
+      )}
+
+      {confirmConflict && (
+        <Modal title="Double-book this teacher?" kicker={teacher?.name} onClose={() => setConfirmConflict(false)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmConflict(false)}>Go back</Btn><Btn variant="danger" onClick={doSave}><Save className="h-4 w-4" /> Assign anyway</Btn></>}>
+          <div className="flex gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rust-100"><AlertTriangle className="h-5 w-5 text-rust-600" /></div>
+            <div className="text-[13px] leading-relaxed text-ink">
+              <p><strong>{teacher?.name}</strong> is already scheduled for {WEEKDAYS[day]} · Period {period}, at:</p>
+              <ul className="mt-2 space-y-1 rounded-lg border border-mist bg-paper/60 px-3 py-2">
+                {conflicts.map((t) => (
+                  <li key={t.id} className="flex items-center justify-between">
+                    <span className="font-semibold">{sectionLabel(db, t.classId, t.sectionId)}</span>
+                    <span className="text-soft">{getSubject(db, t.subjectId)?.name}{t.room ? ` · ${t.room}` : ""}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-soft">Assigning them here too means they'd need to be in two places at once. Go back to pick a different subject, or assign anyway if this is intentional (e.g. a co-taught or combined class).</p>
+            </div>
+          </div>
+        </Modal>
+      )}
     </Modal>
   );
 }

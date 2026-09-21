@@ -72,6 +72,7 @@ const NAV: Record<Role, NavGroup[]> = {
       group: "Teaching",
       items: [
         { to: "/teacher/classes", label: "My classes", icon: <Layers className="h-4 w-4" />, perm: "academics.view" },
+        { to: "/admin/timetable", label: "Timetable", icon: <ClockIcon className="h-4 w-4" />, perm: "academics.view" },
         { to: "/teacher/students", label: "My students", icon: <Users className="h-4 w-4" />, perm: "students.view_assigned" },
         { to: "/teacher/attendance", label: "Attendance", icon: <CalendarCheck2 className="h-4 w-4" />, perm: "attendance.view" },
         { to: "/teacher/marks", label: "Mark entry", icon: <Table2 className="h-4 w-4" />, perm: "exams.view" },
@@ -88,6 +89,7 @@ const NAV: Record<Role, NavGroup[]> = {
       group: "Learning",
       items: [
         { to: "/student/classes", label: "My classes", icon: <BookOpen className="h-4 w-4" />, perm: "academics.view" },
+        { to: "/admin/timetable", label: "Timetable", icon: <ClockIcon className="h-4 w-4" />, perm: "academics.view" },
         { to: "/student/grades", label: "My grades", icon: <FileBarChart2 className="h-4 w-4" />, perm: "results.view_self" },
         { to: "/student/attendance", label: "My attendance", icon: <CalendarCheck2 className="h-4 w-4" />, perm: "attendance.view" },
         { to: "/student/assignments", label: "My assignments", icon: <PenLine className="h-4 w-4" />, perm: "assignments.view" },
@@ -103,6 +105,7 @@ const NAV: Record<Role, NavGroup[]> = {
       group: "Family",
       items: [
         { to: "/guardian/children", label: "My children", icon: <Baby className="h-4 w-4" />, perm: "students.view_children" },
+        { to: "/admin/timetable", label: "Timetable", icon: <ClockIcon className="h-4 w-4" />, perm: "academics.view" },
         { to: "/guardian/grades", label: "Grades", icon: <FileBarChart2 className="h-4 w-4" />, perm: "results.view_children" },
         { to: "/guardian/attendance", label: "Attendance", icon: <CalendarCheck2 className="h-4 w-4" />, perm: "attendance.view_children" },
         { to: "/guardian/fees", label: "Fees", icon: <Banknote className="h-4 w-4" />, perm: "fees.view_children" },
@@ -174,6 +177,25 @@ export function AppShell() {
   // /admin/* routes, so a link that appears here is guaranteed to actually
   // open rather than immediately 403.
   const ownPaths = new Set(ownGroups.flatMap((g) => g.items.map((it) => it.to)));
+  // "Additional access" should mean genuinely new capability — a
+  // permission this role doesn't normally carry. Several /admin/* pages
+  // (attendance, marks, assignments, homework, reports) render 100%
+  // identically regardless of which URL reaches them — they branch on
+  // currentUser.role internally, never take a `scoped` prop the way
+  // ClassesPage/StudentsPage do (checked against src/App.tsx's routes) —
+  // and every one of them is gated by the exact same permission string as
+  // the matching item already in ownGroups (e.g. attendance.view gates
+  // both /teacher/attendance and /admin/attendance). So *every* teacher,
+  // with nothing scaled up at all, was seeing these listed as "additional"
+  // — not because they'd been granted anything extra, but because their
+  // completely ordinary default permission happens to gate both the
+  // scoped and unscoped variant. Excluding any permission already used
+  // somewhere in ownGroups fixes that false-positive case while still
+  // correctly surfacing a real grant — e.g. a teacher given the
+  // admin-level students.view (their own bucket only ever uses the
+  // different string students.view_assigned) still shows up, since that
+  // permission genuinely isn't part of what a teacher normally has.
+  const ownPerms = new Set(ownGroups.flatMap((g) => g.items.map((it) => it.perm)).filter((p): p is string => !!p));
   const seenExtra = new Set<string>();
   const extraItems = (Object.keys(NAV) as Role[])
     .filter((r) => r !== currentUser.role)
@@ -181,7 +203,7 @@ export function AppShell() {
     .filter((it) => {
       if (!it.to.startsWith("/admin/")) return false; // only /admin/* was actually loosened in App.tsx — anything else would 403 regardless
       if (ownPaths.has(it.to) || seenExtra.has(it.to)) return false;
-      if (!it.perm || !hasPermission(db, currentUser, it.perm)) return false;
+      if (!it.perm || ownPerms.has(it.perm) || !hasPermission(db, currentUser, it.perm)) return false;
       seenExtra.add(it.to);
       return true;
     });

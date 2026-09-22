@@ -89,6 +89,7 @@ const TITLES: Record<string, string> = {
   "0040_message_report_rpcs.sql": "Fix: filing or reviewing a reported message has always failed outright — adds the missing RPCs",
   "0041_submit_fee_payment_request.sql": "Fix: a guardian's bank-transfer payment submission never actually reached the server — adds the missing RPC",
   "0042_configurable_periods.sql": "Timetable periods (count and start times) are now configurable per school, no longer fixed to 6 or capped at 12",
+  "0043_scope_profiles_bootstrap.sql": "Performance: profiles (every account in the school) was the one table with no row-level scoping at all — every login downloaded every account regardless of role",
 };
 
 /** Turns "0036_some_new_thing.sql" into "Some new thing" for anything not

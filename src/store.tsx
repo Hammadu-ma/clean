@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   AssessmentStructure, Audience, DB, Role, Student, User,
 } from "./types";
@@ -410,6 +410,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // reads trigger a re-render once a fetch lands).
   const loadedGroupsRef = useRef<Set<LazyGroup>>(new Set());
   const loadingGroupsRef = useRef<Set<LazyGroup>>(new Set());
+
+  // Monotonically increasing write epochs prevent a background hydration
+  // request that started before a mutation from overwriting the optimistic
+  // state with an older server snapshot after the mutation has already saved.
+  // A pending refresh is queued when such a stale request is detected.
+  const writeEpochRef = useRef<Record<string, number>>({});
+  const pendingRefreshRef = useRef<Set<LazyGroup>>(new Set());
+
+  const changedLazyGroups = (before: DB, after: DB): LazyGroup[] => {
+    const changed: LazyGroup[] = [];
+    for (const group of ALL_LAZY_GROUPS) {
+      const fields = GROUP_FIELDS[group];
+      if (fields.some((field) => JSON.stringify((before as any)[field]) !== JSON.stringify((after as any)[field]))) {
+        changed.push(group);
+      }
+    }
+    return changed;
+  };
+
+  const bumpWriteEpochs = (groups: LazyGroup[]) => {
+    for (const group of groups) {
+      writeEpochRef.current[group] = (writeEpochRef.current[group] ?? 0) + 1;
+    }
+  };
   const [loadedGroupsTick, setLoadedGroupsTick] = useState(0);
 
   /* Boot: every load re-confirms against Supabase — never a fake seed
@@ -522,20 +546,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /** Fetches one feature group's tables on demand. No-op outside live mode
    *  (already fully in memory) and no-op once loaded or already in flight,
    *  so it's safe for every page to call unconditionally on mount. */
-  const refreshGroup = (group: LazyGroup) => {
+  const refreshGroup = useCallback((group: LazyGroup) => {
     if (modeRef.current !== "live") return;
-    if (loadingGroupsRef.current.has(group)) return;
+    if (loadingGroupsRef.current.has(group)) {
+      pendingRefreshRef.current.add(group);
+      return;
+    }
+
     loadingGroupsRef.current.add(group);
-    hydrateGroup(group, dbRef.current, yearIdRef.current || undefined)
+    const requestEpoch = writeEpochRef.current[group] ?? 0;
+    const requestYear = yearIdRef.current || undefined;
+
+    hydrateGroup(group, dbRef.current, requestYear)
       .then((partial) => {
+        const currentEpoch = writeEpochRef.current[group] ?? 0;
+        // A write started while this request was in flight. Its response is
+        // therefore not authoritative and must never replace newer local
+        // state. Queue a fresh fetch after the write settles.
+        if (currentEpoch !== requestEpoch || requestYear !== (yearIdRef.current || undefined)) {
+          pendingRefreshRef.current.add(group);
+          return;
+        }
         const merged: DB = { ...dbRef.current, ...partial };
         dbRef.current = merged;
         setDb(merged);
         if (sessionUserId) dbCache.writeCache(dbCache.cacheKey(sessionUserId, group), partial);
       })
       .catch((e) => console.warn(`[store] realtime refresh failed for ${group}:`, e))
-      .finally(() => loadingGroupsRef.current.delete(group));
-  };
+      .finally(() => {
+        loadingGroupsRef.current.delete(group);
+        if (pendingRefreshRef.current.has(group)) {
+          pendingRefreshRef.current.delete(group);
+          queueMicrotask(() => refreshGroup(group));
+        }
+      });
+  }, [sessionUserId]);
 
   const ensureGroup = (group: LazyGroup) => {
     if (modeRef.current !== "live") return;
@@ -789,9 +834,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const prev = dbRef.current;
     const draft = structuredClone(prev);
     fn(draft);
+
+    // Mark changed feature groups BEFORE the write begins. Any poll/hydration
+    // already in flight that returns after this point is stale by definition.
+    const writeGroups = changedLazyGroups(prev, draft);
+    bumpWriteEpochs(writeGroups);
+
     dbRef.current = draft;
     setDb(draft);
     return sync(prev, draft).then(async (errors) => {
+      // Invalidate every pre-write refresh again at the moment the server
+      // write has settled. This also catches refreshes that started after the
+      // optimistic update but before the RPC finished.
+      bumpWriteEpochs(writeGroups);
+
       if (errors.length) {
         // The optimistic draft may not match what actually landed on the
         // server — pull the authoritative state back down rather than let
@@ -816,6 +872,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           loadedGroupsRef.current = new Set(ALL_LAZY_GROUPS);
           setLoadedGroupsTick((t) => t + 1);
         }
+      } else {
+        // Re-read just the groups affected by this successful mutation so the
+        // UI confirms the server state immediately, rather than waiting for
+        // the next polling tick. If an older request is still in flight, the
+        // pending-refresh mechanism above will run the fresh request after it.
+        for (const group of writeGroups) refreshGroup(group);
       }
       return errors;
     }); // PostgreSQL; RLS decides what lands

@@ -213,7 +213,7 @@ export function AppShell() {
 
   const unreadMsgs = totalUnreadMessages(db, currentUser);
   const unreadNotifs = unreadNotifications(db, currentUser);
-  const pendingFeePayments = useAdminPendingFeePayments(currentUser?.role === "admin");
+  const pendingFeePayments = useAdminPendingFeePayments(yearId, currentUser?.role === "admin");
   const year = db.years.find((y) => y.id === yearId);
 
   const sidebar = (

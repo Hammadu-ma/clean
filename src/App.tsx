@@ -2,6 +2,7 @@ import { lazy, Suspense, type ReactNode } from "react";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Compass } from "lucide-react";
 import { AppProvider, homePathFor, useApp } from "./store";
+import { AcademicYearProvider } from "./lib/yearContext";
 import type { Role } from "./types";
 import { AppShell } from "./Layout";
 import { AccessDenied, LoginPage } from "./pages/Auth";
@@ -127,7 +128,8 @@ function NotFound() {
 export default function App() {
   return (
     <AppProvider>
-      <HashRouter>
+      <AcademicYearProvider>
+        <HashRouter>
         <Suspense fallback={<PageLoading />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
@@ -219,7 +221,8 @@ export default function App() {
           </Route>
         </Routes>
         </Suspense>
-      </HashRouter>
+        </HashRouter>
+      </AcademicYearProvider>
     </AppProvider>
   );
 }

@@ -424,6 +424,9 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
   delete_academic_year: { read: false, rateLimit: 10, args: { p_year_id: { type: "string", maxLength: 64 } } },
   save_term: { read: false, rateLimit: 30, args: { p_payload: { type: "json", maxKeys: 6 } } },
   delete_term: { read: false, rateLimit: 20, args: { p_term_id: { type: "string", maxLength: 64 } } },
+  set_year_grade_visibility: { read: false, rateLimit: 20, args: { p_year_id: { type: "string", maxLength: 64 }, p_show_grade: { type: "boolean" } } },
+  save_grade_band: { read: false, rateLimit: 60, args: { p_payload: { type: "json", maxKeys: 8 } } },
+  delete_grade_band: { read: false, rateLimit: 30, args: { p_grade_band_id: { type: "string", maxLength: 128 } } },
   rollover_year: {
     read: false,
     rateLimit: 5,

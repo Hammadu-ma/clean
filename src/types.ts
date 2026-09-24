@@ -57,6 +57,8 @@ export interface AcademicYear {
   start: string;
   end: string;
   active: boolean;
+  /** Whether percentage-to-letter grades are shown on results/report cards. */
+  showGrade: boolean;
 }
 
 export interface Section {
@@ -218,6 +220,8 @@ export interface Submission {
 }
 
 export interface GradeBand {
+  id?: ID;
+  yearId?: ID;
   min: number;
   max: number;
   grade: string;

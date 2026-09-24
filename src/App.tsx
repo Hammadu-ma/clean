@@ -31,7 +31,7 @@ const { FamiliesPage, GuardianFeesPage, ProfilePage, StudentProfilePage, Student
 
 const academics = named(() => import("./pages/academics"));
 const {
-  AssignmentsPage, AttendancePage, AcademicYearsPage, ClassesPage, FeesPage, HomeworkPage, MarkEntryPage, ReportsPage, TimetablePage,
+  AssignmentsPage, AttendancePage, AcademicYearsPage, GradeConfigurationPage, ClassesPage, FeesPage, HomeworkPage, MarkEntryPage, ReportsPage, TimetablePage,
 } = academics;
 
 const communication = named(() => import("./pages/communication"));
@@ -151,6 +151,7 @@ export default function App() {
             <Route path="/admin/families" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="families.view permission"><FamiliesPage /></Guard>} />
             <Route path="/admin/classes" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="academics.view permission"><ClassesPage /></Guard>} />
             <Route path="/admin/academic-years" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="academics.manage_years permission"><AcademicYearsPage /></Guard>} />
+            <Route path="/admin/grade-configuration" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="academics.manage_years permission"><GradeConfigurationPage /></Guard>} />
             <Route path="/admin/timetable" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="academics.view permission"><TimetablePage /></Guard>} />
             <Route path="/admin/marks" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="exams.view permission"><MarkEntryPage /></Guard>} />
             <Route path="/admin/assignments" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="assignments.view permission"><AssignmentsPage /></Guard>} />

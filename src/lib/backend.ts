@@ -273,7 +273,7 @@ function mapSubmissions(submissions: any[]) {
 }
 function mapGrading(gradeBands: any[]) {
   return gradeBands.slice().sort((a: any, b: any) => a.sort - b.sort)
-    .map((g: any) => ({ min: Number(g.min_pct), max: Number(g.max_pct), grade: g.grade, remark: g.remark }));
+    .map((g: any) => ({ id: g.id, yearId: g.year_id, min: Number(g.min_pct), max: Number(g.max_pct), grade: g.grade, remark: g.remark ?? "" }));
 }
 function mapAttendance(registers: any[], entries: any[]): AttendanceRecord[] {
   return registers.map((r: any) => {
@@ -388,7 +388,7 @@ function applyCoreRows(seed: DB, rows: CoreRows, selectedYearId?: string): { db:
       db.settings = { schoolName: s.name, motto: s.motto ?? "", bankAccounts: mapBankAccounts(s.bank_accounts ?? []), workingDays: days, periods };
     }
   }
-  if (years) db.years = years.map((y: any) => ({ id: y.id, name: y.name, start: y.start_date, end: y.end_date, active: y.is_active }));
+  if (years) db.years = years.map((y: any) => ({ id: y.id, name: y.name, start: y.start_date, end: y.end_date, active: y.is_active, showGrade: y.show_grade !== false }));
   if (terms) db.terms = (terms as any[]).map((t) => ({ id: t.id, yearId: t.year_id, name: t.name, seq: t.seq }));
   if (classes && sections) {
     db.classes = classes.map((c: any) => ({
@@ -739,7 +739,7 @@ function diff<T extends { id: string }>(oldR: T[], newR: T[], key: (r: T) => str
 /** Serialize the full DB into flat row-sets keyed by table. */
 function rowsOf(db: DB) {
   const R: Record<string, any[]> = {
-    academic_years: db.years.map((y) => ({ id: y.id, school_id: SCHOOL_ID, name: y.name, start_date: y.start, end_date: y.end, is_active: y.active })),
+    academic_years: db.years.map((y) => ({ id: y.id, school_id: SCHOOL_ID, name: y.name, start_date: y.start, end_date: y.end, is_active: y.active, show_grade: y.showGrade !== false })),
     terms: db.terms.map((t) => ({ id: t.id, year_id: t.yearId, name: t.name, seq: t.seq })),
     classes: db.classes.map((c) => ({ id: c.id, school_id: SCHOOL_ID, name: c.name, level: c.level })),
     sections: db.classes.flatMap((c) => c.sections.map((s) => ({ id: s.id, class_id: c.id, name: s.name }))),
@@ -774,7 +774,7 @@ function rowsOf(db: DB) {
       returned_by: s.returnedBy, returned_at: s.returnedAt, return_reason: s.returnReason,
       published_by: s.publishedBy, published_at: s.publishedAt, reopen_reason: s.reopenReason ?? null,
     })),
-    grade_bands: db.grading.map((g, i) => ({ id: `gb${i + 1}`, school_id: SCHOOL_ID, min_pct: g.min, max_pct: g.max, grade: g.grade, remark: g.remark, sort: i })),
+    grade_bands: db.grading.map((g, i) => ({ id: g.id ?? `gb-${activeYearId(db) ?? "year"}-${i + 1}`, school_id: SCHOOL_ID, min_pct: g.min, max_pct: g.max, grade: g.grade, remark: g.remark, sort: i, year_id: g.yearId ?? activeYearId(db) })),
     fee_items: db.fees.map((f) => ({ id: f.id, student_id: f.studentId, label: f.label, amount: f.amount, paid: f.paid, due_date: f.due, payments: f.payments ?? [] })),
     fee_payment_requests: db.paymentRequests.map((r) => ({
       id: r.id, student_id: r.studentId, fee_item_id: r.feeItemId, amount: r.amount,
@@ -857,7 +857,7 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
   //     freshly uploaded document could be invisible until reload — was in
   //     register_file()/unregister_file() themselves, not here; see
   //     0032_reconcile_student_documents.sql.
-  const ordered = ["grade_bands", "student_documents"];
+  const ordered = ["student_documents"];
   for (const table of ordered) {
     const { up, del } = diff(o[table] ?? [], n[table] ?? []);
     if (up.length) await upsert(table, up, undefined, errors);
@@ -865,6 +865,7 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
   }
 
   await syncYears(oldDB, newDB, errors);
+  await syncGrading(oldDB, newDB, errors);
   await syncTerms(oldDB, newDB, errors);
   await syncStudents(oldDB, newDB, errors);
   await syncMarks(oldDB, newDB, errors);
@@ -922,6 +923,10 @@ async function syncYears(oldDB: DB, newDB: DB, errors: string[]) {
       });
       if (error) errors.push(`academic year "${y.name}": ${error.message}`);
     }
+    if (before.showGrade !== y.showGrade) {
+      const { error } = await sb()!.rpc("set_year_grade_visibility", { p_year_id: y.id, p_show_grade: y.showGrade !== false });
+      if (error) errors.push(`grade visibility for "${y.name}": ${error.message}`);
+    }
     if (!before.active && y.active) {
       const { error } = await sb()!.rpc("set_active_year", { p_year_id: y.id });
       if (error) errors.push(`activating "${y.name}": ${error.message}`);
@@ -931,6 +936,29 @@ async function syncYears(oldDB: DB, newDB: DB, errors: string[]) {
     if (newDB.years.some((y) => y.id === before.id)) continue;
     const { error } = await sb()!.rpc("delete_academic_year", { p_year_id: before.id });
     if (error) errors.push(`removing academic year "${before.name}": ${error.message}`);
+  }
+}
+
+async function syncGrading(oldDB: DB, newDB: DB, errors: string[]) {
+  const yearId = activeYearId(newDB);
+  if (!yearId) return;
+  const oldBands = oldDB.grading ?? [];
+  const newBands = newDB.grading ?? [];
+  for (let i = 0; i < newBands.length; i++) {
+    const g = newBands[i];
+    const before = oldBands.find((x) => x.id === g.id);
+    if (before && JSON.stringify(before) === JSON.stringify(g)) continue;
+    const { error } = await sb()!.rpc("save_grade_band", {
+      p_payload: { id: g.id ?? null, year_id: g.yearId ?? yearId, min_pct: g.min, max_pct: g.max, grade: g.grade, remark: g.remark ?? null, sort: i },
+    });
+    if (error) errors.push(`grade ${g.grade}: ${error.message}`);
+  }
+  for (const before of oldBands) {
+    if (before.id && newBands.some((g) => g.id === before.id)) continue;
+    if (before.id) {
+      const { error } = await sb()!.rpc("delete_grade_band", { p_grade_band_id: before.id });
+      if (error) errors.push(`removing grade ${before.grade}: ${error.message}`);
+    }
   }
 }
 

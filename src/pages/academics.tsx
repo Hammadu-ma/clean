@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Banknote, BookOpen, CalendarCheck2, CalendarRange, Check, CheckCheck, CheckCircle2,
+  Banknote, BookOpen, CalendarCheck2, CalendarRange, Check, CheckCheck, CheckCircle2, Settings2,
   ClipboardList, Clock as ClockIcon, Eye, FileBarChart2, FileDown, Globe2, Layers,
   PenLine, Pencil, Plus, Printer, Receipt, RotateCcw, Save, Send, ShieldCheck, Table2, Tag, Trash2,
   Undo2, UserCheck, UserX, Wallet, AlertTriangle,
@@ -47,7 +47,8 @@ function SubmissionChip({ status }: { status: Submission["status"] }) {
 
 function exportMarkSheetCsv(db: DB, structure: AssessmentStructure, roster: Student[]) {
   const ranks = structureRanks(db, structure);
-  const header = ["#", "Student", "Reg. No", ...structure.items.map((i) => `${i.name} (/${i.max})`), "Total", "%", "Grade", "Rank"];
+  const showGrade = getYear(db, structure.yearId)?.showGrade !== false;
+  const header = ["#", "Student", "Reg. No", ...structure.items.map((i) => `${i.name} (/${i.max})`), "Total", "%", ...(showGrade ? ["Grade"] : []), "Rank"];
   const rows: (string | number)[][] = [header];
   roster.forEach((s, i) => {
     const calc = assessmentCalc(db, structure, s.id);
@@ -57,7 +58,7 @@ function exportMarkSheetCsv(db: DB, structure: AssessmentStructure, roster: Stud
       ...structure.items.map((it) => calc?.raw[it.id] ?? ""),
       calc?.complete ? fmt1(calc.total) : "",
       calc?.complete ? fmt1(calc.pct) : "",
-      grade?.grade ?? "",
+      ...(showGrade ? [grade?.grade ?? ""] : []),
       calc?.complete && ranks[s.id] ? ranks[s.id] : "",
     ]);
   });
@@ -67,6 +68,7 @@ function exportMarkSheetCsv(db: DB, structure: AssessmentStructure, roster: Stud
 
 function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Student[]) {
   const ranks = structureRanks(db, structure);
+  const showGrade = getYear(db, structure.yearId)?.showGrade !== false;
   const doc = newThemedDoc("landscape");
   const y0 = drawThemedHeader(doc, db.settings.schoolName, "Mark Sheet", `${getClass(db, structure.classId)?.name} · ${getSubject(db, structure.subjectId)?.name} · ${structure.period}`);
   const columns = [
@@ -75,7 +77,7 @@ function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Stud
     ...structure.items.map((it) => ({ header: `${it.name} /${it.max}`, width: 22, align: "center" as const })),
     { header: "Total", width: 18, align: "center" as const },
     { header: "%", width: 14, align: "center" as const },
-    { header: "Grade", width: 14, align: "center" as const },
+    ...(showGrade ? [{ header: "Grade", width: 14, align: "center" as const }] : []),
     { header: "Rank", width: 12, align: "center" as const },
   ];
   const rows = roster.map((s, i) => {
@@ -86,7 +88,7 @@ function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Stud
       ...structure.items.map((it) => calc?.raw[it.id] ?? "—"),
       calc?.complete ? fmt1(calc.total) : "—",
       calc?.complete ? `${fmt1(calc.pct)}%` : "—",
-      grade?.grade ?? "—",
+      ...(showGrade ? [grade?.grade ?? "—"] : []),
       calc?.complete && ranks[s.id] ? ordinal(ranks[s.id]) : "—",
     ];
   });
@@ -160,6 +162,7 @@ export function MarkEntryPage() {
   const submission = structure ? submissionFor(db, structure.id) : undefined;
   const status = structure ? submissionStatus(db, structure.id) : "draft";
   const canApprove = hasPermission(db, currentUser, "results.manage");
+  const showGrade = getYear(db, structure?.yearId)?.showGrade !== false;
   const canPublish = hasPermission(db, currentUser, "results.publish");
   const canReopen = isSuperAdmin(db, currentUser); // DB enforces super-admin-only for this transition
   const canEnter = hasPermission(db, currentUser, "exams.enter_marks");
@@ -439,7 +442,7 @@ export function MarkEntryPage() {
                       ))}
                       <th className={`${thCls()} text-center text-gold-700`}>Total<span className="ml-1 font-mono text-[9.5px] font-semibold normal-case text-soft">/{fmt1(structureWeightSum(structure))}</span></th>
                       <th className={`${thCls()} text-center`}>%</th>
-                      <th className={`${thCls()} text-center`}>Grade</th>
+                      {showGrade && <th className={`${thCls()} text-center`}>Grade</th>}
                       <th className={`${thCls()} text-center`}>Rank</th>
                     </tr>
                   </thead>
@@ -472,7 +475,7 @@ export function MarkEntryPage() {
                           ))}
                           <td className={`${tdCls()} text-center font-mono text-[13px] font-bold ${calc ? "text-ink" : "text-soft/50"}`}>{calc ? fmt1(calc.total) : "—"}</td>
                           <td className={`${tdCls()} tnum text-center font-mono text-[12.5px] font-semibold ${calc ? "text-pine-800" : "text-soft/50"}`}>{calc ? `${fmt1(calc.pct)}%` : "—"}</td>
-                          <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={calc!.pct >= 80 ? "pine" : calc!.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <span className="text-soft/40">—</span>}</td>
+                          {showGrade && <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={calc!.pct >= 80 ? "pine" : calc!.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <span className="text-soft/40">—</span>}</td>}
                           <td className={`${tdCls()} tnum text-center font-mono text-[12px] text-soft`}>{calc?.complete && ranks[s.id] ? ordinal(ranks[s.id]) : "—"}</td>
                         </tr>
                       );
@@ -623,6 +626,102 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
    classes they teach / are enrolled in, with subjects & teachers shown.
    ========================================================================= */
 /* ================= academic years & terms (admin/superadmin, gated by academics.manage_years) ================= */
+export function GradeConfigurationPage() {
+  const { db, currentUser, update, toast, yearId, setYear } = useApp();
+  const loaded = useLazyGroups("academics");
+  const canManage = hasPermission(db, currentUser, "academics.manage_years");
+  const selectedYear = getYear(db, yearId);
+  const [rows, setRows] = useState<DB["grading"]>([]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    setRows((db.grading ?? []).map((g) => ({ ...g })));
+  }, [loaded, yearId, db.grading]);
+
+  if (!canManage) return <AccessDenied required="academics.manage_years" reason="Only authorized academic administrators can configure grading." />;
+
+  const save = async () => {
+    if (!selectedYear) return;
+    const normalized = rows
+      .map((g, i) => ({ ...g, yearId: selectedYear.id, id: g.id ?? uid() , min: Number(g.min), max: Number(g.max), grade: g.grade.trim(), remark: g.remark?.trim() ?? "" }))
+      .sort((a, b) => b.min - a.min);
+    for (let i = 0; i < normalized.length; i++) {
+      const g = normalized[i];
+      if (!g.grade) { toast("Every grade needs a grade label.", "warn"); return; }
+      if (!Number.isFinite(g.min) || !Number.isFinite(g.max) || g.min < 0 || g.max > 100 || g.min > g.max) {
+        toast(`Invalid range for ${g.grade}. Use 0–100 and make minimum no greater than maximum.`, "warn"); return;
+      }
+      for (let j = i + 1; j < normalized.length; j++) {
+        const h = normalized[j];
+        if (g.min <= h.max && g.max >= h.min) { toast(`${g.grade} overlaps ${h.grade}. Grade ranges cannot overlap.`, "warn"); return; }
+      }
+    }
+    const errors = await update((d) => {
+      d.grading = normalized;
+      pushAudit(d, currentUser, "grading.update", selectedYear.name, `${normalized.length} grade bands configured`);
+    });
+    if (errors.length) toast(errors[0], "warn"); else toast("Grade configuration saved.");
+  };
+
+  const toggleVisibility = async (show: boolean) => {
+    if (!selectedYear) return;
+    const errors = await update((d) => {
+      const y = d.years.find((x) => x.id === selectedYear.id);
+      if (y) y.showGrade = show;
+      pushAudit(d, currentUser, "grading.visibility", selectedYear.name, show ? "Grade column enabled" : "Grade column disabled");
+    });
+    if (errors.length) toast(errors[0], "warn"); else toast(show ? "Grade column enabled." : "Grade column hidden from results.");
+  };
+
+  const add = () => setRows((r) => [...r, { id: uid(), yearId: selectedYear?.id, min: 0, max: 49.99, grade: "F", remark: "Needs improvement" }]);
+  const remove = (id?: string) => setRows((r) => r.filter((g) => g.id !== id));
+  const updateRow = (id: string | undefined, patch: Partial<DB["grading"][number]>) => setRows((r) => r.map((g) => g.id === id ? { ...g, ...patch } : g));
+
+  return <div className="mx-auto max-w-5xl">
+    <PageHead kicker="Academics" title="Grade configuration" sub="Define percentage ranges for each academic year and decide whether Grade appears on results and report cards.">
+      <Btn variant="solid" onClick={save} disabled={!loaded || !selectedYear}><Save className="h-4 w-4" /> Save configuration</Btn>
+    </PageHead>
+
+    <Panel className="mb-4 p-4">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <Field label="Academic year" className="min-w-[220px]">
+          <Select value={yearId} onChange={(e) => setYear(e.target.value)}>
+            {db.years.slice().sort((a,b) => b.start.localeCompare(a.start)).map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}
+          </Select>
+        </Field>
+        <div className="flex items-center gap-3 rounded-xl border border-mist bg-paper px-3 py-2">
+          <div><p className="text-[12px] font-bold text-ink">Show Grade in results</p><p className="text-[11px] text-soft">Hide it when this school year uses percentage-only results.</p></div>
+          <button type="button" onClick={() => toggleVisibility(!(selectedYear?.showGrade !== false))} className={`relative h-6 w-11 rounded-full transition ${selectedYear?.showGrade !== false ? "bg-pine-600" : "bg-mist"}`} aria-label="Toggle Grade column">
+            <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${selectedYear?.showGrade !== false ? "left-6" : "left-1"}`} />
+          </button>
+        </div>
+      </div>
+    </Panel>
+
+    <Panel className="p-0 overflow-hidden">
+      <div className="flex items-center justify-between border-b border-mist px-4 py-3">
+        <div><p className="font-display text-[15px] font-bold text-ink">Percentage → Grade bands</p><p className="text-[11px] text-soft">Ranges are inclusive. Overlapping ranges are blocked by the database.</p></div>
+        <Btn size="sm" variant="soft" onClick={add}><Plus className="h-3.5 w-3.5" /> Add grade</Btn>
+      </div>
+      {!loaded ? <div className="p-6"><SkeletonPanel rows={5} /></div> : rows.length === 0 ? <EmptyState icon={<Settings2 className="h-5 w-5" />} title="No grade bands configured" body="Add your first percentage range for this academic year." action={<Btn onClick={add}><Plus className="h-4 w-4" /> Add grade</Btn>} /> : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-left">
+            <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Min %</th><th className={thCls()}>Max %</th><th className={thCls()}>Grade</th><th className={thCls()}>Remark</th><th className={thCls()}></th></tr></thead>
+            <tbody>{rows.map((g) => <tr key={g.id} className="border-b border-mist/70 last:border-0">
+              <td className={tdCls()}><TextInput type="number" min="0" max="100" step="0.01" value={g.min} onChange={(e) => updateRow(g.id, { min: Number(e.target.value) })} /></td>
+              <td className={tdCls()}><TextInput type="number" min="0" max="100" step="0.01" value={g.max} onChange={(e) => updateRow(g.id, { max: Number(e.target.value) })} /></td>
+              <td className={tdCls()}><TextInput value={g.grade} onChange={(e) => updateRow(g.id, { grade: e.target.value })} placeholder="A+" /></td>
+              <td className={tdCls()}><TextInput value={g.remark} onChange={(e) => updateRow(g.id, { remark: e.target.value })} placeholder="Outstanding" /></td>
+              <td className={tdCls()}><button onClick={() => remove(g.id)} className="cursor-pointer rounded-lg p-2 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-4 w-4" /></button></td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      )}
+      <div className="flex justify-end border-t border-mist px-4 py-3"><Btn variant="solid" onClick={save} disabled={!loaded || !selectedYear}><Save className="h-4 w-4" /> Save configuration</Btn></div>
+    </Panel>
+  </div>;
+}
+
 export function AcademicYearsPage() {
   const { db, currentUser, update, toast, setYear } = useApp();
   useLazyGroups(["academics", "homework"]);
@@ -768,7 +867,7 @@ function YearModal({ existing, onClose }: { existing: AcademicYear | null; onClo
         y.name = name.trim(); y.start = start; y.end = end; y.active = makeActive || y.active;
         pushAudit(d, currentUser, "year.update", name.trim());
       } else {
-        d.years.push({ id: uid(), name: name.trim(), start, end, active: makeActive });
+        d.years.push({ id: uid(), name: name.trim(), start, end, active: makeActive, showGrade: true });
         pushAudit(d, currentUser, "year.create", name.trim());
       }
     });
@@ -1759,7 +1858,7 @@ export function ReportsPage() {
                 </tr>
               );
             })}
-            {roster.length === 0 && <tr><td colSpan={5}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
+            {roster.length === 0 && <tr><td colSpan={showGrade ? 5 : 4}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
           </tbody>
         </table>
       </Panel>
@@ -1802,6 +1901,7 @@ function ReportCardModal({ student, onClose, adminView }: { student: Student; on
 }
 
 function exportReportCardCsv(db: DB, student: Student, results: ReturnType<typeof studentResults>) {
+  const showGrade = getYear(db, db.years.find((y) => y.active)?.id)?.showGrade !== false;
   const rows: (string | number)[][] = [["Subject", "Period", "Assessment", "Max", "Weight %", "Score"]];
   results.forEach((r) => {
     r.st.items.forEach((it) => {
@@ -1809,10 +1909,12 @@ function exportReportCardCsv(db: DB, student: Student, results: ReturnType<typeo
     });
     rows.push([r.subject?.name ?? "", r.st.period, "TOTAL", "", "", r.calc.complete ? fmt1(r.calc.total) : ""]);
   });
+  if (showGrade) rows.push(["", "", "Grade column enabled", "", "", ""]);
   downloadCsv(`Report-${student.regId}.csv`, rows);
 }
 
 function exportReportCardPdf(db: DB, student: Student, results: ReturnType<typeof studentResults>) {
+  const showGrade = getYear(db, db.years.find((y) => y.active)?.id)?.showGrade !== false;
   const doc = newThemedDoc("portrait");
   let y = drawThemedHeader(doc, db.settings.schoolName, "Report Card", `${fullName(student)} · Reg. ${student.regId}`);
   y += 2;
@@ -1821,10 +1923,10 @@ function exportReportCardPdf(db: DB, student: Student, results: ReturnType<typeo
     { header: "Period", width: 35, align: "center" },
     { header: "Total", width: 25, align: "center" },
     { header: "%", width: 20, align: "center" },
-    { header: "Grade", width: 20, align: "center" },
+    ...(showGrade ? [{ header: "Grade", width: 20, align: "center" as const }] : []),
   ], results.map((r) => {
     const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null;
-    return [r.subject?.name ?? "", r.st.period, r.calc.complete ? fmt1(r.calc.total) : "—", r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—", grade?.grade ?? "—"];
+    return [r.subject?.name ?? "", r.st.period, r.calc.complete ? fmt1(r.calc.total) : "—", r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—", ...(showGrade ? [grade?.grade ?? "—"] : [])];
   }));
   y += 6;
   results.forEach((r) => {
@@ -1845,6 +1947,7 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
   const all = studentResults(db, student);
   const results = publishedOnly ? all.filter((r) => submissionStatus(db, r.st.id) === "published") : all;
   const completeOnes = results.filter((r) => r.calc.complete);
+  const showGrade = getYear(db, db.years.find((y) => y.active)?.id)?.showGrade !== false;
   const avg = completeOnes.length ? +(completeOnes.reduce((s, r) => s + r.calc.pct, 0) / completeOnes.length).toFixed(1) : null;
   const [tab, setTab] = useState<"summary" | "detailed">("summary");
 
@@ -1868,7 +1971,7 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
       {tab === "summary" ? (
         <Panel className="overflow-x-auto">
           <table className="w-full min-w-[560px]">
-            <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th><th className={`${thCls()} text-center`}>Grade</th></tr></thead>
+            <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th>{showGrade && <th className={`${thCls()} text-center`}>Grade</th>}</tr></thead>
             <tbody className="divide-y divide-mist/70">
               {results.map((r, i) => {
                 const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null;
@@ -1878,11 +1981,11 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
                     <td className={tdCls()}>{r.st.period}</td>
                     <td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.complete ? fmt1(r.calc.total) : "—"}</td>
                     <td className={`${tdCls()} text-center font-mono`}>{r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—"}</td>
-                    <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={r.calc.pct >= 80 ? "pine" : r.calc.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <Chip tone="gray">pending</Chip>}</td>
+                    {showGrade && <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={r.calc.pct >= 80 ? "pine" : r.calc.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <Chip tone="gray">pending</Chip>}</td>}
                   </tr>
                 );
               })}
-              {results.length === 0 && <tr><td colSpan={5}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></td></tr>}
+              {results.length === 0 && <tr><td colSpan={showGrade ? 5 : 4}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></td></tr>}
             </tbody>
           </table>
         </Panel>

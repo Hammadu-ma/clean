@@ -145,8 +145,8 @@ export function buildSeed(): DB {
 
   /* ---------------- academic years / classes / subjects ---------------- */
   const years: DB["years"] = [
-    { id: "y25", name: "2025/26", start: "2025-09-15", end: "2026-07-03", active: false },
-    { id: "y26", name: "2026/27", start: "2026-09-14", end: "2027-07-02", active: true },
+    { id: "y25", name: "2025/26", start: "2025-09-15", end: "2026-07-03", active: false, showGrade: true },
+    { id: "y26", name: "2026/27", start: "2026-09-14", end: "2027-07-02", active: true, showGrade: true },
   ];
 
   // Mirrors supabase/migrations/0003_seed_core.sql exactly — this is what

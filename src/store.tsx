@@ -336,6 +336,7 @@ interface Ctx {
    *  time a page that needs them mounts. Safe to call every render — it's a
    *  no-op once loaded or while already in flight. */
   ensureGroup: (group: LazyGroup) => void;
+  refreshGroup: (group: LazyGroup) => void;
   /** Ids of users with a live Supabase Realtime presence in this session —
    *  i.e. currently have the app open. Used for Telegram-style "online"
    *  indicators in Messages. Empty outside live mode. */
@@ -521,6 +522,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /** Fetches one feature group's tables on demand. No-op outside live mode
    *  (already fully in memory) and no-op once loaded or already in flight,
    *  so it's safe for every page to call unconditionally on mount. */
+  const refreshGroup = (group: LazyGroup) => {
+    if (modeRef.current !== "live") return;
+    if (loadingGroupsRef.current.has(group)) return;
+    loadingGroupsRef.current.add(group);
+    hydrateGroup(group, dbRef.current, yearIdRef.current || undefined)
+      .then((partial) => {
+        const merged: DB = { ...dbRef.current, ...partial };
+        dbRef.current = merged;
+        setDb(merged);
+        if (sessionUserId) dbCache.writeCache(dbCache.cacheKey(sessionUserId, group), partial);
+      })
+      .catch((e) => console.warn(`[store] realtime refresh failed for ${group}:`, e))
+      .finally(() => loadingGroupsRef.current.delete(group));
+  };
+
   const ensureGroup = (group: LazyGroup) => {
     if (modeRef.current !== "live") return;
     if (loadedGroupsRef.current.has(group) || loadingGroupsRef.current.has(group)) return;
@@ -901,7 +917,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sessionUserId, currentUser, login, logout,
     toast, ui: { toast: toastState }, dismissToast,
     ready, mode, schemaMissing, reconnect, sessionChecked,
-    isGroupLoaded, ensureGroup, onlineUserIds,
+    isGroupLoaded, ensureGroup, refreshGroup, onlineUserIds,
   };
 
   if (!ready) {
@@ -932,7 +948,7 @@ export function useApp() {
  *  returns whether every requested group has landed, so the page can show
  *  a loading state instead of reading an empty array as "no records". */
 export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
-  const { isGroupLoaded, ensureGroup, yearId } = useApp();
+  const { isGroupLoaded, ensureGroup, refreshGroup, yearId } = useApp();
   const list = Array.isArray(groups) ? groups : [groups];
   const key = list.join(",");
   useEffect(() => {
@@ -940,5 +956,18 @@ export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
     // Re-run whenever the selected academic year changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, yearId]);
+
+  // The browser intentionally talks to our server API rather than holding a
+  // Supabase credential, so a direct browser Realtime socket is not possible.
+  // Keep communication genuinely live from the user perspective with a small
+  // polling loop. It only refreshes the groups actually used by this page.
+  useEffect(() => {
+    const liveGroup = list.includes("messaging") ? "messaging" : list.includes("notifications") ? "notifications" : null;
+    if (!liveGroup) return;
+    const interval = liveGroup === "messaging" ? 2500 : 4000;
+    const timer = window.setInterval(() => refreshGroup(liveGroup), interval);
+    return () => window.clearInterval(timer);
+  }, [key, yearId, refreshGroup]);
+
   return list.every((g) => isGroupLoaded(g));
 }

@@ -338,9 +338,11 @@ export function mapMessages(messages: any[]): Message[] {
   })) as Message[];
 }
 function mapNotifications(notifications: any[]): AppNotification[] {
-  return notifications.map((n: any) => ({
-    id: n.id, userId: n.profile_id, type: n.type, title: n.title, body: n.body, at: n.created_at, read: n.is_read,
-  })) as AppNotification[];
+  return [...notifications]
+    .sort((a: any, b: any) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
+    .map((n: any) => ({
+      id: n.id, userId: n.profile_id, type: n.type, title: n.title, body: n.body, at: n.created_at, read: n.is_read,
+    })) as AppNotification[];
 }
 function mapEvents(events: any[]): SchoolEvent[] {
   return events.map((e: any) => ({
@@ -1481,6 +1483,17 @@ export async function startConversation(
 
 
 async function syncMessages(oldDB: DB, newDB: DB, errors: string[]) {
+  const { del } = diff(oldDB.messages, newDB.messages);
+
+  // Deletes are server-authorized: delete_message() only permits a user to
+  // delete a message they originally sent and belong to its conversation.
+  // Keep the optimistic UI immediately responsive; the following refresh
+  // reconciles against the server result.
+  for (const m of del) {
+    const { error } = await sb()!.rpc("delete_message", { p_message_id: m.id });
+    if (error) errors.push(`deleting message: ${error.message}`);
+  }
+
   // Brand-new messages → send_message(). Pass the optimistic UUID through
   // so the browser copy and persisted server row are the exact same message.
   // The RPC is idempotent for retries of that UUID.
@@ -1513,15 +1526,10 @@ async function syncNotifications(oldDB: DB, newDB: DB, errors: string[]) {
   // to notify whom (admins can notify anyone; everyone else only people
   // they're actually allowed to message).
   //
-  // diff() doesn't distinguish "brand new row" from "existing row that
-  // changed" — both come back in `up`. Marking a notification read (the
-  // *only* way an existing notification ever changes here — see markAll()
-  // and the per-row "Mark read" button in communication.tsx) was being
-  // treated exactly like creating a new one: notify_users() got called
-  // again with the same title/body, which just inserts a duplicate
-  // notification. The "read" flag itself was never actually sent to the
-  // server at all, on top of that. Split by whether an old copy existed.
-  const { up } = diff(oldDB.notifications, newDB.notifications);
+  // Keep creation, read-state changes, and deletion separate. A deletion is
+  // a real server-side change now handled by delete_notification()/clear_notifications(),
+  // while mark_notifications_read() handles the existing read transition.
+  const { up, del } = diff(oldDB.notifications, newDB.notifications);
   const created = up.filter((n) => !oldDB.notifications.some((o) => o.id === n.id));
   const nowRead = up.filter((n) => {
     const o = oldDB.notifications.find((x) => x.id === n.id);
@@ -1535,6 +1543,18 @@ async function syncNotifications(oldDB: DB, newDB: DB, errors: string[]) {
   if (nowRead.length) {
     const { error } = await sb()!.rpc("mark_notifications_read", { p_ids: nowRead.map((n) => n.id) });
     if (error) errors.push(`marking notifications read: ${error.message}`);
+  }
+  // A full clear-all action can remove many rows at once. Use the dedicated
+  // server-side bulk operation so the client never has to issue hundreds of
+  // individual RPC calls.
+  if (del.length && newDB.notifications.length === 0) {
+    const { error } = await sb()!.rpc("clear_notifications");
+    if (error) errors.push(`clearing notifications: ${error.message}`);
+  } else {
+    for (const n of del) {
+      const { error } = await sb()!.rpc("delete_notification", { p_notification_id: n.id });
+      if (error) errors.push(`deleting notification: ${error.message}`);
+    }
   }
 }
 

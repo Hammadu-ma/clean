@@ -163,6 +163,21 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     read: false,
     args: { p_ids: { type: "string[]", optional: true } },
   },
+  delete_notification: {
+    read: false,
+    rateLimit: 120,
+    args: { p_notification_id: { type: "string", maxLength: 128 } },
+  },
+  clear_notifications: {
+    read: false,
+    rateLimit: 30,
+    args: {},
+  },
+  delete_message: {
+    read: false,
+    rateLimit: 120,
+    args: { p_message_id: { type: "string", maxLength: 128 } },
+  },
   mark_message_read: {
     read: false,
     rateLimit: 120,

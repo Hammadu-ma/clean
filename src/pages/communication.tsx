@@ -483,6 +483,18 @@ export function MessagesPage() {
     if (errors.length) { toast(describeSyncErrors(errors), "warn"); setDraft(body); }
   };
 
+  const deleteMessage = async (messageId: string) => {
+    if (!currentUser) return;
+    const message = db.messages.find((m) => m.id === messageId);
+    if (!message || message.senderId !== currentUser.id) return;
+    if (!window.confirm("Delete this message?")) return;
+    const errors = await update((d) => {
+      const idx = d.messages.findIndex((m) => m.id === messageId && m.senderId === currentUser.id);
+      if (idx >= 0) d.messages.splice(idx, 1);
+    });
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+  };
+
   const other = active ? db.users.find((u) => u.id === active.participants.find((p) => p !== currentUser?.id)) : undefined;
   const relatedStudent = active?.relatedStudentId ? db.students.find((s) => s.id === active.relatedStudentId) : undefined;
   const otherOnline = other ? onlineUserIds.has(other.id) : false;
@@ -558,6 +570,16 @@ export function MessagesPage() {
                     {mine && (m.status === "read" ? <CheckCheck className="h-3.5 w-3.5 text-gold-300" /> : <Check className="h-3.5 w-3.5 opacity-80" />)}
                   </p>
                 </div>
+                {mine && (
+                  <button
+                    onClick={() => deleteMessage(m.id)}
+                    title="Delete message"
+                    aria-label="Delete message"
+                    className="ml-1.5 self-center rounded-full p-1.5 text-soft transition-colors hover:bg-rust-100 hover:text-rust-600 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
                 {!mine && (
                   <button onClick={() => active && setReportMsg({ conv: active, messageId: m.id })} title="Report message" className="ml-1.5 self-center rounded p-1 text-soft opacity-0 transition-opacity hover:bg-rust-100 hover:text-rust-600 group-hover:opacity-100">
                     <Flag className="h-3.5 w-3.5" />
@@ -763,10 +785,29 @@ export function NotificationsPage() {
   const list = userNotifications(db, currentUser);
   const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, fee: Wallet, fee_payment_request: Wallet, fee_payment_approved: CheckCircle2, fee_payment_rejected: AlertTriangle, fee_payment: Wallet, system: Bell };
   const markAll = () => update((d) => { d.notifications.forEach((n) => { if (n.userId === currentUser?.id) n.read = true; }); });
+  const deleteOne = async (notificationId: string) => {
+    if (!window.confirm("Delete this notification?")) return;
+    const errors = await update((d) => {
+      const idx = d.notifications.findIndex((n) => n.id === notificationId && n.userId === currentUser?.id);
+      if (idx >= 0) d.notifications.splice(idx, 1);
+    });
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+  };
+  const clearAll = async () => {
+    if (!list.length) return;
+    if (!window.confirm("Clear all notifications? This removes every notification from your notification center.")) return;
+    const errors = await update((d) => {
+      d.notifications = d.notifications.filter((n) => n.userId !== currentUser?.id);
+    });
+    if (errors.length) console.warn("[notifications] clear failed:", errors);
+  };
   return (
     <div className="mx-auto max-w-3xl">
       <PageHead kicker="Communication" title="Notifications" sub={`${unreadNotifications(db, currentUser)} unread — system-generated updates about homework, results, attendance and announcements.`}>
-        <Btn variant="soft" onClick={markAll}>Mark all read</Btn>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Btn variant="ghost" onClick={markAll} disabled={!list.some((n) => !n.read)}><CheckCheck className="h-4 w-4" /> Mark all read</Btn>
+          <Btn variant="soft" onClick={clearAll} disabled={!list.length}><Trash2 className="h-4 w-4" /> Clear all</Btn>
+        </div>
       </PageHead>
       <Panel className="anim-rise overflow-hidden">
         <ul className="divide-y divide-mist/70">
@@ -777,18 +818,28 @@ export function NotificationsPage() {
           {list.map((n) => {
             const I = ICON[n.type] ?? Bell;
             return (
-              <li key={n.id} className={`flex items-start gap-3 px-4 py-3.5 transition-colors ${n.read ? "" : "bg-pine-50/60"}`}>
+              <li key={n.id} className={`group flex items-start gap-3 px-4 py-3.5 transition-colors ${n.read ? "" : "bg-pine-50/60"}`}>
                 <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${n.read ? "bg-paper text-soft" : "bg-pine-800 text-pine-50"}`}><I className="h-4 w-4" /></span>
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center justify-between gap-2">
-                    <span className={`text-[13px] ${n.read ? "font-semibold text-soft" : "font-bold text-ink"}`}>{n.title}</span>
+                    <span className={`min-w-0 text-[13px] ${n.read ? "font-semibold text-soft" : "font-bold text-ink"}`}>{n.title}</span>
                     <span className="shrink-0 text-[10.5px] text-soft">{timeAgo(n.at)}</span>
                   </span>
                   <span className="mt-0.5 block text-[12px] leading-relaxed text-soft">{n.body}</span>
                 </span>
-                {!n.read && (
-                  <button onClick={() => update((d) => { const x = d.notifications.find((y) => y.id === n.id); if (x) x.read = true; })} className="mt-1 shrink-0 cursor-pointer text-[11px] font-bold text-pine-700 hover:underline">Mark read</button>
-                )}
+                <span className="mt-0.5 flex shrink-0 items-center gap-1">
+                  {!n.read && (
+                    <button onClick={() => update((d) => { const x = d.notifications.find((y) => y.id === n.id); if (x) x.read = true; })} className="cursor-pointer rounded px-1.5 py-1 text-[11px] font-bold text-pine-700 hover:bg-pine-100 hover:underline">Mark read</button>
+                  )}
+                  <button
+                    onClick={() => deleteOne(n.id)}
+                    title="Delete notification"
+                    aria-label="Delete notification"
+                    className="cursor-pointer rounded-full p-1.5 text-soft transition-colors hover:bg-rust-100 hover:text-rust-600 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </span>
               </li>
             );
           })}

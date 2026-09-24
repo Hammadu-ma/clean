@@ -363,7 +363,11 @@ export const unreadNotifications = (db: DB, user: User | null) =>
   user ? db.notifications.filter((n) => n.userId === user.id && !n.read).length : 0;
 
 export const userNotifications = (db: DB, user: User | null) =>
-  user ? db.notifications.filter((n) => n.userId === user.id) : [];
+  user
+    ? db.notifications
+        .filter((n) => n.userId === user.id)
+        .sort((a, b) => b.at.localeCompare(a.at))
+    : [];
 
 /* Re-export so callers can import everything authorization-related from one place. */
 export { guardianOfStudent };

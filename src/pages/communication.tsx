@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle, ArrowLeft, Bell, CalendarDays, Check, CheckCheck, CheckCircle2, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2, Wallet,
 } from "lucide-react";
 import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, getClass, sectionShort, timeAgo, uid } from "../store";
-import { startConversation } from "../lib/backend";
+import { markAnnouncementRead, startConversation } from "../lib/backend";
 import {
   canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canSendMessage, canTargetAudience,
   canViewConversation, contactContext, contactGroups, conversationsFor, effectiveAnnouncementStatus,
@@ -75,18 +75,29 @@ function AudiencePicker({ value, onChange }: { value: Audience; onChange: (a: Au
 
 /* ================= Announcements ================= */
 export function AnnouncementsPage() {
-  const { db, currentUser, update, toast } = useApp();
+  const { db, currentUser, update, toast, refreshGroup } = useApp();
   const groupsLoaded = useLazyGroups("announcements");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Announcement | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Announcement | null>(null);
   const [filter, setFilter] = useState("all");
   const canCreate = canCreateAnnouncement(db, currentUser);
+  const canManage = !!currentUser && (currentUser.role === "admin" || hasPermission(db, currentUser, "communication.manage_announcement"));
 
   const closeModal = () => { setOpen(false); setEditing(null); };
 
-  const list = visibleAnnouncements(db, currentUser)
-    .filter((a) => filter === "all" || (filter === "mine" ? a.senderId === currentUser?.id : effectiveAnnouncementStatus(a) === filter))
+  const visible = visibleAnnouncements(db, currentUser);
+  const categoryFilters = useMemo(() => {
+    const seen = new Set<string>();
+    for (const a of visible) seen.add(a.category);
+    return ["all", ...["Urgent", "Academic", "Exams", "Event", "General"].filter((x) => seen.has(x))];
+  }, [visible]);
+
+  const list = visible
+    .filter((a) => {
+      if (canManage) return filter === "all" || (filter === "mine" ? a.senderId === currentUser?.id : effectiveAnnouncementStatus(a) === filter);
+      return filter === "all" || a.category === filter;
+    })
     .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.createdAt.localeCompare(a.createdAt));
 
   const saveAnnouncement = (a: Announcement) => {
@@ -133,72 +144,60 @@ export function AnnouncementsPage() {
     setConfirmDelete(null);
   };
 
+  const readAnnouncement = useCallback(async (id: string) => {
+    if (!currentUser) return;
+    const a = db.announcements.find((x) => x.id === id);
+    if (!a || effectiveAnnouncementStatus(a) !== "published" || a.readBy?.includes(currentUser.id)) return;
+    const result = await markAnnouncementRead(id);
+    if ("error" in result) return;
+    await refreshGroup("announcements");
+  }, [currentUser, db.announcements, refreshGroup]);
+
   return (
-    <div className="mx-auto max-w-4xl">
-      <PageHead kicker="Communication" title="Announcements" sub="Official one-to-many notices, targeted through the school's academic structure.">
+    <div className="mx-auto max-w-5xl">
+      <PageHead kicker="Communication" title="Announcements" sub="Official school notices, presented clearly for every audience.">
         {canCreate && <Btn variant="gold" onClick={() => { setEditing(null); setOpen(true); }}><Megaphone className="h-4 w-4" /> New announcement</Btn>}
       </PageHead>
 
-      <div className="mb-4 flex flex-wrap gap-1.5">
-        {[["all", "All"], ["published", "Published"], ["scheduled", "Scheduled"], ["draft", "Drafts"], ["archived", "Archived"], ["mine", "Mine"]].map(([k, l]) => (
-          <button key={k} onClick={() => setFilter(k)} className={`cursor-pointer rounded-full border px-3 py-1 text-[12px] font-semibold transition-all ${filter === k ? "border-pine-700 bg-pine-800 text-pine-50" : "border-mist bg-card text-soft hover:border-pine-400"}`}>{l}</button>
-        ))}
+      <div className="mb-5 overflow-x-auto pb-1">
+        <div className="flex min-w-max gap-2">
+          {canManage ? (
+            [["all", "All"], ["published", "Published"], ["scheduled", "Scheduled"], ["draft", "Drafts"], ["archived", "Archived"], ["mine", "Mine"]].map(([k, l]) => (
+              <button key={k} onClick={() => setFilter(k)} className={`cursor-pointer rounded-full border px-3.5 py-1.5 text-[12px] font-semibold transition-all ${filter === k ? "border-pine-700 bg-pine-800 text-pine-50 shadow-sm" : "border-mist bg-card text-soft hover:border-pine-300 hover:text-ink"}`}>{l}</button>
+            ))
+          ) : (
+            categoryFilters.map((k) => {
+              const label = k === "all" ? "All" : k;
+              const cm = CAT_META[k] ?? CAT_META.General;
+              return <button key={k} onClick={() => setFilter(k)} className={`cursor-pointer rounded-full border px-3.5 py-1.5 text-[12px] font-semibold transition-all ${filter === k ? `${cm.bg} shadow-sm` : "border-mist bg-card text-soft hover:border-pine-300 hover:text-ink"}`}>{label}</button>;
+            })
+          )}
+        </div>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         {!groupsLoaded ? (
           <SkeletonPanel rows={4} />
         ) : (
         <>
-        {list.map((a) => {
-          const st = effectiveAnnouncementStatus(a);
-          const cm = CAT_META[a.category] ?? CAT_META.General;
-          const sender = db.users.find((u) => u.id === a.senderId);
-          const readCount = a.readBy?.length ?? 0;
-          const reach = audienceSize(db, a.audience);
-          return (
-            <Panel key={a.id} className="anim-rise overflow-hidden">
-              <div className="flex gap-3 p-4">
-                <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${cm.dot}`} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="font-display text-[15.5px] font-bold tracking-tight text-ink">{a.title}</h3>
-                    {a.pinned && <Chip tone="gold">Pinned</Chip>}
-                    <Chip tone={st === "published" ? "pine" : st === "scheduled" ? "steel" : st === "draft" ? "gray" : "rust"}>{st}</Chip>
-                  </div>
-                  <p className="mt-1 whitespace-pre-line text-[13px] leading-relaxed text-soft">{a.body}</p>
-                  <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-soft">
-                    <span className={`rounded-md border px-1.5 py-0.5 text-[10.5px] font-semibold ${cm.bg}`}>{a.category}</span>
-                    <span>{sender?.name ?? "—"}</span>
-                    <span>{st === "scheduled" && a.scheduledFor ? `scheduled ${fmtShort(a.scheduledFor)}` : timeAgo(a.createdAt)}</span>
-                    {a.editedAt && <span>(edited {timeAgo(a.editedAt)})</span>}
-                    <span>→ {audienceLabel(db, a.audience)}</span>
-                    {st === "published" && <span className="flex items-center gap-1"><Eye className="h-3 w-3" /> {readCount}/{reach} read</span>}
-                  </div>
-                </div>
-                {canManageAnnouncement(db, currentUser, a) && (
-                  <div className="flex shrink-0 flex-col gap-1.5">
-                    {st !== "archived" && (
-                      <Btn size="sm" variant="soft" onClick={() => { setEditing(a); setOpen(true); }} data-edit={a.id}>Edit</Btn>
-                    )}
-                    {st !== "published" && st !== "archived" && (
-                      <Btn size="sm" onClick={() => saveAnnouncement({ ...a, status: "published", publishedAt: new Date().toISOString(), scheduledFor: undefined })}>Publish</Btn>
-                    )}
-                    {st !== "archived" && (
-                      <Btn size="sm" variant="ghost" onClick={() => archiveAnnouncement(a)}>Archive</Btn>
-                    )}
-                    {st === "archived" && (
-                      <Btn size="sm" variant="soft" onClick={() => restoreAnnouncement(a)}>Restore</Btn>
-                    )}
-                    <Btn size="sm" variant="dangerSoft" onClick={() => setConfirmDelete(a)}><Trash2 className="h-3.5 w-3.5" /> Delete</Btn>
-                  </div>
-                )}
-              </div>
-            </Panel>
-          );
-        })}
+        {list.map((a) => (
+          <AnnouncementCard
+            key={a.id}
+            announcement={a}
+            db={db}
+            currentUser={currentUser}
+            canManage={canManageAnnouncement(db, currentUser, a)}
+            canTrackRead={!!currentUser && effectiveAnnouncementStatus(a) === "published"}
+            onRead={readAnnouncement}
+            onEdit={() => { setEditing(a); setOpen(true); }}
+            onPublish={() => saveAnnouncement({ ...a, status: "published", publishedAt: new Date().toISOString(), scheduledFor: undefined })}
+            onArchive={() => archiveAnnouncement(a)}
+            onRestore={() => restoreAnnouncement(a)}
+            onDelete={() => setConfirmDelete(a)}
+          />
+        ))}
         {list.length === 0 && (
-          <Panel><EmptyState icon={<Megaphone className="h-5 w-5" />} title="No announcements here" body="Announcements for your audience will appear on this board." /></Panel>
+          <Panel className="border-dashed"><EmptyState icon={<Megaphone className="h-5 w-5" />} title="No announcements here" body="Announcements for your audience will appear on this board." /></Panel>
         )}
         </>
         )}
@@ -211,6 +210,104 @@ export function AnnouncementsPage() {
           <p className="text-[13px] text-soft">This removes it permanently, including its read receipts. This can't be undone — archive it instead if you just want it off the active list.</p>
         </Modal>
       )}
+    </div>
+  );
+}
+
+function AnnouncementCard({
+  announcement: a, db, currentUser, canManage, canTrackRead, onRead, onEdit, onPublish, onArchive, onRestore, onDelete,
+}: {
+  announcement: Announcement;
+  db: import("../types").DB;
+  currentUser: User | null;
+  canManage: boolean;
+  canTrackRead: boolean;
+  onRead: (id: string) => void | Promise<void>;
+  onEdit: () => void;
+  onPublish: () => void;
+  onArchive: () => void;
+  onRestore: () => void;
+  onDelete: () => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [visible, setVisible] = useState(false);
+  const st = effectiveAnnouncementStatus(a);
+  const cm = CAT_META[a.category] ?? CAT_META.General;
+  const sender = db.users.find((u) => u.id === a.senderId);
+  const readCount = a.readBy?.length ?? 0;
+  const reach = audienceSize(db, a.audience);
+  const alreadyRead = !!currentUser && !!a.readBy?.includes(currentUser.id);
+
+  useEffect(() => {
+    if (!canTrackRead || alreadyRead || !ref.current || typeof IntersectionObserver === "undefined") return;
+    const node = ref.current;
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[0];
+      if (entry?.isIntersecting) setVisible(true);
+    }, { threshold: 0.6 });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [a.id, alreadyRead, canTrackRead]);
+
+  useEffect(() => {
+    if (!visible || alreadyRead || !canTrackRead) return;
+    const timer = window.setTimeout(() => { void onRead(a.id); }, 650);
+    return () => window.clearTimeout(timer);
+  }, [visible, alreadyRead, canTrackRead, a.id, onRead]);
+
+  return (
+    <div ref={ref} className="group relative overflow-hidden rounded-2xl border border-mist bg-card shadow-[0_8px_30px_rgba(30,30,47,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_14px_36px_rgba(30,30,47,0.10)]">
+      <div className={`h-1 w-full ${cm.dot}`} />
+      <div className="p-5 sm:p-6">
+        <div className="flex gap-4">
+          <div className={`mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border ${cm.bg} shadow-sm`}>
+            <Megaphone className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-display text-[17px] font-extrabold tracking-tight text-ink">{a.title}</h3>
+                  {a.pinned && <Chip tone="gold">Pinned</Chip>}
+                  {canManage && <Chip tone={st === "published" ? "pine" : st === "scheduled" ? "steel" : st === "draft" ? "gray" : "rust"}>{st}</Chip>}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11.5px] text-soft">
+                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${cm.bg}`}>{a.category}</span>
+                  <span>{sender?.name ?? "School administration"}</span>
+                  <span>•</span>
+                  <span>{st === "scheduled" && a.scheduledFor ? `scheduled ${fmtShort(a.scheduledFor)}` : timeAgo(a.createdAt)}</span>
+                </div>
+              </div>
+              {st === "published" && currentUser && !alreadyRead && !canManage && (
+                <span className="rounded-full bg-pine-50 px-2.5 py-1 text-[10.5px] font-bold text-pine-700">New</span>
+              )}
+            </div>
+
+            <p className="mt-4 whitespace-pre-line text-[13.5px] leading-7 text-soft">{a.body}</p>
+
+            <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-mist/70 pt-3 text-[11px] text-soft">
+              <span>For {audienceLabel(db, a.audience)}</span>
+              {a.editedAt && <span>Edited {timeAgo(a.editedAt)}</span>}
+              {st === "published" && canManage && (
+                <span className="flex items-center gap-1 font-semibold text-ink"><Eye className="h-3.5 w-3.5" /> {readCount} / {reach} read</span>
+              )}
+              {st === "published" && currentUser && !canManage && (
+                <span className={alreadyRead ? "font-semibold text-pine-700" : "font-semibold text-soft"}>{alreadyRead ? "Read" : "Unread"}</span>
+              )}
+            </div>
+          </div>
+
+          {canManage && (
+            <div className="flex shrink-0 flex-col gap-1.5 opacity-90 transition-opacity group-hover:opacity-100">
+              {st !== "archived" && <Btn size="sm" variant="soft" onClick={onEdit} data-edit={a.id}>Edit</Btn>}
+              {st !== "published" && st !== "archived" && <Btn size="sm" onClick={onPublish}>Publish</Btn>}
+              {st !== "archived" && <Btn size="sm" variant="ghost" onClick={onArchive}>Archive</Btn>}
+              {st === "archived" && <Btn size="sm" variant="soft" onClick={onRestore}>Restore</Btn>}
+              <Btn size="sm" variant="dangerSoft" onClick={onDelete}><Trash2 className="h-3.5 w-3.5" /> Delete</Btn>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -239,7 +336,7 @@ function AnnouncementModal({ announcement, onClose, onSave }: { announcement?: A
       id: announcement?.id ?? uid(),
       senderId: announcement?.senderId ?? currentUser?.id ?? "",
       createdAt: announcement?.createdAt ?? now,
-      readBy: announcement?.readBy ?? [currentUser?.id ?? ""],
+      readBy: announcement?.readBy ?? [],
       pinned: announcement?.pinned,
       title: title.trim(), body: body.trim(), category: category as Announcement["category"],
       audience, status,

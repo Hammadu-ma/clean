@@ -138,27 +138,37 @@ export async function checkSchema(): Promise<DbMode | "missing" | "error"> {
 
 const snapshotPromises = new Map<string, Promise<Record<string, any[]> | null>>();
 
-/** One snapshot per (session, year) pair, shared by every caller requesting
- *  that year. Switching the year in the UI requests a different key here
- *  rather than reusing the active year's cached copy. */
+/**
+ * `get_app_snapshot()` is used as a compatibility read path for legacy pages.
+ * It is safe to deduplicate concurrent callers, but it must NEVER cache a
+ * resolved snapshot: resolved caching made realtime/polling reads permanently
+ * stale until a full page reload. The map therefore contains only in-flight
+ * requests and is cleared in `finally()` when each request settles.
+ */
 function legacySnapshot(yearId?: string): Promise<Record<string, any[]> | null> {
   const key = yearId ?? "__active__";
   const cached = snapshotPromises.get(key);
   if (cached) return cached;
+
   const p = (async () => {
-    const { data, error } = await sb()!.rpc<Record<string, any[]>>("get_app_snapshot", { p_year_id: yearId ?? null });
+    const { data, error } = await sb()!.rpc<Record<string, any[]>>("get_app_snapshot", {
+      p_year_id: yearId ?? null,
+    });
     if (error) {
       console.warn("[backend] legacy snapshot failed:", error.message);
-      snapshotPromises.delete(key); // let a later call retry
       return null;
     }
     return data ?? null;
-  })();
+  })().finally(() => {
+    if (snapshotPromises.get(key) === p) snapshotPromises.delete(key);
+  });
+
   snapshotPromises.set(key, p);
   return p;
 }
 
-/** Drops every cached snapshot (all years) — call after any write, and on sign-out. */
+/** Clears only currently in-flight snapshot deduplication entries. Resolved
+ * snapshots are never retained, so subsequent reads are always fresh. */
 export function invalidateLegacySnapshot() {
   snapshotPromises.clear();
 }
@@ -1448,6 +1458,12 @@ async function syncConversations(oldDB: DB, newDB: DB, errors: string[]) {
  * directly and waiting for its real id avoids ever having two ids for the
  * same conversation in the first place.
  */
+export async function markAnnouncementRead(announcementId: string): Promise<{ ok: true } | { error: string }> {
+  const { error } = await sb()!.rpc("mark_announcement_read", { p_announcement_id: announcementId });
+  if (error) return { error: error.message };
+  return { ok: true };
+}
+
 export async function startConversation(
   otherProfileId: string,
   related?: { studentId?: string; classId?: string; sectionId?: string; subjectId?: string }

@@ -1024,7 +1024,13 @@ export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
   // Keep communication genuinely live from the user perspective with a small
   // polling loop. It only refreshes the groups actually used by this page.
   useEffect(() => {
-    const liveGroup = list.includes("messaging") ? "messaging" : list.includes("notifications") ? "notifications" : null;
+    const liveGroup = list.includes("messaging")
+      ? "messaging"
+      : list.includes("notifications")
+        ? "notifications"
+        : list.includes("announcements")
+          ? "announcements"
+          : null;
     if (!liveGroup) return;
 
     if (liveGroup === "notifications" && "EventSource" in window) {
@@ -1044,7 +1050,7 @@ export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
       };
     }
 
-    const interval = liveGroup === "messaging" ? 1500 : 1000;
+    const interval = liveGroup === "messaging" ? 1500 : liveGroup === "announcements" ? 4000 : 1000;
     const timer = window.setInterval(() => refreshGroup(liveGroup), interval);
     return () => window.clearInterval(timer);
   }, [key, yearId, refreshGroup]);

@@ -168,6 +168,11 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     rateLimit: 120,
     args: { p_conversation_id: { type: "string", maxLength: 128 } },
   },
+  mark_announcement_read: {
+    read: false,
+    rateLimit: 120,
+    args: { p_announcement_id: { type: "string", maxLength: 128 } },
+  },
   record_fee_payment: {
     read: false,
     rateLimit: 60,

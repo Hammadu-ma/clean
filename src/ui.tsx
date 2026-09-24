@@ -15,14 +15,9 @@ const btnVariants: Record<string, string> = {
   dangerSoft: "bg-rust-100 text-rust-700 hover:bg-rust-200",
 };
 const btnSizes: Record<string, string> = {
-  // min-h-* only applies below the sm breakpoint (sm:min-h-0 clears it) —
-  // comfortable ~44px tap targets on a phone, back to the current compact
-  // desktop density at tablet width and up. Every button in the app goes
-  // through this, so this one change is what actually fixes "buttons feel
-  // compressed on mobile" everywhere at once, rather than page by page.
-  sm: "text-[12.5px] px-2.5 py-1.5 gap-1.5 min-h-10 sm:min-h-0",
-  md: "text-[13.5px] px-3.5 py-2 gap-2 min-h-11 sm:min-h-0",
-  lg: "text-[14.5px] px-5 py-2.5 gap-2 min-h-11 sm:min-h-0",
+  sm: "text-[12.5px] px-2.5 py-1.5 gap-1.5",
+  md: "text-[13.5px] px-3.5 py-2 gap-2",
+  lg: "text-[14.5px] px-5 py-2.5 gap-2",
 };
 
 export function Btn({
@@ -81,11 +76,7 @@ export function RoleBadge({ role, full }: { role: Role; full?: boolean }) {
 }
 
 export const inputCls =
-  // text-base (16px) below sm prevents iOS Safari's auto-zoom-on-focus for
-  // any input under 16px; text-[13.5px] restores the compact desktop size
-  // at sm and up. min-h-11 for the same ~44px comfortable tap target as
-  // Btn, cleared the same way above the sm breakpoint.
-  "w-full rounded-lg border border-mist bg-card px-3 py-2 min-h-11 sm:min-h-0 text-base sm:text-[13.5px] text-ink placeholder:text-soft/60 outline-none transition-shadow focus:border-pine-500 focus:ring-2 focus:ring-pine-500/20";
+  "w-full rounded-lg border border-mist bg-card px-3 py-2 text-[13.5px] text-ink placeholder:text-soft/60 outline-none transition-shadow focus:border-pine-500 focus:ring-2 focus:ring-pine-500/20";
 
 export function TextInput(props: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={`${inputCls} ${props.className ?? ""}`} {...props} />;

@@ -624,7 +624,7 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
    ========================================================================= */
 /* ================= academic years & terms (admin/superadmin, gated by academics.manage_years) ================= */
 export function AcademicYearsPage() {
-  const { db, currentUser, update, toast } = useApp();
+  const { db, currentUser, update, toast, setYear } = useApp();
   useLazyGroups(["academics", "homework"]);
   const canManage = hasPermission(db, currentUser, "academics.manage_years");
   const [editYear, setEditYear] = useState<AcademicYear | "new" | null>(null);
@@ -640,11 +640,18 @@ export function AcademicYearsPage() {
     db.students.some((s) => s.enrollment?.yearId === y.id) || db.structures.some((st) => st.yearId === y.id) || db.homework.some((h) => h.yearId === y.id);
   const termInUse = (t: Term) => db.structures.some((st) => st.yearId === t.yearId && st.period.trim().toLowerCase() === t.name.trim().toLowerCase());
 
-  const setActiveYear = (y: AcademicYear) => {
-    update((d) => {
+  const setActiveYear = async (y: AcademicYear) => {
+    const errors = await update((d) => {
       d.years.forEach((x) => { x.active = x.id === y.id; });
       pushAudit(d, currentUser, "year.activate", y.name, "Set as the active academic year");
     });
+    if (errors.length) {
+      toast(errors[0], "warn");
+      return;
+    }
+    // Selecting a year and making it active are separate concepts, but after
+    // activation the admin should immediately be looking at that same year.
+    setYear(y.id);
     toast(`${y.name} is now the active academic year.`);
   };
 

@@ -374,7 +374,7 @@ type CoreRows = {
 
 /** Maps raw core rows (same shape regardless of which path fetched them)
  *  onto `seed`, in place, and returns whether we actually got live data. */
-function applyCoreRows(seed: DB, rows: CoreRows): { db: DB; remote: boolean } {
+function applyCoreRows(seed: DB, rows: CoreRows, selectedYearId?: string): { db: DB; remote: boolean } {
   const { schools, years, terms, classes, sections, subjects, teachers, assignments, students, enrollments, documents, roleDefs, rolePerms, profiles, guardianStudents } = rows;
   const db: DB = seed;
   let remote = false;
@@ -407,8 +407,10 @@ function applyCoreRows(seed: DB, rows: CoreRows): { db: DB; remote: boolean } {
       const hist: Enrollment[] = enr
         .filter((e: any) => e.student_id === s.id)
         .map((e: any) => ({ yearId: e.year_id, classId: e.class_id, sectionId: e.section_id, rollNumber: e.roll_number, status: e.status, enrolledOn: e.enrolled_on }));
-      const activeYear = years?.find((y: any) => y.is_active)?.id;
-      const current = hist.find((h) => h.yearId === activeYear) ?? hist[hist.length - 1];
+      const targetYear = selectedYearId ?? years?.find((y: any) => y.is_active)?.id;
+      // `enrollment` is the student's enrollment for the year currently being viewed.
+      // `history` deliberately keeps every academic-year enrollment for the profile/history UI.
+      const current = hist.find((h) => h.yearId === targetYear) ?? undefined;
       const sd: StudentDoc[] = docs.filter((d: any) => d.student_id === s.id)
         .map((d: any) => ({ id: d.id, name: d.name, kind: d.kind, size: d.size, date: d.doc_date, storagePath: d.storage_path || undefined }));
       return {
@@ -462,7 +464,7 @@ async function hydrateCoreViaBootstrap(seed: DB, yearId?: string): Promise<{ db:
       students: data.students, enrollments: data.enrollments, documents: documents ?? [],
       roleDefs: data.role_defs, rolePerms: data.role_permissions,
       profiles: data.profiles, guardianStudents: data.guardian_students,
-    });
+    }, yearId);
   } catch (e) {
     console.warn("[backend] get_app_bootstrap RPC unavailable, falling back to per-table fetch:", e);
     return null;
@@ -470,7 +472,7 @@ async function hydrateCoreViaBootstrap(seed: DB, yearId?: string): Promise<{ db:
 }
 
 /** Slow-but-proven path: one request per core table, run in parallel. */
-async function hydrateCoreViaTables(seed: DB): Promise<{ db: DB; remote: boolean }> {
+async function hydrateCoreViaTables(seed: DB, selectedYearId?: string): Promise<{ db: DB; remote: boolean }> {
   const [
     schools, years, terms, classes, sections, subjects, teachers, assignments,
     students, enrollments, documents,
@@ -481,7 +483,7 @@ async function hydrateCoreViaTables(seed: DB): Promise<{ db: DB; remote: boolean
     sel("students"), sel("enrollments"), sel("student_documents"),
     sel("role_defs"), sel("role_permissions"), sel("profiles"), sel("guardian_students"),
   ]);
-  return applyCoreRows(seed, { schools, years, terms, classes, sections, subjects, teachers, assignments, students, enrollments, documents, roleDefs, rolePerms, profiles, guardianStudents });
+  return applyCoreRows(seed, { schools, years, terms, classes, sections, subjects, teachers, assignments, students, enrollments, documents, roleDefs, rolePerms, profiles, guardianStudents }, selectedYearId);
 }
 
 /** Once a hydrateCore() in this tab has genuinely confirmed the schema is
@@ -543,7 +545,7 @@ export async function hydrateCore(yearId?: string): Promise<{ db: DB; mode: DbMo
   }
 
   const boot = await hydrateCoreViaBootstrap(seed, yearId);
-  const { db, remote } = boot ?? await hydrateCoreViaTables(seed);
+  const { db, remote } = boot ?? await hydrateCoreViaTables(seed, yearId);
 
   // In live mode, lazy-loaded fields start genuinely empty rather than the
   // demo seed's placeholder content, so a page can tell "not fetched yet"

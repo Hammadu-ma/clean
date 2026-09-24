@@ -574,25 +574,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setYearId(id);
     if (!changed || modeRef.current !== "live") return;
 
-    const { db: core } = await hydrateCore(id);
-    let merged = mergeFreshCore(core, dbRef.current, loadedGroupsRef.current);
-    dbRef.current = merged;
-    setDb(merged);
-
-    const groupsToRefresh = Array.from(loadedGroupsRef.current);
-    if (!groupsToRefresh.length) return;
-    try {
-      const results = await Promise.all(groupsToRefresh.map((g) => hydrateGroup(g, dbRef.current, id)));
-      // yearIdRef may have moved on again while these were in flight (rapid
-      // switching) — only apply results if we're still looking at this year.
-      if (yearIdRef.current !== id) return;
-      merged = { ...dbRef.current };
-      for (const partial of results) merged = { ...merged, ...partial };
-      dbRef.current = merged;
-      setDb(merged);
-    } catch (e) {
-      console.warn("[store] failed to refresh groups for new year:", e);
+    // A year switch is a hard data boundary. Never leave last year's lazy
+    // data visible while the new year's requests are in flight. The pages
+    // using useLazyGroups() will re-run for the new year and refill these
+    // groups from Supabase.
+    const staleGroups = Array.from(loadedGroupsRef.current);
+    loadedGroupsRef.current = new Set();
+    loadingGroupsRef.current = new Set();
+    let cleared = { ...dbRef.current };
+    for (const group of staleGroups) {
+      for (const field of GROUP_FIELDS[group]) {
+        (cleared as any)[field] = field === "assessmentMarks" ? {} : [];
+      }
     }
+    dbRef.current = cleared;
+    setDb(cleared);
+    setLoadedGroupsTick((t) => t + 1);
+
+    const { db: core } = await hydrateCore(id);
+    // The user may have switched again while the core request was in flight.
+    if (yearIdRef.current !== id) return;
+    dbRef.current = core;
+    setDb(core);
+    setLoadedGroupsTick((t) => t + 1);
+
   };
 
   const currentUser = useMemo(() => {
@@ -927,12 +932,13 @@ export function useApp() {
  *  returns whether every requested group has landed, so the page can show
  *  a loading state instead of reading an empty array as "no records". */
 export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
-  const { isGroupLoaded, ensureGroup } = useApp();
+  const { isGroupLoaded, ensureGroup, yearId } = useApp();
   const list = Array.isArray(groups) ? groups : [groups];
   const key = list.join(",");
   useEffect(() => {
     for (const g of list) ensureGroup(g);
+    // Re-run whenever the selected academic year changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, yearId]);
   return list.every((g) => isGroupLoaded(g));
 }

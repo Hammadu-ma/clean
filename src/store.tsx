@@ -964,7 +964,7 @@ export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
   useEffect(() => {
     const liveGroup = list.includes("messaging") ? "messaging" : list.includes("notifications") ? "notifications" : null;
     if (!liveGroup) return;
-    const interval = liveGroup === "messaging" ? 2500 : 4000;
+    const interval = liveGroup === "messaging" ? 1500 : 1000;
     const timer = window.setInterval(() => refreshGroup(liveGroup), interval);
     return () => window.clearInterval(timer);
   }, [key, yearId, refreshGroup]);

@@ -1,10 +1,20 @@
-import { authenticate } from "../_lib/supabase";
-import { originAllowed } from "../_lib/env";
-import { fail } from "../_lib/http";
+import { authenticate } from "./_lib/supabase";
+import { originAllowed } from "./_lib/env";
+import { fail } from "./_lib/http";
 
 export const config = { runtime: "edge" };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+type NotificationRow = {
+  id: string;
+  created_at: string;
+  type?: string | null;
+  title?: string | null;
+  body?: string | null;
+  is_read?: boolean | null;
+  year_id?: string | null;
+};
 
 export default async function handler(req: Request): Promise<Response> {
   if (req.method !== "GET") return fail("invalid_request", "Method GET not allowed.", { allow: "GET" });
@@ -37,7 +47,7 @@ export default async function handler(req: Request): Promise<Response> {
           .order("created_at", { ascending: false })
           .limit(100);
 
-        const known = new Set<string>((initial ?? []).map((n) => String(n.id)));
+        const known = new Set<string>((initial ?? []).map((n: { id: unknown }) => String(n.id)));
         let lastHeartbeat = Date.now();
 
         while (!closed && !req.signal.aborted) {
@@ -54,15 +64,15 @@ export default async function handler(req: Request): Promise<Response> {
             continue;
           }
 
-          const rows = data ?? [];
-          const fresh = rows.filter((n) => !known.has(String(n.id)));
+          const rows = (data ?? []) as NotificationRow[];
+          const fresh = rows.filter((n: NotificationRow) => !known.has(String(n.id)));
           for (const n of fresh.reverse()) {
             known.add(String(n.id));
             write(`event: notification\\ndata: ${JSON.stringify(n)}\\n\\n`);
           }
 
           if (known.size > 200) {
-            const keep = new Set(rows.map((n) => String(n.id)));
+            const keep = new Set(rows.map((n: NotificationRow) => String(n.id)));
             for (const id of known) if (!keep.has(id)) known.delete(id);
           }
 

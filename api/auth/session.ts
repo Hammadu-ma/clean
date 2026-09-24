@@ -27,8 +27,42 @@ export default async function handler(req: Request): Promise<Response> {
   if (bad) return bad;
 
   if (req.method === "GET") {
-    const ctx = await authenticate(req);
-    if (!ctx) return json({ ok: true, profile: null });
+    let ctx = await authenticate(req);
+
+    if (!ctx) {
+      const tokens = readTokens(req);
+      if (tokens?.refreshToken) {
+        const refreshed = await refreshSession(tokens.refreshToken);
+        if (refreshed) {
+          ctx = {
+            tokens: refreshed.tokens,
+            db: userClient(refreshed.tokens.accessToken),
+            userId: refreshed.userId,
+          };
+
+          const { data: me } = await ctx.db
+            .from("profiles")
+            .select("id, full_name, username, role, role_def_id, status, email, phone, teacher_id, student_id")
+            .eq("id", ctx.userId)
+            .maybeSingle();
+
+          if (me?.status === "active") {
+            const csrf = newCsrfToken();
+            return withCookies(
+              json({ ok: true, profile: me, csrfToken: csrf }),
+              sessionCookies(
+                refreshed.tokens,
+                csrf,
+                { role: me.role, name: me.full_name, exp: Math.floor(Date.now() / 1000) + refreshed.expiresIn },
+                refreshed.expiresIn
+              )
+            );
+          }
+        }
+      }
+
+      return json({ ok: true, profile: null });
+    }
 
     const { data, error } = await ctx.db
       .from("profiles")

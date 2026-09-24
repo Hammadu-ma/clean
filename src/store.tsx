@@ -964,6 +964,24 @@ export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
   useEffect(() => {
     const liveGroup = list.includes("messaging") ? "messaging" : list.includes("notifications") ? "notifications" : null;
     if (!liveGroup) return;
+
+    if (liveGroup === "notifications" && "EventSource" in window) {
+      const source = new EventSource("/api/realtime-notifications", { withCredentials: true });
+      let fallback: number | null = null;
+      const startFallback = () => {
+        if (fallback !== null) return;
+        fallback = window.setInterval(() => refreshGroup("notifications"), 3000);
+      };
+      source.addEventListener("notification", () => {
+        void refreshGroup("notifications");
+      });
+      source.addEventListener("error", startFallback);
+      return () => {
+        source.close();
+        if (fallback !== null) window.clearInterval(fallback);
+      };
+    }
+
     const interval = liveGroup === "messaging" ? 1500 : 1000;
     const timer = window.setInterval(() => refreshGroup(liveGroup), interval);
     return () => window.clearInterval(timer);

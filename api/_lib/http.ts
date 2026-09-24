@@ -92,6 +92,10 @@ export function failFromPostgres(err: { code?: string; message?: string }, conte
   if (pgCode === "23514" || pgCode === "23502") {
     return fail("invalid_request", "Some of the values sent aren't valid.");
   }
+  const msg = err?.message ?? "";
+  if (/unknown payment request|unknown fee item|already been reviewed|amount must be positive|exceeds the|requires a transaction reference|unknown payment method|academic year .* is closed|a label is required|amount must be positive/i.test(msg)) {
+    return fail("invalid_request", msg.replace(/^ERROR:\s*/i, ""));
+  }
   return fail("upstream_error", `The request could not be completed. Reference: ${ref}`);
 }
 

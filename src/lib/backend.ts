@@ -1084,8 +1084,9 @@ async function syncAttendance(oldDB: DB, newDB: DB, errors: string[]) {
 
 /** Fee items: create_fee_item() for a brand-new charge, delete_fee_item()
  *  for one removed before any payment landed on it, record_fee_payment()
- *  for each payment appended since the last sync. There is no "edit an
- *  existing item's label/amount" op because the UI has never offered one. */
+ *  for each payment appended since the last sync. The client id is passed
+ *  through on create so later optimistic payment writes target the same
+ *  permanent server row instead of a server-generated replacement id. */
 async function syncFees(oldDB: DB, newDB: DB, errors: string[]) {
   const yr = activeYearId(newDB);
 
@@ -1093,7 +1094,7 @@ async function syncFees(oldDB: DB, newDB: DB, errors: string[]) {
     const before = oldDB.fees.find((x) => x.id === f.id);
     if (!before) {
       const { error } = await sb()!.rpc("create_fee_item", {
-        p_student_id: f.studentId, p_label: f.label, p_amount: f.amount,
+        p_id: f.id, p_student_id: f.studentId, p_label: f.label, p_amount: f.amount,
         p_due_date: f.due || null, p_year_id: yr ?? null,
       });
       if (error) errors.push(`fee item "${f.label}": ${error.message}`);
@@ -1352,7 +1353,7 @@ async function syncPaymentRequests(oldDB: DB, newDB: DB, errors: string[]) {
       // comment in types.ts) — there's no column for it server-side, a
       // real submission always has receiptPath instead.
       const { error } = await sb()!.rpc("submit_fee_payment_request", {
-        p_student_id: r.studentId, p_fee_item_id: r.feeItemId, p_amount: r.amount,
+        p_id: r.id, p_student_id: r.studentId, p_fee_item_id: r.feeItemId, p_amount: r.amount,
         p_bank_account_id: r.bankAccountId, p_bank_name: r.bankName, p_reference: r.reference ?? null,
         p_receipt_path: r.receiptPath ?? null, p_receipt_name: r.receiptName ?? null,
       });

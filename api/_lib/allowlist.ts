@@ -183,6 +183,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     read: false,
     rateLimit: 60,
     args: {
+      p_id: { type: "string", optional: true, maxLength: 128 },
       p_student_id: { type: "string", maxLength: 128 },
       p_label: { type: "string", maxLength: 200 },
       p_amount: { type: "number", min: 0, max: 100_000_000 },
@@ -336,6 +337,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     read: false,
     rateLimit: 20,
     args: {
+      p_id: { type: "string", optional: true, maxLength: 128 },
       p_student_id: { type: "string", maxLength: 128 },
       p_fee_item_id: { type: "string", maxLength: 128 },
       p_amount: { type: "number", min: 0, max: 100_000_000 },

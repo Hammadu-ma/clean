@@ -17,9 +17,35 @@ import { SkeletonCards, SkeletonPanel } from "./ui";
  * the bundler/browser dedupes repeat import() calls to the same resolved
  * chunk, so e.g. all seven `./pages/people` exports still cost one fetch.
  */
+const CHUNK_RECOVERY_KEY = "sms_chunk_recovery_once";
+
 function named<M extends Record<string, any>>(loader: () => Promise<M>) {
+  const loadWithRecovery = async () => {
+    try {
+      return await loader();
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error);
+      const isChunkFailure = /dynamically imported module|failed to fetch.*module|mime type.*text\/html/i.test(message);
+      if (isChunkFailure) {
+        try {
+          if (!sessionStorage.getItem(CHUNK_RECOVERY_KEY)) {
+            sessionStorage.setItem(CHUNK_RECOVERY_KEY, "1");
+            const url = new URL(window.location.href);
+            url.searchParams.set("_chunk_recovery", String(Date.now()));
+            window.location.replace(url.toString());
+            return await new Promise<M>(() => { /* navigation replaces this document */ });
+          }
+          sessionStorage.removeItem(CHUNK_RECOVERY_KEY);
+        } catch {
+          // If storage is unavailable, let React surface the real loader error.
+        }
+      }
+      throw error;
+    }
+  };
+
   return new Proxy({} as { [K in keyof M]: M[K] }, {
-    get: (_t, key: string) => lazy(() => loader().then((m) => ({ default: m[key] }))),
+    get: (_t, key: string) => lazy(() => loadWithRecovery().then((m) => ({ default: m[key] }))),
   });
 }
 

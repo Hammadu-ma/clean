@@ -871,6 +871,10 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
   await syncMarks(oldDB, newDB, errors);
   await syncSubmissions(oldDB, newDB, errors);
   await syncAttendance(oldDB, newDB, errors);
+  // Review payment requests before fee payment diffs. Approval materializes
+  // its deterministic payment entry; syncFees then becomes an idempotent
+  // reconciliation rather than a second credit.
+  await syncPaymentRequests(oldDB, newDB, errors);
   await syncFees(oldDB, newDB, errors);
   await syncRoles(oldDB, newDB, errors);
   await syncClasses(oldDB, newDB, errors);
@@ -883,7 +887,6 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
   await syncAssessmentStructures(oldDB, newDB, errors);
   await syncAnnouncements(oldDB, newDB, errors);
   await syncEvents(oldDB, newDB, errors);
-  await syncPaymentRequests(oldDB, newDB, errors);
   await syncSettings(oldDB, newDB, errors);
 
   // communication child tables
@@ -1105,6 +1108,7 @@ async function syncFees(oldDB: DB, newDB: DB, errors: string[]) {
       const { error } = await sb()!.rpc("record_fee_payment", {
         p_fee_item_id: f.id, p_amount: p.amount, p_method: p.method,
         p_reference: p.reference ?? null, p_bank: p.bank ?? null,
+        p_payment_id: p.id,
       });
       if (error) errors.push(`payment on "${f.label}": ${error.message}`);
     }

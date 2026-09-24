@@ -2303,7 +2303,7 @@ function ReviewPaymentRequestModal({ request, onClose }: { request: PaymentReque
         if (f) {
           f.paid = Math.min(f.amount, f.paid + request.amount);
           f.payments = [...(f.payments ?? []), {
-            id: uid(), amount: request.amount, method: "bank_transfer", reference: request.reference,
+            id: `pay-${request.id}`, amount: request.amount, method: "bank_transfer", reference: request.reference,
             bank: request.bankName, date: todayISO(), recordedBy: currentUser?.name,
           }];
         }

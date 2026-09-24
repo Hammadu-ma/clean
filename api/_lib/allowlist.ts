@@ -156,6 +156,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     args: {
       p_conversation_id: { type: "string", maxLength: 128 },
       p_body: { type: "string", maxLength: 4000 },
+      p_id: { type: "string", optional: true, maxLength: 128 },
     },
   },
   mark_notifications_read: {
@@ -177,6 +178,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_reference: { type: "string", optional: true, maxLength: 120 },
       p_bank: { type: "string", optional: true, maxLength: 120 },
       p_note: { type: "string", optional: true, maxLength: 500 },
+      p_payment_id: { type: "string", optional: true, maxLength: 128 },
     },
   },
   create_fee_item: {

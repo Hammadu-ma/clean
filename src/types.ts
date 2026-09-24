@@ -381,7 +381,7 @@ export interface MessageReport {
 export interface AppNotification {
   id: ID;
   userId: ID;
-  type: "announcement" | "message" | "homework" | "result" | "attendance" | "event" | "system";
+  type: "announcement" | "message" | "homework" | "result" | "attendance" | "event" | "fee" | "fee_payment_request" | "fee_payment_approved" | "fee_payment_rejected" | "fee_payment" | "system";
   title: string;
   body: string;
   at: string;

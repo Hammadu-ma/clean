@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft, Bell, CalendarDays, Check, CheckCheck, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2,
+  AlertTriangle, ArrowLeft, Bell, CalendarDays, Check, CheckCheck, CheckCircle2, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2, Wallet,
 } from "lucide-react";
 import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, getClass, sectionShort, timeAgo, uid } from "../store";
 import { startConversation } from "../lib/backend";
@@ -378,7 +378,10 @@ export function MessagesPage() {
       d.messages.push({ id: uid(), conversationId: active.id, senderId: currentUser.id, body, createdAt: new Date().toISOString(), readBy: [currentUser.id], status: "sent" });
       const c = d.conversations.find((x) => x.id === active.id);
       if (c) c.updatedAt = new Date().toISOString();
-      if (other) pushNotifications(d, [other], "message", `${currentUser.name} sent you a message`, body.slice(0, 90));
+      // In live mode the database send_message() is the single source of truth
+      // for message notifications. Do not also create a local notification here,
+      // otherwise the same message appears once from the optimistic client and
+      // once again when the server notification arrives.
     });
     if (errors.length) { toast(describeSyncErrors(errors), "warn"); setDraft(body); }
   };
@@ -661,7 +664,7 @@ export function NotificationsPage() {
   const { db, currentUser, update } = useApp();
   const groupsLoaded = useLazyGroups("notifications");
   const list = userNotifications(db, currentUser);
-  const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, system: Bell };
+  const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, fee: Wallet, fee_payment_request: Wallet, fee_payment_approved: CheckCircle2, fee_payment_rejected: AlertTriangle, fee_payment: Wallet, system: Bell };
   const markAll = () => update((d) => { d.notifications.forEach((n) => { if (n.userId === currentUser?.id) n.read = true; }); });
   return (
     <div className="mx-auto max-w-3xl">

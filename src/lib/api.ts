@@ -122,6 +122,21 @@ export function useBootstrap() {
   });
 }
 
+/** Live count for the admin Fees navigation badge. The bootstrap summary is
+ * intentionally tiny for administrators (counts only), so this does not load
+ * the fee ledger just to render the sidebar. */
+export function useAdminPendingFeePayments(enabled = true): number {
+  const { yearId } = useAcademicYear();
+  const { data } = useQuery({
+    queryKey: ["pending-fee-payments", yearId ?? ""] as const,
+    enabled: enabled && Boolean(yearId),
+    staleTime: 0,
+    refetchInterval: 2500,
+    queryFn: () => rpc<Bootstrap>("get_bootstrap", { p_year_id: yearId }),
+  });
+  return Number(data?.summary?.pendingFeePayments ?? 0);
+}
+
 /** The caller's permission set, for gating UI. Authorization still happens
  *  on the server — this only decides what is worth rendering. */
 export function usePermissions(): Set<string> {

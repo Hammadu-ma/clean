@@ -7,6 +7,7 @@ import {
   AlertTriangle, Check, ChevronDown, User, BookOpen, Baby, PenLine,
 } from "lucide-react";
 import { homePathFor, useApp, useLazyGroups } from "./store";
+import { useAdminPendingFeePayments } from "./lib/api";
 import { hasPermission, totalUnreadMessages, unreadNotifications } from "./rbac";
 import { Chip, RoleBadge, UserAvatar } from "./ui";
 import type { Role } from "./types";
@@ -212,6 +213,7 @@ export function AppShell() {
 
   const unreadMsgs = totalUnreadMessages(db, currentUser);
   const unreadNotifs = unreadNotifications(db, currentUser);
+  const pendingFeePayments = useAdminPendingFeePayments(currentUser?.role === "admin");
   const year = db.years.find((y) => y.id === yearId);
 
   const sidebar = (
@@ -245,6 +247,7 @@ export function AppShell() {
                 const badge =
                   it.to === "/messages" && unreadMsgs > 0 ? unreadMsgs
                   : it.to === "/notifications" && unreadNotifs > 0 ? unreadNotifs
+                  : it.to === "/admin/fees" && pendingFeePayments > 0 ? pendingFeePayments
                   : 0;
                 return (
                   <NavLink

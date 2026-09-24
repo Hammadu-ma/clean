@@ -244,6 +244,57 @@ li {
     auto;
 }
 
+
+/* ---------- Mobile table readability ----------
+   Keep dense operational tables horizontal. The table itself scrolls; cell
+   content should not collapse into narrow vertical stacks on phones. */
+.mark-entry-table th,
+.mark-entry-table td,
+.audit-table th,
+.audit-table td {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.mark-entry-table .mark-entry-student-head,
+.mark-entry-table .mark-entry-student-cell {
+  min-width: 190px;
+}
+
+.mark-entry-table .mark-entry-student-cell > span {
+  white-space: nowrap;
+}
+
+.audit-table .audit-detail-cell {
+  min-width: 360px;
+}
+
+.mark-entry-table-wrap,
+.audit-table-wrap {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+@media (max-width: 640px) {
+  .mark-entry-table {
+    min-width: 1040px;
+  }
+
+  .mark-entry-table .mark-entry-student-head,
+  .mark-entry-table .mark-entry-student-cell {
+    min-width: 210px;
+  }
+
+  .audit-table {
+    min-width: 980px;
+  }
+
+  .audit-table .audit-detail-cell {
+    min-width: 420px;
+  }
+}
+
 /* ---------- ID card printing ---------- */
 @media print {
   body * {

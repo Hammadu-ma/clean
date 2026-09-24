@@ -242,7 +242,8 @@ export function AuditPage() {
         <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by action, target or user…" />
       </div>
       <Panel className="anim-rise overflow-hidden">
-        <table className="w-full">
+        <div className="audit-table-wrap overflow-x-auto">
+        <table className="audit-table w-full min-w-[920px]">
           <thead className="border-b border-mist bg-paper/60">
             <tr><th className={thCls()}>When</th><th className={thCls()}>User</th><th className={thCls()}>Action</th><th className={thCls()}>Target</th></tr>
           </thead>
@@ -257,11 +258,11 @@ export function AuditPage() {
                   <span className="block text-[12px] font-semibold text-ink">{fmtDate(a.at.slice(0, 10))}</span>
                   <span className="text-[10.5px]">{timeAgo(a.at)}</span>
                 </td>
-                <td className={`${tdCls()} font-semibold text-ink`}>{a.userName}</td>
-                <td className={tdCls()}><Chip tone={ACTION_TONE[a.action] ?? "gray"}><History className="h-3 w-3" /> {a.action}</Chip></td>
-                <td className={tdCls()}>
-                  <span className="font-semibold text-ink">{a.target}</span>
-                  {a.detail && <span className="block text-[11px] text-soft">{a.detail}</span>}
+                <td className={`${tdCls()} whitespace-nowrap font-semibold text-ink`}>{a.userName}</td>
+                <td className={`${tdCls()} whitespace-nowrap`}><Chip tone={ACTION_TONE[a.action] ?? "gray"}><History className="h-3 w-3" /> {a.action}</Chip></td>
+                <td className={`${tdCls()} audit-detail-cell`}>
+                  <span className="font-semibold text-ink whitespace-nowrap">{a.target}</span>
+                  {a.detail && <span className="block text-[11px] text-soft whitespace-nowrap">{a.detail}</span>}
                 </td>
               </tr>
             ))}
@@ -270,6 +271,7 @@ export function AuditPage() {
             )}
           </tbody>
         </table>
+        </div>
       </Panel>
     </div>
   );

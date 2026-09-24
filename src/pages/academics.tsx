@@ -428,12 +428,12 @@ export function MarkEntryPage() {
                 )}
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[760px]">
+              <div className="mark-entry-table-wrap overflow-x-auto">
+                <table className="mark-entry-table w-full min-w-[980px]">
                   <thead className="border-b border-mist bg-paper/60">
                     <tr>
                       <th className={`${thCls()} w-10`}>#</th>
-                      <th className={thCls()}>Student</th>
+                      <th className={`${thCls()} mark-entry-student-head`}>Student</th>
                       {structure.items.map((it) => (
                         <th key={it.id} className={`${thCls()} text-center`}>
                           <span className="block whitespace-nowrap">{it.name}</span>
@@ -453,8 +453,8 @@ export function MarkEntryPage() {
                       return (
                         <tr key={s.id} className={`transition-colors ${calc?.complete ? "hover:bg-pine-50/60" : calc ? "bg-gold-100/25" : "bg-paper/40"}`}>
                           <td className={`${tdCls()} tnum font-mono text-[11.5px] text-soft`}>{i + 1}</td>
-                          <td className={tdCls()}>
-                            <span className="flex items-center gap-2.5">
+                          <td className={`${tdCls()} mark-entry-student-cell`}>
+                            <span className="flex flex-nowrap items-center gap-2.5 whitespace-nowrap">
                               <Avatar student={s} size={30} />
                               <span className="font-bold text-ink">{shortName(s)}</span>
                               {calc && !calc.complete && <Chip tone="gold">incomplete</Chip>}

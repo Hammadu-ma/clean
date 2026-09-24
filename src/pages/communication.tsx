@@ -307,11 +307,6 @@ export function MessagesPage() {
   const convs = conversationsFor(db, currentUser);
   const active = id ? db.conversations.find((c) => c.id === id) : undefined;
 
-  // Deep-link protection: verify membership + permission before rendering a conversation.
-  if (id && (!active || !canViewConversation(db, currentUser, id))) {
-    return <AccessDenied required="Conversation access" reason="You don't have permission to access this conversation. It may involve people you aren't connected to." />;
-  }
-
   const messages = active ? db.messages.filter((m) => m.conversationId === active.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : [];
 
   // Mark incoming messages read when the conversation is opened (also fires
@@ -341,6 +336,12 @@ export function MessagesPage() {
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = prev; };
   }, [active?.id]);
+
+  // Deep-link protection: verify membership + permission before rendering a conversation.
+  // Keep this return AFTER all hooks so React sees the same hook order on every render.
+  if (id && (!active || !canViewConversation(db, currentUser, id))) {
+    return <AccessDenied required="Conversation access" reason="You don't have permission to access this conversation. It may involve people you aren't connected to." />;
+  }
 
   const openDirect = async (target: User) => {
     if (!currentUser) return;

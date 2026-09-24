@@ -817,11 +817,11 @@ export function ContactsPage() {
         </div>
         {showClassFilter && (
           <>
-            <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); }} className="!w-40">
+            <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); }} className="w-full sm:!w-40">
               <option value="">All grades</option>
               {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </Select>
-            <Select value={sec} onChange={(e) => setSec(e.target.value)} className="!w-36" disabled={!cls}>
+            <Select value={sec} onChange={(e) => setSec(e.target.value)} className="w-full sm:!w-36" disabled={!cls}>
               <option value="">All sections</option>
               {getClass(db, cls)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
             </Select>
@@ -874,7 +874,8 @@ export function ModerationPage() {
     <div className="mx-auto max-w-3xl">
       <PageHead kicker="Communication" title="Moderation" sub="Review reported messages. Actions are written to the audit log." />
       <Panel className="anim-rise overflow-hidden">
-        <table className="w-full">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px]">
           <thead className="border-b border-mist bg-paper/60">
             <tr><th className={thCls()}>Message</th><th className={thCls()}>Reason</th><th className={thCls()}>Reported by</th><th className={thCls()}>Status</th><th className={thCls()}></th></tr>
           </thead>
@@ -909,6 +910,7 @@ export function ModerationPage() {
             )}
           </tbody>
         </table>
+        </div>
       </Panel>
     </div>
   );

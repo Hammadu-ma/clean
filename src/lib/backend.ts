@@ -1461,12 +1461,16 @@ export async function startConversation(
 
 
 async function syncMessages(oldDB: DB, newDB: DB, errors: string[]) {
-  // Brand-new messages → send_message(). (send_message() assigns the real
-  // id server-side; the client's optimistic id is only ever compared
-  // locally, so a mismatch here is harmless.)
+  // Brand-new messages → send_message(). Pass the optimistic UUID through
+  // so the browser copy and persisted server row are the exact same message.
+  // The RPC is idempotent for retries of that UUID.
   for (const m of newDB.messages) {
     if (oldDB.messages.some((x) => x.id === m.id)) continue;
-    const { error } = await sb()!.rpc("send_message", { p_conversation_id: m.conversationId, p_body: m.body });
+    const { error } = await sb()!.rpc("send_message", {
+      p_conversation_id: m.conversationId,
+      p_body: m.body,
+      p_id: m.id,
+    });
     if (error) errors.push(`message: ${error.message}`);
   }
 

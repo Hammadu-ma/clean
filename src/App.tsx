@@ -62,7 +62,7 @@ const {
 } = academics;
 
 const communication = named(() => import("./pages/communication"));
-const { AnnouncementsPage, ContactsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage } = communication;
+const { AnnouncementsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage } = communication;
 
 const admin = named(() => import("./pages/admin"));
 const { AuditPage, RolesPage } = admin;
@@ -142,7 +142,6 @@ export default function App() {
             <Route path="/messages/:id" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><MessagesPage /></Guard>} />
             <Route path="/notifications" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><NotificationsPage /></Guard>} />
             <Route path="/events" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><EventsPage /></Guard>} />
-            <Route path="/contacts" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><ContactsPage /></Guard>} />
             <Route path="/moderation" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="communication.moderate permission"><ModerationPage /></Guard>} />
             <Route path="/profile" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><ProfilePage /></Guard>} />
 

@@ -3,8 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle, ArrowLeft, Bell, CalendarDays, Check, CheckCheck, CheckCircle2, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2, Wallet,
 } from "lucide-react";
-import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, getClass, sectionShort, timeAgo, uid } from "../store";
-import { markAnnouncementRead, startConversation } from "../lib/backend";
+import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, sectionShort, timeAgo, uid } from "../store";
+import { getMessageReportContext, markAnnouncementRead, startConversation } from "../lib/backend";
 import {
   canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canSendMessage, canTargetAudience,
   canViewConversation, contactContext, contactGroups, conversationsFor, effectiveAnnouncementStatus,
@@ -751,12 +751,14 @@ function ContactPicker({ onClose, onPick }: { onClose: () => void; onPick: (u: U
 }
 
 function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: Conversation; messageId: string }) {
-  const { currentUser, update, toast } = useApp();
+  const { db, currentUser, update, toast } = useApp();
   const [reason, setReason] = useState("Inappropriate content");
   const [detail, setDetail] = useState("");
+  const reportedUser = db.users.find((u) => u.id === db.messages.find((m) => m.id === messageId)?.senderId);
   const submit = async () => {
     const errors = await update((d) => {
-      d.reports.unshift({ id: uid(), messageId, conversationId: conv.id, reporterId: currentUser?.id ?? "", reason, detail: detail.trim() || undefined, at: new Date().toISOString(), status: "open" });
+      const reportedUserId = db.messages.find((m) => m.id === messageId)?.senderId;
+      d.reports.unshift({ id: uid(), messageId, conversationId: conv.id, reporterId: currentUser?.id ?? "", reportedUserId, reason, detail: detail.trim() || undefined, at: new Date().toISOString(), status: "open" });
       pushAudit(d, currentUser, "message.report", reason);
     });
     if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
@@ -766,6 +768,10 @@ function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: 
   return (
     <Modal title="Report message" kicker="Goes to authorized moderators" onClose={onClose}
       footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn variant="danger" onClick={submit}><Flag className="h-4 w-4" /> Submit report</Btn></>}>
+      <div className="mb-3 rounded-xl border border-rust-200 bg-rust-50 px-3 py-2.5 text-[12px]">
+        <span className="font-semibold text-rust-800">Reporting:</span>{" "}
+        <span className="font-bold text-ink">{reportedUser?.name ?? "Unknown user"}</span>
+      </div>
       <Field label="Reason" required>
         <Select value={reason} onChange={(e) => setReason(e.target.value)}>
           {["Inappropriate content", "Harassment", "Spam", "Other"].map((r) => <option key={r}>{r}</option>)}
@@ -928,140 +934,174 @@ function EventModal({ onClose, onSave }: { onClose: () => void; onSave: (e: impo
   );
 }
 
-/* ================= Contacts ================= */
-export function ContactsPage() {
-  const { db, currentUser } = useApp();
-  const nav = useNavigate();
-  const [q, setQ] = useState("");
-  const groups = contactGroups(db, currentUser);
-  const [tab, setTab] = useState(groups[0]?.label ?? "");
-  const [cls, setCls] = useState("");
-  const [sec, setSec] = useState("");
-  const active = groups.find((g) => g.label === tab) ?? groups[0];
-  const showClassFilter = active?.role === "student" || active?.role === "teacher";
+/* ================= Moderation (for communication.moderate) ================= */
+function ModerationConversationModal({
+  onClose,
+  report,
+}: {
+  onClose: () => void;
+  report: import("../types").MessageReport;
+}) {
+  const { db, toast } = useApp();
+  const [context, setContext] = useState<Awaited<ReturnType<typeof getMessageReportContext>> | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const inClassFilter = (u: User) => {
-    if (!showClassFilter || !cls) return true;
-    if (u.role === "student") {
-      const s = db.students.find((x) => x.id === u.studentId);
-      return s?.enrollment?.classId === cls && (!sec || s.enrollment.sectionId === sec);
-    }
-    if (u.role === "teacher") {
-      return db.assignments.some((a) => a.teacherId === u.teacherId && a.classId === cls && (!sec || a.sectionId === sec));
-    }
-    return true;
-  };
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void getMessageReportContext(report.id).then((result) => {
+      if (cancelled) return;
+      setContext(result);
+      if (result && "error" in result) toast(result.error, "warn");
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [report.id, toast]);
 
-  const users = (active?.users ?? [])
-    .filter((u) => u.name.toLowerCase().includes(q.toLowerCase()))
-    .filter(inClassFilter);
+  const fallbackReported = db.users.find((u) => u.id === (report.reportedUserId ?? db.messages.find((m) => m.id === report.messageId)?.senderId));
+  const reportedUser = context && !("error" in context) ? context.reportedUser : fallbackReported ? { id: fallbackReported.id, name: fallbackReported.name, role: fallbackReported.role } : null;
+  const reporter = context && !("error" in context) ? context.reporter : db.users.find((u) => u.id === report.reporterId) ?? null;
+  const messages = context && !("error" in context) ? context.messages : db.messages
+    .filter((m) => m.conversationId === report.conversationId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .map((m) => ({ id: m.id, senderId: m.senderId, senderName: db.users.find((u) => u.id === m.senderId)?.name, senderRole: db.users.find((u) => u.id === m.senderId)?.role, body: m.body, createdAt: m.createdAt, readBy: m.readBy, isReported: m.id === report.messageId }));
 
   return (
-    <div className="mx-auto max-w-3xl">
-      <PageHead kicker="Communication" title="Contacts" sub="A role-aware directory — only people you're authorized to reach are listed, so nobody's existence is leaked." />
-
-      <div className="mb-4"><Tabs tabs={groups.map((g) => ({ id: g.label, label: `${g.label} · ${g.users.length}` }))} active={tab} onChange={(id) => { setTab(id); setCls(""); setSec(""); }} /></div>
-
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[200px] flex-1">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
-          <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search contacts…" className="!pl-9" />
-        </div>
-        {showClassFilter && (
+    <Modal
+      title="Reported conversation"
+      kicker={reportedUser ? `Reported user · ${reportedUser.name}` : "Reported conversation"}
+      onClose={onClose}
+      wide
+      footer={<Btn variant="ghost" onClick={onClose}><ArrowLeft className="h-4 w-4" /> Close</Btn>}
+    >
+      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-mist bg-paper/60 px-3 py-2 text-[12px]">
+        <span className="font-semibold text-ink">Reported by:</span>
+        <span className="text-soft">{reporter?.name ?? "Unknown user"}</span>
+        <span className="h-1 w-1 rounded-full bg-soft" />
+        <span className="font-semibold text-ink">Reported:</span>
+        <span className="text-soft">{reportedUser?.name ?? "Unknown user"}</span>
+        {context && !("error" in context) && context.conversation?.status === "hidden" && <Chip tone="rust">Conversation hidden</Chip>}
+      </div>
+      <div className="max-h-[60vh] space-y-2 overflow-y-auto rounded-xl border border-mist bg-paper/40 p-3">
+        {loading ? <SkeletonPanel rows={7} /> : (
           <>
-            <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); }} className="!w-40">
-              <option value="">All grades</option>
-              {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </Select>
-            <Select value={sec} onChange={(e) => setSec(e.target.value)} className="!w-36" disabled={!cls}>
-              <option value="">All sections</option>
-              {getClass(db, cls)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
-            </Select>
+            {messages.map((m) => (
+              <div key={m.id} className={`rounded-xl border px-3 py-2.5 ${m.isReported ? "border-rust-300 bg-rust-50" : "border-mist bg-card"}`}>
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold text-ink">{m.senderName ?? "Unknown user"}</span>
+                  <span className="text-[10px] text-soft">{timeAgo(m.createdAt)}</span>
+                </div>
+                <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-ink">{m.body}</p>
+                {m.isReported && <div className="mt-2"><Chip tone="rust"><Flag className="h-3 w-3" /> Reported message</Chip></div>}
+              </div>
+            ))}
+            {messages.length === 0 && <div className="py-8 text-center text-[12px] text-soft">No messages are available for this conversation.</div>}
           </>
         )}
       </div>
-
-      {users.length === 0 ? (
-        <Panel><EmptyState icon={<Users className="h-5 w-5" />} title="No matching authorized users found" body="Contacts are limited to people connected to you through the school." /></Panel>
-      ) : (
-        <div className="grid gap-2 sm:grid-cols-2">
-          {users.map((u) => {
-            const s = u.role === "student" ? db.students.find((x) => x.id === u.studentId) : undefined;
-            return (
-              <button key={u.id} onClick={() => nav("/messages")} className="anim-rise flex cursor-pointer items-center gap-3 rounded-xl border border-mist bg-card px-3.5 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-pine-400 hover:shadow-md">
-                <UserAvatar name={u.name} role={u.role} size={38} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-bold text-ink">{u.name}</span>
-                  <span className="block truncate text-[11px] text-soft">
-                    {s?.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : contactContext(db, currentUser, u)}
-                  </span>
-                </span>
-                <RoleBadge role={u.role} />
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
+    </Modal>
   );
 }
 
-/* ================= Moderation (for communication.moderate) ================= */
 export function ModerationPage() {
   const { db, currentUser, update, toast } = useApp();
-  const groupsLoaded = useLazyGroups(["messaging", "reports"]);
+  const groupsLoaded = useLazyGroups("reports");
+  const [openReport, setOpenReport] = useState<import("../types").MessageReport | null>(null);
   if (!hasPermission(db, currentUser, "communication.moderate")) {
     return <AccessDenied required="communication.moderate" reason="Only authorized moderators can review reported communication." />;
   }
-  const reports = db.reports;
-  const resolve = (id: string, status: "resolved" | "dismissed") => {
-    update((d) => { const r = d.reports.find((x) => x.id === id); if (r) r.status = status; pushAudit(d, currentUser, `report.${status}`, id); });
+  const reports = [...db.reports].sort((a, b) => b.at.localeCompare(a.at));
+  const resolve = async (id: string, status: "resolved" | "dismissed") => {
+    const errors = await update((d) => {
+      const r = d.reports.find((x) => x.id === id);
+      if (r) r.status = status;
+      pushAudit(d, currentUser, `report.${status}`, id);
+    });
+    if (errors.length) {
+      toast(describeSyncErrors(errors), "warn");
+      return;
+    }
     toast(status === "resolved" ? "Report resolved." : "Report dismissed.");
   };
-  const hideConversation = (convId: string) => {
-    update((d) => { const c = d.conversations.find((x) => x.id === convId); if (c) c.status = "hidden"; pushAudit(d, currentUser, "conversation.hide", convId); });
-    toast("Conversation hidden from participants.");
+  const hideConversation = async (convId: string) => {
+    const errors = await update((d) => {
+      const c = d.conversations.find((x) => x.id === convId);
+      if (c) c.status = "hidden";
+      pushAudit(d, currentUser, "conversation.hide", convId);
+    });
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Conversation hidden from participants.");
   };
   return (
-    <div className="mx-auto max-w-3xl">
-      <PageHead kicker="Communication" title="Moderation" sub="Review reported messages. Actions are written to the audit log." />
-      <Panel className="anim-rise overflow-hidden">
-        <table className="w-full">
-          <thead className="border-b border-mist bg-paper/60">
-            <tr><th className={thCls()}>Message</th><th className={thCls()}>Reason</th><th className={thCls()}>Reported by</th><th className={thCls()}>Status</th><th className={thCls()}></th></tr>
-          </thead>
-          <tbody className="divide-y divide-mist/70">
-            {!groupsLoaded ? (
-              <SkeletonRows rows={4} cols={5} />
-            ) : (
-            <>
-            {reports.map((r) => {
-              const msg = db.messages.find((m) => m.id === r.messageId);
-              const reporter = db.users.find((u) => u.id === r.reporterId);
-              return (
-                <tr key={r.id}>
-                  <td className={`${tdCls()} max-w-[220px] truncate text-soft`}>{msg?.body ?? "(removed)"}</td>
-                  <td className={tdCls()}><Chip tone={r.status === "open" ? "rust" : "gray"}>{r.reason}</Chip></td>
-                  <td className={`${tdCls()} text-soft`}>{reporter?.name ?? "—"}<span className="block text-[10.5px]">{timeAgo(r.at)}</span></td>
-                  <td className={tdCls()}><Chip tone={r.status === "open" ? "gold" : r.status === "resolved" ? "pine" : "gray"}>{r.status}</Chip></td>
-                  <td className={`${tdCls()} whitespace-nowrap text-right`}>
-                    {r.status === "open" && (
-                      <span className="flex justify-end gap-1.5">
-                        <Btn size="sm" variant="soft" onClick={() => resolve(r.id, "resolved")}>Resolve</Btn>
-                        <Btn size="sm" variant="ghost" onClick={() => resolve(r.id, "dismissed")}>Dismiss</Btn>
-                        <Btn size="sm" variant="dangerSoft" onClick={() => hideConversation(r.conversationId)}>Hide</Btn>
-                      </span>
-                    )}
-                  </td>
+    <>
+      <div className="mx-auto max-w-5xl">
+        <PageHead kicker="Communication" title="Moderation" sub="Review reported messages, see who was reported, and inspect the full conversation." />
+        <Panel className="anim-rise overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px]">
+              <thead className="border-b border-mist bg-paper/60">
+                <tr>
+                  <th className={thCls()}>Reported user</th>
+                  <th className={thCls()}>Reported message</th>
+                  <th className={thCls()}>Reason</th>
+                  <th className={thCls()}>Reported by</th>
+                  <th className={thCls()}>Status</th>
+                  <th className={thCls()}></th>
                 </tr>
-              );
-            })}
-            {reports.length === 0 && <tr><td colSpan={5}><EmptyState icon={<ShieldAlert className="h-5 w-5" />} title="Nothing to review" body="No messages have been reported." /></td></tr>}
-            </>
-            )}
-          </tbody>
-        </table>
-      </Panel>
-    </div>
+              </thead>
+              <tbody className="divide-y divide-mist/70">
+                {!groupsLoaded ? (
+                  <SkeletonRows rows={4} cols={6} />
+                ) : (
+                <>
+                  {reports.map((r) => {
+                    const msg = db.messages.find((m) => m.id === r.messageId);
+                    const reporter = db.users.find((u) => u.id === r.reporterId);
+                    const reportedUser = db.users.find((u) => u.id === (r.reportedUserId ?? msg?.senderId));
+                    return (
+                      <tr key={r.id} className="align-top">
+                        <td className={`${tdCls()} min-w-[160px]`}>
+                          <div className="flex items-center gap-2">
+                            <UserAvatar name={reportedUser?.name ?? "Unknown user"} role={reportedUser?.role ?? "student"} size={30} />
+                            <div className="min-w-0">
+                              <div className="truncate font-bold text-ink">{reportedUser?.name ?? "Unknown user"}</div>
+                              <div className="text-[10.5px] text-soft">{reportedUser?.role ?? "User"}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className={`${tdCls()} max-w-[260px]`}>
+                          <button onClick={() => setOpenReport(r)} className="cursor-pointer text-left hover:underline" title="View full conversation">
+                            <span className="block line-clamp-2 text-[12px] font-semibold text-ink">{msg?.body ?? "(removed)"}</span>
+                            <span className="mt-1 inline-flex items-center gap-1 text-[10.5px] font-bold text-steel-700">View conversation <Eye className="h-3 w-3" /></span>
+                          </button>
+                        </td>
+                        <td className={tdCls()}><Chip tone={r.status === "open" ? "rust" : "gray"}>{r.reason}</Chip>{r.detail && <div className="mt-1 max-w-[180px] text-[10.5px] text-soft">{r.detail}</div>}</td>
+                        <td className={`${tdCls()} text-soft`}>
+                          {reporter?.name ?? "—"}<span className="block text-[10.5px]">{timeAgo(r.at)}</span>
+                        </td>
+                        <td className={tdCls()}><Chip tone={r.status === "open" ? "gold" : r.status === "resolved" ? "pine" : "gray"}>{r.status}</Chip></td>
+                        <td className={`${tdCls()} whitespace-nowrap text-right`}>
+                          <span className="flex justify-end gap-1.5">
+                            <Btn size="sm" variant="soft" onClick={() => setOpenReport(r)}><Eye className="h-3.5 w-3.5" /> View</Btn>
+                            {r.status === "open" && <>
+                              <Btn size="sm" variant="soft" onClick={() => resolve(r.id, "resolved")}>Resolve</Btn>
+                              <Btn size="sm" variant="ghost" onClick={() => resolve(r.id, "dismissed")}>Dismiss</Btn>
+                              <Btn size="sm" variant="dangerSoft" onClick={() => hideConversation(r.conversationId)}>Hide</Btn>
+                            </>}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {reports.length === 0 && <tr><td colSpan={6}><EmptyState icon={<ShieldAlert className="h-5 w-5" />} title="Nothing to review" body="No messages have been reported." /></td></tr>}
+                </>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      </div>
+      {openReport && <ModerationConversationModal report={openReport} onClose={() => setOpenReport(null)} />}
+    </>
   );
 }

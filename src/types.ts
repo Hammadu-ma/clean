@@ -371,6 +371,7 @@ export interface MessageReport {
   messageId: ID;
   conversationId: ID;
   reporterId: ID;
+  reportedUserId?: ID;
   reason: string;
   detail?: string;
   at: string;

@@ -108,6 +108,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
 
   /* ---------- communication ---------- */
   list_conversations: { read: true, args: { p_year_id: ID, p_limit: LIMIT, p_offset: OFFSET } },
+  get_message_report_context: { read: true, rateLimit: 60, args: { p_report_id: { type: "string", maxLength: 128 } } },
   list_messages: {
     read: true,
     args: {

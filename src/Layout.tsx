@@ -29,7 +29,6 @@ const COMM_ITEMS: NavItem[] = [
   { to: "/messages", label: "Messages", icon: <Inbox className="h-4 w-4" />, perm: "communication.view" },
   { to: "/notifications", label: "Notifications", icon: <Bell className="h-4 w-4" />, perm: "communication.view" },
   { to: "/events", label: "Events", icon: <CalendarDays className="h-4 w-4" />, perm: "events.view" },
-  { to: "/contacts", label: "Contacts", icon: <Contact className="h-4 w-4" />, perm: "communication.view" },
 ];
 
 const NAV: Record<Role, NavGroup[]> = {

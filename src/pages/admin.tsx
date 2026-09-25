@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { History, KeyRound, Plus, ShieldCheck, Trash2, Users as UsersIcon, X, Eye } from "lucide-react";
+import { ArrowDown, ArrowUp, History, KeyRound, Plus, Search, ShieldCheck, Trash2, Users as UsersIcon, X, Eye, SlidersHorizontal } from "lucide-react";
 import { useApp, useLazyGroups, fmtDate, timeAgo, uid } from "../store";
 import {
   PERMISSION_CATALOG, PERMISSION_CATEGORIES, getRoleProfile, hasPermission, pushAudit,
@@ -222,25 +222,66 @@ function RoleModal({ draft, canEditPerms, onClose, onSave, setDraft }: {
 export function AuditPage() {
   const { db, currentUser } = useApp();
   const groupsLoaded = useLazyGroups("audit");
-  const [q, setQ] = useState("");
-  if (!hasPermission(db, currentUser, "audit.view")) {
-    return <AccessDenied required="audit.view" reason="You don't have permission to view the audit trail." />;
-  }
-  const rows = db.audit.filter((a) =>
-    !q || a.action.toLowerCase().includes(q.toLowerCase()) || a.target.toLowerCase().includes(q.toLowerCase()) || a.userName.toLowerCase().includes(q.toLowerCase())
-  );
+  const [query, setQuery] = useState("");
+  const [actionFilter, setActionFilter] = useState("all");
+  const [sortBy, setSortBy] = useState<"when" | "user" | "action" | "target">("when");
+  const [sortDirection, setSortDirection] = useState<"desc" | "asc">("desc");
   const ACTION_TONE: Record<string, "pine" | "gold" | "rust" | "steel" | "gray"> = {
     "role.update": "gold", "role.create": "gold", "role.delete": "rust", "role.enable": "pine", "role.disable": "rust",
     "announcement.publish": "pine", "announcement.schedule": "steel", "announcement.draft": "gray",
     "user.deactivate": "rust", "user.create": "pine", "conversation.open": "steel", "message.report": "rust",
     "report.resolved": "pine", "report.dismissed": "gray", "conversation.hide": "rust", "event.create": "steel",
   };
+  const actionOptions = useMemo(() => [...new Set(db.audit.map((a) => a.action))].sort((a, b) => a.localeCompare(b)), [db.audit]);
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = db.audit.filter((a) => {
+      const matchesAction = actionFilter === "all" || a.action === actionFilter;
+      const haystack = `${a.userName} ${a.action} ${a.target} ${a.detail ?? ""}`.toLowerCase();
+      return matchesAction && (!q || haystack.includes(q));
+    });
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === "when") cmp = a.at.localeCompare(b.at);
+      if (sortBy === "user") cmp = a.userName.localeCompare(b.userName, undefined, { sensitivity: "base" });
+      if (sortBy === "action") cmp = a.action.localeCompare(b.action, undefined, { sensitivity: "base" });
+      if (sortBy === "target") cmp = a.target.localeCompare(b.target, undefined, { sensitivity: "base" });
+      return sortDirection === "asc" ? cmp : -cmp;
+    });
+  }, [db.audit, query, actionFilter, sortBy, sortDirection]);
+  if (!hasPermission(db, currentUser, "audit.view")) {
+    return <AccessDenied required="audit.view" reason="You don't have permission to view the audit trail." />;
+  }
+  const hasFilters = query.trim() || actionFilter !== "all";
   return (
     <div className="mx-auto max-w-4xl">
       <PageHead kicker="System" title="Audit log" sub="Permission-sensitive actions, with who did what, to which target, and when." />
-      <div className="mb-4 max-w-sm">
-        <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by action, target or user…" />
-      </div>
+      <Panel className="mb-4 anim-rise overflow-hidden">
+        <div className="flex flex-col gap-3 p-3 sm:p-4">
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
+              <TextInput value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by user, action, target or details…" className="!pl-9" />
+            </div>
+            <Select value={actionFilter} onChange={(e) => setActionFilter(e.target.value)} aria-label="Filter by action">
+              <option value="all">All actions</option>
+              {actionOptions.map((action) => <option key={action} value={action}>{action}</option>)}
+            </Select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-soft"><SlidersHorizontal className="h-3.5 w-3.5" /> Sort</span>
+            <Select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} className="w-auto min-w-[130px]">
+              <option value="when">When</option><option value="user">User</option><option value="action">Action</option><option value="target">Target</option>
+            </Select>
+            <Btn size="sm" variant="soft" onClick={() => setSortDirection((d) => d === "desc" ? "asc" : "desc")} title={sortDirection === "desc" ? "Descending" : "Ascending"}>
+              {sortDirection === "desc" ? <ArrowDown className="h-3.5 w-3.5" /> : <ArrowUp className="h-3.5 w-3.5" />}
+              {sortBy === "when" ? (sortDirection === "desc" ? "Newest" : "Oldest") : (sortDirection === "desc" ? "Z–A" : "A–Z")}
+            </Btn>
+            <span className="ml-auto text-[11px] text-soft">{rows.length} entr{rows.length === 1 ? "y" : "ies"}</span>
+            {hasFilters && <Btn size="sm" variant="ghost" onClick={() => { setQuery(""); setActionFilter("all"); }}>Clear filters</Btn>}
+          </div>
+        </div>
+      </Panel>
       <Panel className="anim-rise overflow-hidden">
         <div className="audit-table-wrap overflow-x-auto">
         <table className="audit-table w-full min-w-[920px]">

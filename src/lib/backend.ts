@@ -361,7 +361,7 @@ function mapAudit(audit: any[]): AuditEntry[] {
 }
 function mapReports(reports: any[]): MessageReport[] {
   return reports.map((r: any) => ({
-    id: r.id, messageId: r.message_id, conversationId: r.conversation_id, reporterId: r.reporter_id,
+    id: r.id, messageId: r.message_id, conversationId: r.conversation_id, reporterId: r.reporter_id, reportedUserId: r.reported_user_id ?? undefined,
     reason: r.reason, detail: r.detail, at: r.created_at, status: r.status,
   })) as MessageReport[];
 }
@@ -1470,6 +1470,35 @@ export async function markAnnouncementRead(announcementId: string): Promise<{ ok
   return { ok: true };
 }
 
+export interface MessageReportContext {
+  report: MessageReport & { createdAt?: string };
+  reporter: { id: string; name?: string; username?: string; role?: string } | null;
+  reportedUser: { id: string; name?: string; username?: string; role?: string } | null;
+  conversation: {
+    id: string;
+    status?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    participants: { id: string; name?: string; username?: string; role?: string }[];
+  } | null;
+  messages: {
+    id: string;
+    senderId: string;
+    senderName?: string;
+    senderRole?: string;
+    body: string;
+    createdAt: string;
+    readBy: string[];
+    isReported: boolean;
+  }[];
+}
+
+export async function getMessageReportContext(reportId: string): Promise<MessageReportContext | null | { error: string }> {
+  const { data, error } = await sb()!.rpc("get_message_report_context", { p_report_id: reportId });
+  if (error) return { error: error.message };
+  return (data ?? null) as MessageReportContext | null;
+}
+
 export async function startConversation(
   otherProfileId: string,
   related?: { studentId?: string; classId?: string; sectionId?: string; subjectId?: string }
@@ -1589,7 +1618,7 @@ async function syncReports(oldDB: DB, newDB: DB, errors: string[]) {
 
   for (const r of filed) {
     const { error } = await sb()!.rpc("file_message_report", {
-      p_message_id: r.messageId, p_conversation_id: r.conversationId, p_reason: r.reason, p_detail: r.detail ?? null,
+      p_message_id: r.messageId, p_conversation_id: r.conversationId, p_reason: r.reason, p_detail: r.detail ?? null, p_report_id: r.id,
     });
     if (error) errors.push(`reporting message: ${error.message}`);
   }

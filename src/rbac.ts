@@ -330,14 +330,15 @@ export function pushNotifications(
   userIds: string[],
   type: import("./types").AppNotification["type"],
   title: string,
-  body: string
+  body: string,
+  target?: { targetType?: string; targetId?: string; targetRoute?: string }
 ) {
   const targets = [...new Set(userIds)].filter((id) => {
     const u = db.users.find((x) => x.id === id);
     return u && u.status === "active";
   });
   for (const userId of targets) {
-    db.notifications.unshift({ id: rid(), userId, type, title, body, at: nowIso(), read: false });
+    db.notifications.unshift({ id: rid(), userId, type, title, body, at: nowIso(), read: false, ...target });
   }
 }
 

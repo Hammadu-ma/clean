@@ -324,13 +324,6 @@ export function AppShell() {
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
             <Clock />
             <span className="hidden h-6 w-px bg-mist md:block" />
-            <div className="flex items-center gap-2 rounded-lg border border-mist bg-paper py-1 pl-1 pr-2">
-              <UserAvatar name={currentUser.name} role={currentUser.role} size={28} />
-              <span className="hidden sm:block">
-                <span className="block max-w-[130px] truncate text-[12px] font-bold leading-tight text-ink">{currentUser.name}</span>
-                <RoleBadge role={currentUser.role} />
-              </span>
-            </div>
             <NavLink
               to="/notifications"
               aria-label={unreadNotifs > 0 ? `${unreadNotifs} unread notifications` : "Notifications"}

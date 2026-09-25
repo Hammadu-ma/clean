@@ -109,6 +109,7 @@ export function Modal({
   children,
   footer,
   wide,
+  zClass = "z-50",
 }: {
   title: ReactNode;
   kicker?: string;
@@ -116,6 +117,7 @@ export function Modal({
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  zClass?: string;
 }) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -123,7 +125,7 @@ export function Modal({
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8" role="dialog" aria-modal>
+    <div className={`fixed inset-0 ${zClass} flex items-center justify-center p-4 sm:p-8`} role="dialog" aria-modal>
       <div className="absolute inset-0 bg-pine-950/55 backdrop-blur-[2px]" onClick={onClose} />
       <div className={`anim-pop relative flex max-h-[92vh] w-full flex-col overflow-hidden rounded-xl border border-pine-900/20 bg-card shadow-2xl ${wide ? "max-w-4xl" : "max-w-lg"}`}>
         <div className="flex items-start justify-between gap-4 border-b border-mist px-5 py-4">

@@ -387,6 +387,10 @@ export interface AppNotification {
   body: string;
   at: string;
   read: boolean;
+  /** Optional deep-link metadata for opening the relevant module/record. */
+  targetType?: string;
+  targetId?: string;
+  targetRoute?: string;
 }
 
 /** School calendar event, optionally audience-targeted. */

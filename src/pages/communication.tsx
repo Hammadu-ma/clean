@@ -397,9 +397,27 @@ export function MessagesPage() {
   const nav = useNavigate();
   const [composeWith, setComposeWith] = useState<User | null>(null);
   const [reportMsg, setReportMsg] = useState<{ conv: Conversation; messageId: string } | null>(null);
+  const [pressedMessageId, setPressedMessageId] = useState<string | null>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [draft, setDraft] = useState("");
   const [inboxQuery, setInboxQuery] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const cancelLongPress = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+  const beginLongPress = (messageId: string, isMine: boolean) => {
+    cancelLongPress();
+    if (isMine) return;
+    longPressTimer.current = setTimeout(() => {
+      setPressedMessageId(messageId);
+      longPressTimer.current = null;
+    }, 550);
+  };
+  useEffect(() => () => cancelLongPress(), []);
 
   const convs = conversationsFor(db, currentUser);
   const active = id ? db.conversations.find((c) => c.id === id) : undefined;
@@ -559,9 +577,14 @@ export function MessagesPage() {
             return (
               <div key={row.key} className={`group flex ${mine ? "justify-end" : "justify-start"} ${row.grouped ? "mt-0.5" : "mt-3"}`}>
                 <div
-                  className={`anim-bubble max-w-[82%] rounded-2xl border px-3.5 py-2 shadow-sm sm:max-w-[72%] ${
+                  onPointerDown={() => beginLongPress(m.id, mine)}
+                  onPointerUp={cancelLongPress}
+                  onPointerCancel={cancelLongPress}
+                  onPointerLeave={cancelLongPress}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className={`anim-bubble max-w-[82%] rounded-2xl border px-3.5 py-2 shadow-sm sm:max-w-[72%] select-text ${
                     mine ? `chat-tail-mine border-pine-800 bg-pine-800 text-pine-50 ${row.grouped ? "rounded-br-2xl" : ""}` : `chat-tail-theirs border-mist bg-card text-ink ${row.grouped ? "rounded-bl-2xl" : ""}`
-                  }`}
+                  } ${pressedMessageId === m.id ? "ring-2 ring-rust-300 ring-offset-1" : ""}`}
                 >
                   {!mine && !row.grouped && <p className="mb-0.5 text-[10.5px] font-bold text-pine-700">{sender?.name}</p>}
                   <p className="whitespace-pre-line text-[13.5px] leading-relaxed">{m.body}</p>
@@ -581,7 +604,12 @@ export function MessagesPage() {
                   </button>
                 )}
                 {!mine && (
-                  <button onClick={() => active && setReportMsg({ conv: active, messageId: m.id })} title="Report message" className="ml-1.5 self-center rounded p-1 text-soft opacity-0 transition-opacity hover:bg-rust-100 hover:text-rust-600 group-hover:opacity-100">
+                  <button
+                    onClick={() => { cancelLongPress(); setPressedMessageId(null); if (active) setReportMsg({ conv: active, messageId: m.id }); }}
+                    title="Report message"
+                    aria-label="Report message"
+                    className={`ml-1.5 self-center rounded p-1 text-soft transition-all hover:bg-rust-100 hover:text-rust-600 ${pressedMessageId === m.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+                  >
                     <Flag className="h-3.5 w-3.5" />
                   </button>
                 )}
@@ -766,7 +794,7 @@ function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: 
     onClose();
   };
   return (
-    <Modal title="Report message" kicker="Goes to authorized moderators" onClose={onClose}
+    <Modal title="Report message" kicker="Goes to authorized moderators" onClose={onClose} zClass="z-[90]"
       footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn variant="danger" onClick={submit}><Flag className="h-4 w-4" /> Submit report</Btn></>}>
       <div className="mb-3 rounded-xl border border-rust-200 bg-rust-50 px-3 py-2.5 text-[12px]">
         <span className="font-semibold text-rust-800">Reporting:</span>{" "}
@@ -787,8 +815,33 @@ function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: 
 /* ================= Notifications ================= */
 export function NotificationsPage() {
   const { db, currentUser, update, toast, isGroupLoaded } = useApp();
+  const nav = useNavigate();
   const groupsLoaded = isGroupLoaded("notifications");
   const list = userNotifications(db, currentUser);
+  const notificationDestination = (n: import("../types").AppNotification) => {
+    if (n.targetRoute) return n.targetRoute;
+    const role = currentUser?.role;
+    if (n.type === "message") {
+      if (n.targetId) return `/messages/${n.targetId}`;
+      const title = n.title.toLowerCase();
+      const senderName = title.endsWith(" sent you a message") ? title.slice(0, -" sent you a message".length) : "";
+      const peer = db.users.find((u) => u.id !== currentUser?.id && u.name.toLowerCase() === senderName);
+      const conv = peer ? db.conversations.find((c) => c.participants.includes(currentUser?.id ?? "") && c.participants.includes(peer.id)) : undefined;
+      return conv ? `/messages/${conv.id}` : "/messages";
+    }
+    if (n.type === "announcement") return "/announcements";
+    if (n.type === "event") return "/events";
+    if (n.type === "homework") return role === "admin" ? "/admin/homework" : role === "teacher" ? "/teacher/homework" : role === "guardian" ? "/guardian/homework" : "/student/homework";
+    if (n.type === "attendance") return role === "admin" || role === "teacher" ? "/admin/attendance" : role === "guardian" ? "/guardian/attendance" : "/student/attendance";
+    if (n.type === "result") return role === "admin" || role === "teacher" ? "/admin/reports" : role === "guardian" ? "/guardian/grades" : "/student/grades";
+    if (["fee", "fee_payment", "fee_payment_request", "fee_payment_approved", "fee_payment_rejected"].includes(n.type)) return role === "admin" ? "/admin/fees" : "/guardian/fees";
+    return null;
+  };
+  const openNotification = (n: import("../types").AppNotification) => {
+    if (!n.read) void update((d) => { const x = d.notifications.find((y) => y.id === n.id); if (x) x.read = true; });
+    const destination = notificationDestination(n);
+    if (destination) nav(destination);
+  };
   const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, fee: Wallet, fee_payment_request: Wallet, fee_payment_approved: CheckCircle2, fee_payment_rejected: AlertTriangle, fee_payment: Wallet, system: Bell };
   const markAll = () => update((d) => { d.notifications.forEach((n) => { if (n.userId === currentUser?.id) n.read = true; }); });
   const deleteOne = async (notificationId: string) => {
@@ -826,13 +879,13 @@ export function NotificationsPage() {
             return (
               <li key={n.id} className={`group flex items-start gap-3 px-4 py-3.5 transition-colors ${n.read ? "" : "bg-pine-50/60"}`}>
                 <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${n.read ? "bg-paper text-soft" : "bg-pine-800 text-pine-50"}`}><I className="h-4 w-4" /></span>
-                <span className="min-w-0 flex-1">
+                <button onClick={() => openNotification(n)} className="min-w-0 flex-1 cursor-pointer text-left">
                   <span className="flex items-center justify-between gap-2">
                     <span className={`min-w-0 text-[13px] ${n.read ? "font-semibold text-soft" : "font-bold text-ink"}`}>{n.title}</span>
                     <span className="shrink-0 text-[10.5px] text-soft">{timeAgo(n.at)}</span>
                   </span>
                   <span className="mt-0.5 block text-[12px] leading-relaxed text-soft">{n.body}</span>
-                </span>
+                </button>
                 <span className="mt-0.5 flex shrink-0 items-center gap-1">
                   {!n.read && (
                     <button onClick={() => update((d) => { const x = d.notifications.find((y) => y.id === n.id); if (x) x.read = true; })} className="cursor-pointer rounded px-1.5 py-1 text-[11px] font-bold text-pine-700 hover:bg-pine-100 hover:underline">Mark read</button>

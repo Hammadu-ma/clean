@@ -345,7 +345,7 @@ function mapNotifications(notifications: any[]): AppNotification[] {
   return [...notifications]
     .sort((a: any, b: any) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
     .map((n: any) => ({
-      id: n.id, userId: n.profile_id, type: n.type, title: n.title, body: n.body, at: n.created_at, read: n.is_read,
+      id: n.id, userId: n.profile_id, type: n.type, title: n.title, body: n.body, at: n.created_at, read: n.is_read, targetType: n.target_type ?? undefined, targetId: n.target_id ?? undefined, targetRoute: n.target_route ?? undefined,
     })) as AppNotification[];
 }
 function mapEvents(events: any[]): SchoolEvent[] {

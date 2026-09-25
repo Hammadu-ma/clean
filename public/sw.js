@@ -6,6 +6,22 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+async function getCurrentSchoolLogoUrl() {
+  try {
+    const response = await fetch("/api/public-branding", {
+      method: "GET",
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const logoUrl = payload?.branding?.logoUrl;
+    return typeof logoUrl === "string" && /^https:\/\//i.test(logoUrl) ? logoUrl : null;
+  } catch {
+    return null;
+  }
+}
+
 self.addEventListener("push", (event) => {
   let payload = {};
   try {
@@ -19,17 +35,21 @@ self.addEventListener("push", (event) => {
   const url = typeof payload.url === "string" && payload.url.startsWith("/") ? payload.url : "/notifications";
   const tag = typeof payload.tag === "string" && payload.tag ? payload.tag : `notification-${Date.now()}`;
 
-  event.waitUntil(
-    self.registration.showNotification(title, {
+  event.waitUntil((async () => {
+    const logoUrl = await getCurrentSchoolLogoUrl();
+    await self.registration.showNotification(title, {
       body,
       tag,
       renotify: true,
       data: { url },
-      icon: "/notification-icon.png",
+      // Use the exact currently-active school logo uploaded in School Settings.
+      // Fall back to the dedicated monochrome asset if the branding endpoint or
+      // the R2 signed URL is unavailable.
+      icon: logoUrl || "/notification-icon.png",
       badge: "/notification-badge.png",
       vibrate: [80, 40, 120],
-    })
-  );
+    });
+  })());
 });
 
 self.addEventListener("notificationclick", (event) => {

@@ -35,6 +35,14 @@ export async function clearAuditLog(): Promise<{ error: string | null }> {
   return { error: error?.message ?? null };
 }
 
+/** Permanently removes one audit entry. The database restricts this to the
+ * Super Admin because deleting audit history is itself a privileged action. */
+export async function deleteAuditEntry(auditId: string): Promise<{ error: string | null }> {
+  if (!supabase) return { error: "Supabase is not configured." };
+  const { error } = await supabase.rpc("delete_audit_entry", { p_id: auditId });
+  return { error: error?.message ?? null };
+}
+
 /** Permanently removes a user account. The database enforces users.manage,
  * self-delete protection, and the last-active-admin guard. */
 export async function deleteUserAccount(userId: string): Promise<{ error: string | null }> {

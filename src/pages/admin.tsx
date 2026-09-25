@@ -4,11 +4,11 @@ import { useApp, useLazyGroups, fmtDate, timeAgo, uid } from "../store";
 import {
   PERMISSION_CATALOG, PERMISSION_CATEGORIES, getRoleProfile, hasPermission, isSuperAdmin, pushAudit,
 } from "../rbac";
-import type { Role, RoleDef, Settings } from "../types";
+import type { AuditEntry, Role, RoleDef, Settings } from "../types";
 import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonRows, TextArea, TextInput, tdCls, thCls, useConfirm } from "../ui";
 import { AccessDenied } from "./Auth";
 import { deleteFile, isStorageConfigured, uploadFile, useSignedUrl } from "../lib/storage";
-import { clearAuditLog } from "../lib/backend";
+import { clearAuditLog, deleteAuditEntry } from "../lib/backend";
 
 const BASE_ROLES: { value: Role; label: string }[] = [
   { value: "admin", label: "Administrator" },
@@ -367,6 +367,29 @@ export function AuditPage() {
     toast(`${rows.length} audit ${rows.length === 1 ? "entry" : "entries"} exported.`);
   };
 
+  const deleteAudit = async (entry: AuditEntry) => {
+    if (!isSuperAdmin(db, currentUser)) {
+      toast("Only the Super Admin can delete audit entries.", "warn");
+      return;
+    }
+    const activity = auditActivity(entry);
+    const confirmed = await confirm({
+      title: "Delete this audit entry?",
+      body: <>This will permanently remove the record that <strong>{activity.sentence}</strong> This cannot be undone.</>,
+      confirmLabel: "Delete entry",
+      cancelLabel: "Keep entry",
+      variant: "danger",
+    });
+    if (!confirmed) return;
+    const result = await deleteAuditEntry(entry.id);
+    if (result.error) {
+      toast(`Could not delete the audit entry: ${result.error}`, "warn");
+      return;
+    }
+    update((d) => { d.audit = d.audit.filter((x) => x.id !== entry.id); });
+    toast("Audit entry deleted.");
+  };
+
   const clearAudit = async () => {
     if (!db.audit.length) {
       toast("The audit log is already empty.", "warn");
@@ -438,9 +461,9 @@ export function AuditPage() {
       </Panel>
       <Panel className="anim-rise overflow-hidden">
         <div className="audit-table-wrap overflow-x-auto">
-        <table className="audit-table w-full min-w-[920px]">
+        <table className="audit-table w-full min-w-[1040px]">
           <thead className="border-b border-mist bg-paper/60">
-            <tr><th className={thCls()}>When</th><th className={thCls()}>User</th><th className={thCls()}>Activity</th><th className={thCls()}>Details</th></tr>
+            <tr><th className={thCls()}>When</th><th className={thCls()}>User</th><th className={thCls()}>Activity</th><th className={thCls()}>Details</th><th className={thCls()}>Action</th></tr>
           </thead>
           <tbody className="divide-y divide-mist/70">
             {!groupsLoaded ? (
@@ -466,10 +489,23 @@ export function AuditPage() {
                     <span className="font-semibold text-ink">{activity.targetLabel}</span>
                     {activity.detail && <span className="mt-0.5 block text-[11px] leading-relaxed text-soft">{activity.detail}</span>}
                   </td>
+                  <td className={`${tdCls()} whitespace-nowrap text-right`}>
+                    {isSuperAdmin(db, currentUser) && (
+                      <Btn
+                        size="sm"
+                        variant="dangerSoft"
+                        onClick={() => deleteAudit(a)}
+                        aria-label={`Delete audit entry: ${activity.sentence}`}
+                        title="Delete audit entry"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Delete
+                      </Btn>
+                    )}
+                  </td>
                 </tr>
               );
             })}
-            {rows.length === 0 && <tr><td colSpan={4}><EmptyState icon={<History className="h-5 w-5" />} title="No matching entries" body="Important changes will appear here in plain language." /></td></tr>}
+            {rows.length === 0 && <tr><td colSpan={5}><EmptyState icon={<History className="h-5 w-5" />} title="No matching entries" body="Important changes will appear here in plain language." /></td></tr>}
             </>
             )}
           </tbody>

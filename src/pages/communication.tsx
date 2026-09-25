@@ -11,7 +11,7 @@ import {
   findDirectConversation, hasPermission, pushAudit, pushNotifications, totalUnreadMessages,
   unreadInConversation, unreadNotifications, userNotifications, visibleAnnouncements, audienceUserIds,
 } from "../rbac";
-import type { Announcement, Audience, Conversation, User } from "../types";
+import type { Announcement, Audience, Conversation, SchoolEvent, User } from "../types";
 import { useDevicePush } from "../lib/push";
 import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonPanel, SkeletonRows, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls, useConfirm } from "../ui";
 import { AccessDenied } from "./Auth";
@@ -992,16 +992,73 @@ export function NotificationsPage() {
 /* ================= Events ================= */
 export function EventsPage() {
   const { db, currentUser, update, toast } = useApp();
+  const confirm = useConfirm();
   const groupsLoaded = useLazyGroups("events");
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<SchoolEvent | null>(null);
   const canManage = hasPermission(db, currentUser, "events.manage");
   const visible = db.events
     .filter((e) => audienceSize(db, e.audience) >= 0 && (canManage || e.audience.kind === "everyone" || true))
     .sort((a, b) => a.date.localeCompare(b.date));
+
+  const closeModal = () => {
+    setOpen(false);
+    setEditing(null);
+  };
+
+  const saveEvent = async (event: SchoolEvent) => {
+    const isEdit = db.events.some((e) => e.id === event.id);
+    const errors = await update((d) => {
+      const index = d.events.findIndex((e) => e.id === event.id);
+      if (index >= 0) {
+        d.events[index] = event;
+        pushAudit(d, currentUser, "event.update", event.title, audienceLabel(d, event.audience));
+      } else {
+        d.events.push(event);
+        pushAudit(d, currentUser, "event.create", event.title, audienceLabel(d, event.audience));
+        const targets = audienceUserIds(d, event.audience).filter((id) => id !== currentUser?.id);
+        const when = `${fmtShort(event.date)}${event.time ? ` at ${event.time}` : ""}`;
+        const where = event.location ? ` · ${event.location}` : "";
+        pushNotifications(d, targets, "event", "New school event", `${event.title} — ${when}${where}`, {
+          targetType: "event",
+          targetId: event.id,
+          targetRoute: "/events",
+        });
+      }
+    });
+    if (errors.length) {
+      toast(errors[0], "warn");
+      return;
+    }
+    toast(isEdit ? "Event updated." : "Event added.");
+    closeModal();
+  };
+
+  const requestDeleteEvent = async (event: SchoolEvent) => {
+    const ok = await confirm({
+      title: "Delete this event?",
+      body: <>This permanently removes <strong className="text-ink">{event.title}</strong> from the school calendar. This can't be undone.</>,
+      confirmLabel: "Delete event",
+      cancelLabel: "Keep event",
+      variant: "danger",
+    });
+    if (!ok) return;
+
+    const errors = await update((d) => {
+      d.events = d.events.filter((e) => e.id !== event.id);
+      pushAudit(d, currentUser, "event.delete", event.title);
+    });
+    if (errors.length) {
+      toast(errors[0], "warn");
+      return;
+    }
+    toast("Event deleted.");
+  };
+
   return (
     <div className="mx-auto max-w-3xl">
       <PageHead kicker="Communication" title="School calendar" sub="Upcoming events and key dates.">
-        {canManage && <Btn variant="gold" onClick={() => setOpen(true)}><CalendarDays className="h-4 w-4" /> Add event</Btn>}
+        {canManage && <Btn variant="gold" onClick={() => { setEditing(null); setOpen(true); }}><CalendarDays className="h-4 w-4" /> Add event</Btn>}
       </PageHead>
       <Panel className="anim-rise overflow-hidden">
         <ul className="divide-y divide-mist/70">
@@ -1013,18 +1070,26 @@ export function EventsPage() {
             const cm = CAT_META[e.category] ?? CAT_META.General;
             const d = new Date(e.date + "T00:00:00");
             return (
-              <li key={e.id} className="flex items-center gap-4 px-4 py-3.5">
-                <span className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-lg border border-mist bg-paper">
-                  <span className="font-display text-[16px] font-extrabold leading-none text-ink">{d.getDate()}</span>
-                  <span className="text-[9px] font-bold uppercase tracking-wider text-soft">{d.toLocaleDateString("en-GB", { month: "short" })}</span>
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="text-[13.5px] font-bold text-ink">{e.title}</span>
-                    <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${cm.bg}`}>{e.category}</span>
+              <li key={e.id} className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center sm:gap-4">
+                <div className="flex min-w-0 flex-1 items-center gap-4">
+                  <span className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-lg border border-mist bg-paper">
+                    <span className="font-display text-[16px] font-extrabold leading-none text-ink">{d.getDate()}</span>
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-soft">{d.toLocaleDateString("en-GB", { month: "short" })}</span>
                   </span>
-                  <span className="mt-0.5 block text-[11.5px] text-soft">{e.time ? `${e.time} · ` : ""}{e.location ? `${e.location} · ` : ""}{audienceLabel(db, e.audience)}</span>
-                </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="text-[13.5px] font-bold text-ink">{e.title}</span>
+                      <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${cm.bg}`}>{e.category}</span>
+                    </span>
+                    <span className="mt-0.5 block text-[11.5px] text-soft">{e.time ? `${e.time} · ` : ""}{e.location ? `${e.location} · ` : ""}{audienceLabel(db, e.audience)}</span>
+                  </span>
+                </div>
+                {canManage && (
+                  <div className="flex shrink-0 items-center justify-end gap-2 sm:pl-2">
+                    <Btn size="sm" variant="soft" onClick={() => { setEditing(e); setOpen(true); }}>Edit</Btn>
+                    <Btn size="sm" variant="dangerSoft" onClick={() => void requestDeleteEvent(e)}><Trash2 className="h-3.5 w-3.5" /> Delete</Btn>
+                  </div>
+                )}
               </li>
             );
           })}
@@ -1033,32 +1098,39 @@ export function EventsPage() {
           )}
         </ul>
       </Panel>
-      {open && <EventModal onClose={() => setOpen(false)} onSave={(ev) => { update((d) => {
-        d.events.push(ev);
-        pushAudit(d, currentUser, "event.create", ev.title, audienceLabel(d, ev.audience));
-        const targets = audienceUserIds(d, ev.audience).filter((id) => id !== currentUser?.id);
-        const when = `${fmtShort(ev.date)}${ev.time ? ` at ${ev.time}` : ""}`;
-        const where = ev.location ? ` · ${ev.location}` : "";
-        pushNotifications(d, targets, "event", "New school event", `${ev.title} — ${when}${where}`, {
-          targetType: "event",
-          targetId: ev.id,
-          targetRoute: "/events",
-        });
-      }); toast("Event added."); setOpen(false); }} />}
+      {open && <EventModal event={editing} onClose={closeModal} onSave={saveEvent} />}
     </div>
   );
 }
 
-function EventModal({ onClose, onSave }: { onClose: () => void; onSave: (e: import("../types").SchoolEvent) => void }) {
+function EventModal({ event, onClose, onSave }: { event?: SchoolEvent | null; onClose: () => void; onSave: (e: SchoolEvent) => void | Promise<void> }) {
   const { db, currentUser, toast } = useApp();
-  const [f, setF] = useState({ title: "", date: "", time: "", location: "", category: "Event", description: "" });
-  const [audience, setAudience] = useState<Audience>({ kind: "everyone" });
+  const isEdit = !!event;
+  const [f, setF] = useState({
+    title: event?.title ?? "",
+    date: event?.date ?? "",
+    time: event?.time ?? "",
+    location: event?.location ?? "",
+    category: event?.category ?? "Event",
+    description: event?.description ?? "",
+  });
+  const [audience, setAudience] = useState<Audience>(event?.audience ?? { kind: "everyone" });
   return (
-    <Modal title="Add event" kicker="School calendar" onClose={onClose} wide
+    <Modal title={isEdit ? "Edit event" : "Add event"} kicker="School calendar" onClose={onClose} wide
       footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={() => {
         if (!f.title.trim() || !f.date) { toast("Title and date are required.", "warn"); return; }
-        onSave({ id: uid(), title: f.title.trim(), date: f.date, time: f.time || undefined, location: f.location || undefined, category: f.category as import("../types").NoticeCategory, audience, createdBy: currentUser?.id ?? "", description: f.description || undefined });
-      }}>Save event</Btn></>}>
+        void onSave({
+          id: event?.id ?? uid(),
+          title: f.title.trim(),
+          date: f.date,
+          time: f.time || undefined,
+          location: f.location || undefined,
+          category: f.category as import("../types").NoticeCategory,
+          audience,
+          createdBy: event?.createdBy ?? currentUser?.id ?? "",
+          description: f.description || undefined,
+        });
+      }}>{isEdit ? "Save changes" : "Save event"}</Btn></>}>
       <div className="grid gap-4">
         <Field label="Title" required><TextInput value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></Field>
         <div className="grid gap-4 sm:grid-cols-3">

@@ -25,8 +25,8 @@ self.addEventListener("push", (event) => {
       tag,
       renotify: true,
       data: { url },
-      icon: "/icon-192.svg",
-      badge: "/icon-192.svg",
+      icon: "/notification-icon.png",
+      badge: "/notification-badge.png",
       vibrate: [80, 40, 120],
     })
   );

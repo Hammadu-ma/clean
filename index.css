@@ -1,0 +1,371 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-paper: #eef1ea;
+  --color-card: #fbfcf9;
+  --color-ink: #1b2620;
+  --color-soft: #5d6b62;
+  --color-mist: #dde4d9;
+
+  --color-pine-50: #edf4ef;
+  --color-pine-100: #dce9e0;
+  --color-pine-200: #bcd6c6;
+  --color-pine-300: #93bba4;
+  --color-pine-400: #649a7e;
+  --color-pine-500: #407d60;
+  --color-pine-600: #2c654c;
+  --color-pine-700: #23523e;
+  --color-pine-800: #1d4334;
+  --color-pine-900: #16352a;
+  --color-pine-950: #0d211a;
+
+  --color-gold-100: #fdf1d6;
+  --color-gold-200: #fae2a5;
+  --color-gold-300: #f5cd6d;
+  --color-gold-400: #eeb73f;
+  --color-gold-500: #e2a21d;
+  --color-gold-600: #c4860f;
+  --color-gold-700: #9c690a;
+
+  --color-rust-100: #f9e3dd;
+  --color-rust-200: #f2c8be;
+  --color-rust-500: #c2503d;
+  --color-rust-600: #a63f2f;
+  --color-rust-700: #8a3325;
+
+  --color-steel-100: #e2eaf1;
+  --color-steel-500: #3a6b8c;
+  --color-steel-700: #2b516b;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  /* Safety net: nothing in the app should ever cause the page itself to
+     scroll sideways on mobile (long emails, account numbers, etc. should
+     wrap or truncate instead) — this guarantees it even if something slips
+     through. */
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-paper);
+  background-image: radial-gradient(rgba(29, 67, 52, 0.07) 1px, transparent 1px);
+  background-size: 22px 22px;
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Any long, unbroken run of characters (emails, phone/account numbers,
+   usernames) should wrap inside its box instead of forcing that box —
+   and the whole page — wider than the viewport. */
+p,
+dd,
+span,
+td,
+li {
+  overflow-wrap: anywhere;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.tnum {
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(29, 67, 52, 0.35) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(29, 67, 52, 0.28);
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-7px);
+  }
+  40% {
+    transform: translateX(6px);
+  }
+  60% {
+    transform: translateX(-4px);
+  }
+  80% {
+    transform: translateX(3px);
+  }
+}
+@keyframes tickpulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes barfill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.anim-rise {
+  animation: rise 0.45s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.anim-pop {
+  animation: pop 0.32s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.anim-toast {
+  animation: toast-in 0.3s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.anim-shake {
+  animation: shake 0.4s ease both;
+}
+.anim-bar {
+  transform-origin: left;
+  animation: barfill 0.9s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.skel {
+  background-image: linear-gradient(90deg, var(--color-mist) 25%, rgba(13, 33, 26, 0.06) 37%, var(--color-mist) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+.live-dot {
+  animation: tickpulse 2s ease-in-out infinite;
+}
+
+/* ---------- chat screen (Telegram-style full-screen takeover on mobile) ---------- */
+@keyframes chat-screen-in {
+  from {
+    opacity: 0;
+    transform: translateX(4%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes chat-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.anim-chat-screen {
+  animation: chat-screen-in 0.24s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.anim-bubble {
+  animation: chat-bubble-in 0.18s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.chat-tail-mine {
+  border-bottom-right-radius: 4px;
+}
+.chat-tail-theirs {
+  border-bottom-left-radius: 4px;
+}
+
+/* layered ambient background for auth + dashboard hero */
+.auth-panel {
+  background-color: var(--color-pine-950);
+  background-image:
+    radial-gradient(rgba(238, 183, 63, 0.08) 1px, transparent 1px),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.02) 0 2px, transparent 2px 5px),
+    linear-gradient(160deg, #0d211a 0%, #16352a 55%, #1d4334 100%);
+  background-size:
+    26px 26px,
+    auto,
+    auto;
+}
+
+
+/* ---------- Mobile table readability ----------
+   Keep dense operational tables horizontal. The table itself scrolls; cell
+   content should not collapse into narrow vertical stacks on phones. */
+.mark-entry-table th,
+.mark-entry-table td,
+.audit-table th,
+.audit-table td {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+  vertical-align: middle;
+}
+
+.mark-entry-table .mark-entry-student-head,
+.mark-entry-table .mark-entry-student-cell {
+  min-width: 190px;
+}
+
+.mark-entry-table .mark-entry-student-cell > span {
+  white-space: nowrap;
+}
+
+.audit-table .audit-detail-cell {
+  min-width: 360px;
+}
+
+.mark-entry-table-wrap,
+.audit-table-wrap {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+@media (max-width: 640px) {
+  .mark-entry-table {
+    min-width: 1040px;
+  }
+
+  .mark-entry-table .mark-entry-student-head,
+  .mark-entry-table .mark-entry-student-cell {
+    min-width: 210px;
+  }
+
+  .audit-table {
+    min-width: 980px;
+  }
+
+  .audit-table .audit-detail-cell {
+    min-width: 420px;
+  }
+}
+
+/* ---------- Attendance table readability ----------
+   Keep the register wide and scrollable on small screens instead of
+   allowing names/status labels to collapse into vertical text. */
+.attendance-table th,
+.attendance-table td {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+  vertical-align: middle;
+}
+
+.attendance-table-wrap {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+@media (max-width: 640px) {
+  .attendance-table {
+    min-width: 680px;
+  }
+}
+
+/* ---------- ID card printing ---------- */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .idcard-sheet,
+  .idcard-sheet * {
+    visibility: visible;
+  }
+  .idcard-sheet {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12mm;
+    padding: 10mm;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* CR80 card proportions (85.6mm × 54mm) rendered on screen */
+.idcard {
+  width: 340px;
+  height: 214px;
+  border-radius: 14px;
+  overflow: hidden;
+  position: relative;
+  box-shadow: 0 8px 24px rgba(13, 33, 26, 0.25);
+}
+
+/* ---------- Reports / academic result readability ----------
+   Keep names, assessment descriptions and percentages on one readable line.
+   The containing panel remains horizontally scrollable on narrow screens. */
+.reports-table th,
+.reports-table td,
+.academic-results-table th,
+.academic-results-table td {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.reports-table td,
+.academic-results-table td {
+  line-height: 1.35;
+}

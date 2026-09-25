@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronUp, History, KeyRound, Plus, Search, Settings2, ShieldCheck, Trash2, Download, Users as UsersIcon, X, Eye, SlidersHorizontal, ImagePlus, Star, UploadCloud } from "lucide-react";
 import { useApp, useLazyGroups, fmtDate, timeAgo, uid } from "../store";
 import {
-  PERMISSION_CATALOG, PERMISSION_CATEGORIES, getRoleProfile, hasPermission, pushAudit,
+  PERMISSION_CATALOG, PERMISSION_CATEGORIES, getRoleProfile, hasPermission, isSuperAdmin, pushAudit,
 } from "../rbac";
 import type { Role, RoleDef, Settings } from "../types";
 import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonRows, TextArea, TextInput, tdCls, thCls, useConfirm } from "../ui";

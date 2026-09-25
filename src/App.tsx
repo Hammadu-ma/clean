@@ -6,7 +6,7 @@ import { AcademicYearProvider } from "./lib/yearContext";
 import type { Role } from "./types";
 import { AppShell } from "./Layout";
 import { AccessDenied, LoginPage } from "./pages/Auth";
-import { SkeletonCards, SkeletonPanel } from "./ui";
+import { ConfirmProvider, SkeletonCards, SkeletonPanel } from "./ui";
 
 /**
  * Route-level code splitting: only the login screen + shell are in the
@@ -65,7 +65,7 @@ const communication = named(() => import("./pages/communication"));
 const { AnnouncementsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage } = communication;
 
 const admin = named(() => import("./pages/admin"));
-const { AuditPage, RolesPage } = admin;
+const { AuditPage, RolesPage, SchoolSettingsPage } = admin;
 
 /** Suspense fallback for a lazy page chunk still downloading. Mirrors the
  *  page's eventual layout (a stat row + a content panel) with shimmering
@@ -129,6 +129,7 @@ export default function App() {
   return (
     <AppProvider>
       <AcademicYearProvider>
+        <ConfirmProvider>
         <HashRouter>
         <Suspense fallback={<PageLoading />}>
         <Routes>
@@ -169,6 +170,7 @@ export default function App() {
             */}
             <Route path="/admin/roles" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="roles.manage permission"><RolesPage /></Guard>} />
             <Route path="/admin/audit" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="audit.view permission"><AuditPage /></Guard>} />
+            <Route path="/admin/settings" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="settings.manage permission"><SchoolSettingsPage /></Guard>} />
 
             {/* administrator */}
             <Route path="/admin/dashboard" element={<Guard roles={["admin"]} required="Administrator"><AdminDashboard /></Guard>} />
@@ -221,6 +223,7 @@ export default function App() {
         </Routes>
         </Suspense>
         </HashRouter>
+        </ConfirmProvider>
       </AcademicYearProvider>
     </AppProvider>
   );

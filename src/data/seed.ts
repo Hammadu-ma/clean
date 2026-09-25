@@ -234,7 +234,7 @@ export function buildSeed(): DB {
       admission: {
         number: `ADM-2026-${pad3(i)}`,
         date: addDays(-(45 - (i % 9))),
-        previousSchool: ["Hope Primary School", "Bright Future Academy", "Riverside Primary School"][i % 3],
+        previousSchool: ["Previous School A", "Previous School B", "Previous School C"][i % 3],
         type: i % 5 === 0 ? "Transfer" : "New Admission",
       },
       enrollment: { yearId: "y26", classId, sectionId, rollNumber: (i % 40) + 1, status: "active", enrolledOn: addDays(-45) },
@@ -502,10 +502,10 @@ export function buildSeed(): DB {
     events,
     audit,
     settings: {
-      schoolName: "Riverside Secondary School",
+      schoolName: "School Manager Demo School",
       motto: "Knowledge · Discipline · Service",
       bankAccounts: [
-        { id: "bank-1", bankName: "Commercial Bank of Ethiopia", accountName: "Riverside Secondary School", accountNumber: "1000123456789", branch: "Bole Branch" },
+        { id: "bank-1", bankName: "Commercial Bank of Ethiopia", accountName: "School Manager Demo School", accountNumber: "1000123456789", branch: "Bole Branch" },
       ],
       workingDays: [0, 1, 2, 3, 4],
       periods: PERIODS,

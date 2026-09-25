@@ -1,4 +1,4 @@
-import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { X } from "lucide-react";
 import type { Role, Student, User } from "./types";
 import { initials } from "./store";
@@ -142,6 +142,82 @@ export function Modal({
       </div>
     </div>
   );
+}
+
+export interface ConfirmOptions {
+  title: ReactNode;
+  body: ReactNode;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  variant?: keyof typeof btnVariants;
+}
+
+type ConfirmRequest = {
+  options: ConfirmOptions;
+  resolve: (confirmed: boolean) => void;
+};
+
+const ConfirmContext = createContext<{ confirm: (options: ConfirmOptions) => Promise<boolean> } | null>(null);
+
+/**
+ * Native-to-the-app confirmation modal. This intentionally replaces browser
+ * confirm() dialogs so destructive actions remain inside the application's
+ * visual language, work consistently on mobile, and never block the browser's
+ * main thread with a native prompt.
+ */
+export function ConfirmProvider({ children }: { children: ReactNode }) {
+  const [active, setActive] = useState<ConfirmRequest | null>(null);
+  const activeRef = useRef<ConfirmRequest | null>(null);
+  const queueRef = useRef<ConfirmRequest[]>([]);
+
+  const finish = useCallback((confirmed: boolean) => {
+    const current = activeRef.current;
+    if (!current) return;
+    current.resolve(confirmed);
+    const next = queueRef.current.shift() ?? null;
+    activeRef.current = next;
+    setActive(next);
+  }, []);
+
+  const confirm = useCallback((options: ConfirmOptions) => {
+    return new Promise<boolean>((resolve) => {
+      const request = { options, resolve };
+      if (activeRef.current) {
+        queueRef.current.push(request);
+        return;
+      }
+      activeRef.current = request;
+      setActive(request);
+    });
+  }, []);
+
+  return (
+    <ConfirmContext.Provider value={{ confirm }}>
+      {children}
+      {active && (
+        <Modal
+          title={active.options.title}
+          kicker="Please confirm"
+          onClose={() => finish(false)}
+          zClass="z-[120]"
+          footer={
+            <>
+              <Btn variant="ghost" onClick={() => finish(false)}>{active.options.cancelLabel ?? "Cancel"}</Btn>
+              <Btn variant={active.options.variant ?? "danger"} onClick={() => finish(true)}>{active.options.confirmLabel ?? "Confirm"}</Btn>
+            </>
+          }
+        >
+          <div className="space-y-2 text-[13px] leading-relaxed text-soft">{active.options.body}</div>
+        </Modal>
+      )}
+    </ConfirmContext.Provider>
+  );
+}
+
+export function useConfirm() {
+  const ctx = useContext(ConfirmContext);
+  if (!ctx) throw new Error("useConfirm must be used inside <ConfirmProvider>");
+  return ctx.confirm;
 }
 
 export function Tabs({ tabs, active, onChange }: { tabs: { id: string; label: string; icon?: ReactNode }[]; active: string; onChange: (id: string) => void }) {

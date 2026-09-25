@@ -12,7 +12,7 @@ import {
   unreadInConversation, unreadNotifications, userNotifications, visibleAnnouncements, audienceUserIds,
 } from "../rbac";
 import type { Announcement, Audience, Conversation, User } from "../types";
-import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonPanel, SkeletonRows, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls } from "../ui";
+import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonPanel, SkeletonRows, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls, useConfirm } from "../ui";
 import { AccessDenied } from "./Auth";
 
 /* ================= shared bits ================= */
@@ -505,7 +505,13 @@ export function MessagesPage() {
     if (!currentUser) return;
     const message = db.messages.find((m) => m.id === messageId);
     if (!message || message.senderId !== currentUser.id) return;
-    if (!window.confirm("Delete this message?")) return;
+    const confirmed = await confirm({
+      title: "Delete this message?",
+      body: "This message will be removed from the conversation. This action cannot be undone.",
+      confirmLabel: "Delete message",
+      variant: "danger",
+    });
+    if (!confirmed) return;
     const errors = await update((d) => {
       const idx = d.messages.findIndex((m) => m.id === messageId && m.senderId === currentUser.id);
       if (idx >= 0) d.messages.splice(idx, 1);
@@ -815,6 +821,7 @@ function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: 
 /* ================= Notifications ================= */
 export function NotificationsPage() {
   const { db, currentUser, update, toast, isGroupLoaded } = useApp();
+  const confirm = useConfirm();
   const nav = useNavigate();
   const groupsLoaded = isGroupLoaded("notifications");
   const list = userNotifications(db, currentUser);
@@ -845,7 +852,13 @@ export function NotificationsPage() {
   const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, fee: Wallet, fee_payment_request: Wallet, fee_payment_approved: CheckCircle2, fee_payment_rejected: AlertTriangle, fee_payment: Wallet, system: Bell };
   const markAll = () => update((d) => { d.notifications.forEach((n) => { if (n.userId === currentUser?.id) n.read = true; }); });
   const deleteOne = async (notificationId: string) => {
-    if (!window.confirm("Delete this notification?")) return;
+    const confirmed = await confirm({
+      title: "Delete this notification?",
+      body: "This notification will be removed from your notification center.",
+      confirmLabel: "Delete notification",
+      variant: "danger",
+    });
+    if (!confirmed) return;
     const errors = await update((d) => {
       const idx = d.notifications.findIndex((n) => n.id === notificationId && n.userId === currentUser?.id);
       if (idx >= 0) d.notifications.splice(idx, 1);
@@ -854,7 +867,13 @@ export function NotificationsPage() {
   };
   const clearAll = async () => {
     if (!list.length) return;
-    if (!window.confirm("Clear all notifications? This removes every notification from your notification center.")) return;
+    const confirmed = await confirm({
+      title: "Clear all notifications?",
+      body: "Every notification in your notification center will be removed. This action cannot be undone.",
+      confirmLabel: "Clear all",
+      variant: "danger",
+    });
+    if (!confirmed) return;
     const errors = await update((d) => {
       d.notifications = d.notifications.filter((n) => n.userId !== currentUser?.id);
     });

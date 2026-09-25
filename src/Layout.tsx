@@ -63,6 +63,7 @@ const NAV: Record<Role, NavGroup[]> = {
         { to: "/admin/users", label: "Users & roles", icon: <ShieldCheck className="h-4 w-4" />, perm: "users.manage" },
         { to: "/admin/roles", label: "Roles & permissions", icon: <KeyRound className="h-4 w-4" />, perm: "roles.manage" },
         { to: "/admin/audit", label: "Audit log", icon: <History className="h-4 w-4" />, perm: "audit.view" },
+        { to: "/admin/settings", label: "School settings", icon: <Settings2 className="h-4 w-4" />, perm: "settings.manage" },
       ],
     },
     { group: "Communication", items: [...COMM_ITEMS, { to: "/moderation", label: "Moderation", icon: <ShieldAlert className="h-4 w-4" />, perm: "communication.moderate" }] },
@@ -226,7 +227,7 @@ export function AppShell() {
           <GraduationCap className="h-5 w-5 text-gold-400" />
         </span>
         <span>
-          <span className="font-display block text-[15px] font-extrabold leading-none tracking-tight text-white">Riverside</span>
+          <span className="font-display block max-w-[150px] truncate text-[15px] font-extrabold leading-none tracking-tight text-white">{db.settings.schoolName || "School"}</span>
           <span className="mt-1 block text-[9.5px] font-semibold uppercase tracking-[0.18em] text-pine-300">School Manager</span>
         </span>
       </button>
@@ -283,7 +284,7 @@ export function AppShell() {
             <RefreshCw className="h-3.5 w-3.5" /> Reset demo data
           </button>
         )}
-        <p className="mt-1 px-2.5 text-[10px] text-pine-500">Riverside SMS · role-based access demo</p>
+        <p className="mt-1 px-2.5 text-[10px] text-pine-500">{db.settings.schoolName || "School"} SMS · role-based access</p>
       </div>
     </div>
   );

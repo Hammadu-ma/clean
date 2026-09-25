@@ -987,7 +987,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       <div className="flex min-h-screen items-center justify-center bg-paper">
         <div className="anim-rise text-center">
           <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
-          <p className="font-display text-[15px] font-bold text-ink">Riverside SMS</p>
+          <p className="font-display text-[15px] font-bold text-ink">School Manager</p>
           <p className="mt-1 text-[12px] text-soft">{"Connecting…"}</p>
         </div>
       </div>

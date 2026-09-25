@@ -44,8 +44,7 @@ export const supabaseProjectUrl: string | null = null;
 
 /** Username to login email mapping now happens on the server, where the real
  *  profile row can be consulted. Kept only so existing imports resolve. */
-export const usernameToEmail = (username: string) =>
-  username.includes("@") ? username.trim().toLowerCase() : `${username.trim().toLowerCase()}@riverside.school`;
+export const usernameToEmail = (username: string) => username.trim().toLowerCase();
 
 type Result<T> = { data: T | null; error: { message: string; code?: string } | null };
 
@@ -116,13 +115,12 @@ export const supabase = {
 
     /**
      * NOTE THE SIGNATURE CHANGE. The old call took `{ email, password }`
-     * because the client did the username-to-email mapping itself. The server
-     * does that now — it can look up the real profile row, which is what
-     * migration 0018 existed to fix — so this accepts either shape and sends
-     * whichever identifier it was given.
+     * because the server owns username-to-email mapping. The client sends the
+     * user-entered identifier unchanged; the server resolves it against the
+     * installation's configured Auth email domain.
      */
     async signInWithPassword(creds: { email?: string; username?: string; password: string }) {
-      const identifier = (creds.username ?? creds.email ?? "").replace(/@riverside\.school$/i, "");
+      const identifier = (creds.username ?? creds.email ?? "").trim();
       const result = await apiLogin(identifier, creds.password);
       if (!result.ok) {
         return { data: { user: null, session: null }, error: { message: result.error } };

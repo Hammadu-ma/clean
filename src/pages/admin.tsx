@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, History, KeyRound, Plus, Search, ShieldCheck, Trash2, Users as UsersIcon, X, Eye, SlidersHorizontal } from "lucide-react";
+import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronUp, History, KeyRound, Plus, Search, Settings2, ShieldCheck, Trash2, Users as UsersIcon, X, Eye, SlidersHorizontal } from "lucide-react";
 import { useApp, useLazyGroups, fmtDate, timeAgo, uid } from "../store";
 import {
   PERMISSION_CATALOG, PERMISSION_CATEGORIES, getRoleProfile, hasPermission, pushAudit,
 } from "../rbac";
-import type { Role, RoleDef } from "../types";
+import type { Role, RoleDef, Settings } from "../types";
 import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonRows, TextArea, TextInput, tdCls, thCls } from "../ui";
 import { AccessDenied } from "./Auth";
 
@@ -314,6 +314,159 @@ export function AuditPage() {
         </table>
         </div>
       </Panel>
+    </div>
+  );
+}
+
+
+/* ================= School settings ================= */
+export function SchoolSettingsPage() {
+  const { db, currentUser, update, toast } = useApp();
+  const [draft, setDraft] = useState<Settings>(() => ({
+    ...db.settings,
+    bankAccounts: [...(db.settings.bankAccounts ?? [])],
+    workingDays: [...(db.settings.workingDays ?? [])],
+    periods: [...(db.settings.periods ?? [])],
+  }));
+
+  if (!hasPermission(db, currentUser, "settings.manage")) {
+    return <AccessDenied required="settings.manage" reason="You don't have permission to change school settings." />;
+  }
+
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+  const save = async () => {
+    const name = draft.schoolName.trim();
+    if (!name) {
+      toast("School name is required.", "warn");
+      return;
+    }
+    if (!draft.workingDays.length) {
+      toast("Keep at least one working day.", "warn");
+      return;
+    }
+    if (!draft.periods.length) {
+      toast("Keep at least one timetable period.", "warn");
+      return;
+    }
+    const errors = await update((d) => {
+      d.settings = {
+        ...draft,
+        schoolName: name,
+        motto: draft.motto.trim(),
+        bankAccounts: [...(draft.bankAccounts ?? [])],
+        workingDays: [...draft.workingDays].sort((a, b) => a - b),
+        periods: [...draft.periods],
+      };
+    });
+    if (errors.length) {
+      toast("Could not save school settings. " + errors[0], "warn");
+      return;
+    }
+    setDraft((current) => ({
+      ...current,
+      schoolName: name,
+      motto: current.motto.trim(),
+    }));
+    toast("School settings saved.");
+  };
+
+  const toggleDay = (day: number) => {
+    const next = draft.workingDays.includes(day)
+      ? draft.workingDays.filter((d) => d !== day)
+      : [...draft.workingDays, day].sort((a, b) => a - b);
+    if (!next.length) {
+      toast("Keep at least one working day.", "warn");
+      return;
+    }
+    setDraft((current) => ({ ...current, workingDays: next }));
+  };
+
+  const updatePeriod = (index: number, patch: Partial<{ period: number; time: string }>) => {
+    setDraft((current) => {
+      const periods = [...current.periods];
+      periods[index] = { ...periods[index], ...patch };
+      return { ...current, periods };
+    });
+  };
+
+  const addPeriod = () => {
+    setDraft((current) => {
+      const nextNo = current.periods.length ? Math.max(...current.periods.map((p) => p.period)) + 1 : 1;
+      return { ...current, periods: [...current.periods, { period: nextNo, time: "08:00" }] };
+    });
+  };
+
+  const removePeriod = (index: number) => {
+    if (draft.periods.length <= 1) {
+      toast("Keep at least one timetable period.", "warn");
+      return;
+    }
+    setDraft((current) => ({ ...current, periods: current.periods.filter((_, i) => i !== index) }));
+  };
+
+  const movePeriod = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= draft.periods.length) return;
+    setDraft((current) => {
+      const periods = [...current.periods];
+      [periods[index], periods[target]] = [periods[target], periods[index]];
+      return { ...current, periods };
+    });
+  };
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <PageHead kicker="Administration" title="School settings" sub="Change the school's identity and operating schedule without editing the application code.">
+        <Btn onClick={save}><Settings2 className="h-4 w-4" /> Save settings</Btn>
+      </PageHead>
+
+      <div className="grid gap-4">
+        <Panel className="anim-rise p-4 sm:p-5">
+          <div className="mb-4 flex items-start gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-pine-100 text-pine-700"><Settings2 className="h-5 w-5" /></span>
+            <div><h3 className="font-display text-[15px] font-bold text-ink">School identity</h3><p className="text-[12px] text-soft">These values drive the sidebar, login screen, reports and registration documents.</p></div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="School name" required><TextInput value={draft.schoolName} onChange={(e) => setDraft((current) => ({ ...current, schoolName: e.target.value }))} placeholder="Your school name" /></Field>
+            <Field label="Motto"><TextInput value={draft.motto} onChange={(e) => setDraft((current) => ({ ...current, motto: e.target.value }))} placeholder="Your school motto" /></Field>
+          </div>
+          <div className="mt-3 rounded-lg border border-pine-100 bg-pine-50/60 px-3 py-2.5 text-[11.5px] text-soft">The value is applied throughout the app after you save. No code change or redeployment is required.</div>
+        </Panel>
+
+        <Panel className="anim-rise p-4 sm:p-5">
+          <div className="mb-4 flex items-start gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gold-100 text-gold-700"><CalendarDays className="h-5 w-5" /></span>
+            <div><h3 className="font-display text-[15px] font-bold text-ink">Working days</h3><p className="text-[12px] text-soft">Choose which weekdays are used by attendance and the school timetable.</p></div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {days.map((day, index) => {
+              const on = draft.workingDays.includes(index);
+              return <button key={day} type="button" onClick={() => toggleDay(index)} className={`cursor-pointer rounded-lg border px-3 py-2 text-left text-[12.5px] font-semibold transition-colors ${on ? "border-pine-300 bg-pine-50 text-pine-800" : "border-mist bg-card text-soft hover:border-pine-200"}`}><span className="block text-[10px] uppercase tracking-[0.12em] opacity-70">Day {index}</span>{day}</button>;
+            })}
+          </div>
+        </Panel>
+
+        <Panel className="anim-rise overflow-hidden">
+          <div className="flex items-center justify-between gap-3 border-b border-mist bg-paper/50 px-4 py-3.5">
+            <div><h3 className="font-display text-[15px] font-bold text-ink">Timetable periods</h3><p className="text-[12px] text-soft">Add, remove, reorder and retime periods for the school day.</p></div>
+            <Btn size="sm" variant="soft" onClick={addPeriod}><Plus className="h-3.5 w-3.5" /> Add period</Btn>
+          </div>
+          <div className="divide-y divide-mist/70">
+            {draft.periods.map((period, index) => (
+              <div key={`${period.period}-${index}`} className="flex flex-wrap items-end gap-3 px-4 py-3">
+                <Field label="Period" className="w-full sm:w-[140px]"><TextInput type="number" min={1} value={period.period} onChange={(e) => updatePeriod(index, { period: Math.max(1, Number(e.target.value) || 1) })} /></Field>
+                <Field label="Start time" className="w-full sm:w-[160px]"><TextInput type="time" value={period.time} onChange={(e) => updatePeriod(index, { time: e.target.value })} /></Field>
+                <div className="ml-auto flex items-center gap-1">
+                  <Btn size="sm" variant="ghost" disabled={index === 0} onClick={() => movePeriod(index, -1)} aria-label="Move period up"><ChevronUp className="h-4 w-4" /></Btn>
+                  <Btn size="sm" variant="ghost" disabled={index === draft.periods.length - 1} onClick={() => movePeriod(index, 1)} aria-label="Move period down"><ChevronDown className="h-4 w-4" /></Btn>
+                  <Btn size="sm" variant="dangerSoft" disabled={draft.periods.length <= 1} onClick={() => removePeriod(index)}><Trash2 className="h-3.5 w-3.5" /> Remove</Btn>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
     </div>
   );
 }

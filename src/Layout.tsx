@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Banknote, Bell, CalendarCheck2, CalendarDays, CalendarRange, Settings2, ClipboardList, Clock as ClockIcon, FileBarChart2, GraduationCap,
-  HeartHandshake, History, Inbox, KeyRound, LayoutDashboard, Layers, LogOut, Megaphone, Menu, RefreshCw,
+  HeartHandshake, History, Inbox, KeyRound, LayoutDashboard, Layers, Megaphone, Menu, RefreshCw,
   ShieldAlert, ShieldCheck, Table2, Users, X, Contact,
   AlertTriangle, Check, ChevronDown, User, BookOpen, Baby, PenLine,
 } from "lucide-react";
@@ -139,8 +139,11 @@ function Clock() {
 }
 
 export function AppShell() {
-  const { db, currentUser, logout, yearId, setYear, ui, dismissToast, resetData } = useApp();
-  useLazyGroups(["notifications", "messaging"]);
+  const { db, currentUser, yearId, setYear, ui, dismissToast, resetData } = useApp();
+  // Notifications are global header state, so keep exactly one live notification
+  // loader mounted from the shell rather than creating another SSE stream on the
+  // notifications page itself.
+  useLazyGroups("notifications");
   const nav = useNavigate();
   const loc = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -329,13 +332,23 @@ export function AppShell() {
                 <RoleBadge role={currentUser.role} />
               </span>
             </div>
-            <button
-              onClick={() => { logout(); nav("/login", { replace: true }); }}
-              className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-mist px-2.5 py-2 text-[12px] font-bold text-soft transition-all hover:border-rust-500 hover:bg-rust-100 hover:text-rust-700"
-              title="Sign out"
+            <NavLink
+              to="/notifications"
+              aria-label={unreadNotifs > 0 ? `${unreadNotifs} unread notifications` : "Notifications"}
+              title={unreadNotifs > 0 ? `${unreadNotifs} unread notifications` : "Notifications"}
+              className={({ isActive }) =>
+                `relative flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg border transition-colors ${
+                  isActive ? "border-pine-300 bg-pine-50 text-pine-700" : "border-mist text-soft hover:border-pine-300 hover:bg-pine-50 hover:text-pine-700"
+                }`
+              }
             >
-              <LogOut className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Sign out</span>
-            </button>
+              <Bell className="h-4 w-4" />
+              {unreadNotifs > 0 && (
+                <span className="absolute -right-1 -top-1 min-w-[17px] rounded-full bg-rust-500 px-1 text-center font-mono text-[9px] font-extrabold leading-[17px] text-white shadow-sm ring-2 ring-card">
+                  {unreadNotifs > 99 ? "99+" : unreadNotifs}
+                </span>
+              )}
+            </NavLink>
           </div>
         </div>
       </header>

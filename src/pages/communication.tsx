@@ -780,8 +780,8 @@ function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: 
 
 /* ================= Notifications ================= */
 export function NotificationsPage() {
-  const { db, currentUser, update } = useApp();
-  const groupsLoaded = useLazyGroups("notifications");
+  const { db, currentUser, update, toast, isGroupLoaded } = useApp();
+  const groupsLoaded = isGroupLoaded("notifications");
   const list = userNotifications(db, currentUser);
   const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, fee: Wallet, fee_payment_request: Wallet, fee_payment_approved: CheckCircle2, fee_payment_rejected: AlertTriangle, fee_payment: Wallet, system: Bell };
   const markAll = () => update((d) => { d.notifications.forEach((n) => { if (n.userId === currentUser?.id) n.read = true; }); });

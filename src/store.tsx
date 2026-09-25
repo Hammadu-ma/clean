@@ -1050,7 +1050,9 @@ export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
       };
     }
 
-    const interval = liveGroup === "messaging" ? 1500 : liveGroup === "announcements" ? 4000 : 1000;
+    // get_app_snapshot is a deliberately bounded compatibility read (10/min).
+    // Messaging therefore polls at a safe interval instead of hammering the snapshot endpoint.
+    const interval = liveGroup === "messaging" ? 7000 : liveGroup === "announcements" ? 6000 : 7000;
     const timer = window.setInterval(() => refreshGroup(liveGroup), interval);
     return () => window.clearInterval(timer);
   }, [key, yearId, refreshGroup]);

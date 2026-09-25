@@ -155,7 +155,11 @@ function legacySnapshot(yearId?: string): Promise<Record<string, any[]> | null> 
       p_year_id: yearId ?? null,
     });
     if (error) {
-      console.warn("[backend] legacy snapshot failed:", error.message);
+      if (/going a bit fast|rate.?limit|too many requests/i.test(error.message)) {
+        console.debug("[backend] legacy snapshot temporarily rate-limited; live polling will retry at its next interval.");
+      } else {
+        console.warn("[backend] legacy snapshot failed:", error.message);
+      }
       return null;
     }
     return data ?? null;

@@ -18,6 +18,7 @@ import {
 import { getDownloadUrl, isStorageConfigured, uploadFile } from "../lib/storage";
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
+import { changeUserPassword, updateMyProfile } from "../lib/api";
 import { IDCardModal, RegistrationWizard } from "./registration";
 
 /* ================= students directory (role-scoped) ================= */
@@ -1084,6 +1085,7 @@ export function FamiliesPage() {
   const finalizeSave = async (loginUsername: string, loginPassword: string, replaceId?: string) => {
     if (!edit) return;
     const isNew = !edit.id;
+    const passwordToSet = loginPassword.trim();
     const errors = await update((d) => {
       if (replaceId) {
         const ridx = d.users.findIndex((u) => u.id === replaceId);
@@ -1091,34 +1093,43 @@ export function FamiliesPage() {
       }
       if (edit.id) {
         const u = d.users.find((x) => x.id === edit.id)!;
-        u.name = edit.name.trim(); u.username = loginUsername; u.password = loginPassword;
+        u.name = edit.name.trim(); u.username = loginUsername; u.password = "";
         u.phone = edit.phone.trim(); u.email = edit.email.trim(); u.childrenIds = edit.childrenIds;
       } else {
-        d.users.push({ id: uid(), name: edit.name.trim(), username: loginUsername, password: loginPassword, role: "guardian", roleId: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
+        d.users.push({ id: uid(), name: edit.name.trim(), username: loginUsername, password: passwordToSet, role: "guardian", roleId: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
       }
     });
     if (errors.length) {
       toast(describeSyncErrors(errors), "warn");
-    } else {
-      toast(edit.id ? "Guardian updated." : "Guardian account created.");
-      if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
+      return;
     }
+    if (!isNew && passwordToSet) {
+      try {
+        await changeUserPassword(edit.id!, passwordToSet);
+      } catch (e) {
+        toast(`Guardian saved, but password was not changed: ${(e as Error).message}`, "warn");
+        setEdit(null);
+        return;
+      }
+    }
+    toast(edit.id ? (passwordToSet ? "Guardian updated and password changed." : "Guardian updated.") : "Guardian account created.");
+    if (isNew) await reconnect();
     setEdit(null);
   };
 
   const save = async () => {
-    if (!edit || !edit.name.trim() || !edit.username.trim() || !edit.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
-    if (!edit.id && edit.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
-    const loginUsername = edit.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    if (!edit || !edit.name.trim() || !edit.username.trim()) { toast("Name and username are required.", "warn"); return; }
+    if (!edit.id && !edit.password.trim()) { toast("A password is required for a new guardian.", "warn"); return; }
+    if (edit.password.trim() && edit.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
+    const loginUsername = edit.username.trim().toLowerCase();
     const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername && u.id !== edit.id);
     if (existing) { setConflict(existing); return; }
     await finalizeSave(loginUsername, edit.password.trim());
   };
-
   return (
     <div className="mx-auto max-w-6xl">
       <PageHead kicker="People" title="Families" sub="Guardian accounts and the children connected to them. A guardian sees exactly these children — nothing more.">
-        {canManageGuardians && <Btn variant="gold" onClick={() => setEdit({ name: "", username: "", password: "fam123", phone: "", email: "", childrenIds: [] })}><Plus className="h-4 w-4" /> Add guardian</Btn>}
+        {canManageGuardians && <Btn variant="gold" onClick={() => setEdit({ name: "", username: "", password: "", phone: "", email: "", childrenIds: [] })}><Plus className="h-4 w-4" /> Add guardian</Btn>}
       </PageHead>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -1133,7 +1144,7 @@ export function FamiliesPage() {
                   <p className="font-mono text-[11px] text-soft">@{g.username} · {g.status}</p>
                 </div>
                 {canManageGuardians && (
-                  <button onClick={() => setEdit({ id: g.id, name: g.name, username: g.username, password: g.password, phone: g.phone ?? "", email: g.email ?? "", childrenIds: g.childrenIds ?? [] })}
+                  <button onClick={() => setEdit({ id: g.id, name: g.name, username: g.username, password: "", phone: g.phone ?? "", email: g.email ?? "", childrenIds: g.childrenIds ?? [] })}
                     className="cursor-pointer rounded p-1.5 text-soft opacity-0 transition-all hover:bg-pine-100 hover:text-pine-700 group-hover:opacity-100"><Pencil className="h-3.5 w-3.5" /></button>
                 )}
               </div>
@@ -1162,8 +1173,8 @@ export function FamiliesPage() {
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Full name" required><TextInput value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></Field>
             <Field label="Phone"><TextInput value={edit.phone} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} /></Field>
-            <Field label="Username" required><TextInput value={edit.username} onChange={(e) => setEdit({ ...edit, username: e.target.value })} className="font-mono" /></Field>
-            <Field label="Password" required><TextInput value={edit.password} onChange={(e) => setEdit({ ...edit, password: e.target.value })} className="font-mono" /></Field>
+            <Field label="Username" required hint={edit.id ? "Change your own username from My profile" : undefined}><TextInput value={edit.username} readOnly={Boolean(edit.id)} onChange={(e) => setEdit({ ...edit, username: e.target.value })} className="font-mono" autoComplete="username" /></Field>
+            <Field label={edit.id ? "New password (optional)" : "Password"} required={!edit.id}><TextInput type="password" value={edit.password} onChange={(e) => setEdit({ ...edit, password: e.target.value })} className="font-mono" autoComplete={edit.id ? "new-password" : "new-password"} /></Field>
           </div>
           <div className="mt-4">
             <p className="mb-2 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Connected children — {edit.childrenIds.length} selected</p>
@@ -1222,6 +1233,7 @@ export function UsersPage() {
   const finalizeSave = async (loginUsername: string, loginPassword: string, replaceId?: string) => {
     if (!draft) return;
     const isNew = !draft.id;
+    const passwordToSet = loginPassword.trim();
     const errors = await update((d) => {
       if (replaceId) {
         const ridx = d.users.findIndex((u) => u.id === replaceId);
@@ -1229,89 +1241,44 @@ export function UsersPage() {
       }
       if (draft.id) {
         const u = d.users.find((x) => x.id === draft.id)!;
-        Object.assign(u, { ...draft, name: draft.name.trim(), username: loginUsername, password: loginPassword });
+        Object.assign(u, { ...draft, name: draft.name.trim(), username: loginUsername, password: "" });
       } else {
-        d.users.push({ ...draft, id: uid(), name: draft.name.trim(), username: loginUsername, password: loginPassword });
+        d.users.push({ ...draft, id: uid(), name: draft.name.trim(), username: loginUsername, password: passwordToSet });
       }
     });
     if (errors.length) {
       toast(describeSyncErrors(errors), "warn");
-    } else {
-      toast(draft.id ? "User updated." : `User created with role "${draft.role}".`);
-      if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
+      return;
     }
+    if (!isNew && passwordToSet) {
+      try {
+        await changeUserPassword(draft.id!, passwordToSet);
+      } catch (e) {
+        toast(`User saved, but password was not changed: ${(e as Error).message}`, "warn");
+        setEdit(null);
+        return;
+      }
+    }
+    toast(draft.id ? (passwordToSet ? "User updated and password changed." : "User updated.") : `User created with role "${draft.role}".`);
+    if (isNew) await reconnect();
     setEdit(null);
   };
 
   const save = async () => {
     if (!draft) return;
-    if (!draft.name.trim() || !draft.username.trim() || !draft.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
-    if (!draft.id && draft.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
+    if (!draft.name.trim() || !draft.username.trim()) { toast("Name and username are required.", "warn"); return; }
+    if (!draft.id && !draft.password.trim()) { toast("A password is required for a new user.", "warn"); return; }
+    if (draft.password.trim() && draft.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
     if (draft.role === "teacher" && !draft.teacherId) { toast("Pick a staff record to link — a teacher account needs one.", "warn"); return; }
     if (draft.role === "student" && !draft.studentId) { toast("Pick a student record to link — a student account needs one.", "warn"); return; }
-    const loginUsername = draft.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    const loginUsername = draft.username.trim().toLowerCase();
     const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername && u.id !== draft.id);
     if (existing) { setConflict(existing); return; }
     await finalizeSave(loginUsername, draft.password.trim());
   };
-
-  const toggleStatus = (u: User) => {
-    if (u.id === currentUser?.id) { toast("You can't disable your own account.", "warn"); return; }
-    update((d) => {
-      const x = d.users.find((y) => y.id === u.id)!;
-      x.status = x.status === "active" ? "disabled" : "active";
-    });
-    toast(u.status === "active" ? `${u.name} disabled — their next request is rejected.` : `${u.name} re-activated.`);
-  };
-
-  const removeUser = async (u: User) => {
-    if (u.id === currentUser?.id) { toast("You can't delete your own account.", "warn"); return; }
-    if (u.role === "admin" && db.users.filter((x) => x.role === "admin" && x.status === "active").length <= 1) {
-      toast("The school needs at least one active administrator.", "warn"); return;
-    }
-    const errors = await update((d) => { d.users = d.users.filter((x) => x.id !== u.id); });
-    if (errors.length) {
-      // Nothing was actually removed server-side — undo the optimistic local
-      // removal so the list doesn't keep showing an account that's still live.
-      toast(describeSyncErrors(errors), "warn");
-      await reconnect();
-    } else {
-      toast("User deleted.");
-    }
-  };
-
-  const relLabel = (u: User) => {
-    if (u.role === "teacher") {
-      const t = db.teachers.find((x) => x.id === u.teacherId);
-      return t ? `Staff: ${t.name}` : "No staff record linked";
-    }
-    if (u.role === "student") {
-      const s = db.students.find((x) => x.id === u.studentId);
-      return s ? `Record: ${shortName(s)} · ${sectionShort(db, s.enrollment?.classId, s.enrollment?.sectionId)}` : "No student record linked";
-    }
-    if (u.role === "guardian") return `${(u.childrenIds ?? []).length} child(ren) linked`;
-    return "Manages the whole school";
-  };
-
-  const showClassFilter = tab === "student" || tab === "teacher";
-  const rows = db.users
-    .filter((u) => tab === "all" || u.role === tab)
-    .filter((u) => (q ? u.name.toLowerCase().includes(q.toLowerCase()) || u.username.toLowerCase().includes(q.toLowerCase()) : true))
-    .filter((u) => {
-      if (!showClassFilter || !cls) return true;
-      if (u.role === "student") {
-        const s = db.students.find((x) => x.id === u.studentId);
-        return s?.enrollment?.classId === cls && (!sec || s.enrollment.sectionId === sec);
-      }
-      if (u.role === "teacher") {
-        return db.assignments.some((a) => a.teacherId === u.teacherId && a.classId === cls && (!sec || a.sectionId === sec));
-      }
-      return true;
-    });
-
   return (
     <div className="mx-auto max-w-6xl">
-      <PageHead kicker="Administration" title="Users & roles" sub="One authentication system, four roles. Links to staff, student and guardian records drive each account's access.">
+      <PageHead kicker="Administration" title="Users & roles" sub="Manage accounts, roles and access. Passwords are changed directly in authentication and are never stored in profile records.">
         <Btn variant="gold" onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> New user</Btn>
       </PageHead>
 
@@ -1380,7 +1347,7 @@ export function UsersPage() {
                   </td>
                   <td className={`${tdCls()} text-right whitespace-nowrap`}>
                     <span className="inline-flex gap-1">
-                      <button onClick={() => setEdit({ ...u })} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => setEdit({ ...u, password: "" })} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
                       <button onClick={() => removeUser(u)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
                     </span>
                   </td>
@@ -1397,8 +1364,8 @@ export function UsersPage() {
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Full name" required><TextInput value={draft.name} onChange={(e) => set({ name: e.target.value })} /></Field>
             <Field label="Email"><TextInput value={draft.email ?? ""} onChange={(e) => set({ email: e.target.value })} /></Field>
-            <Field label="Username" required><TextInput value={draft.username} onChange={(e) => set({ username: e.target.value })} className="font-mono" /></Field>
-            <Field label="Password" required><TextInput value={draft.password} onChange={(e) => set({ password: e.target.value })} className="font-mono" /></Field>
+            <Field label="Username" required hint={draft.id ? "Change your own username from My profile" : undefined}><TextInput value={draft.username} readOnly={Boolean(draft.id)} onChange={(e) => set({ username: e.target.value })} className="font-mono" /></Field>
+            <Field label={draft.id ? "New password (optional)" : "Password"} required={!draft.id}><TextInput type="password" value={draft.password} onChange={(e) => set({ password: e.target.value })} className="font-mono" /></Field>
             <Field label="Base role" required hint="drives relationships">
               <Select value={draft.role} onChange={(e) => { const r = e.target.value as Role; set({ role: r, roleId: defaultRoleIdFor(r), teacherId: undefined, studentId: undefined, childrenIds: r === "guardian" ? [] : undefined }); }}>
                 <option value="admin">Administrator</option>
@@ -1481,22 +1448,39 @@ export function UsersPage() {
 
 /* ================= profile (any role) ================= */
 export function ProfilePage() {
-  const { db, currentUser, update, toast, logout } = useApp();
+  const { db, currentUser, toast, reconnect, logout } = useApp();
   useLazyGroups("academics");
   const nav = useNavigate();
+  const [username, setUsername] = useState(currentUser?.username ?? "");
+  const [fullName, setFullName] = useState(currentUser?.name ?? "");
   const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
+  const [saving, setSaving] = useState(false);
   if (!currentUser) return null;
   const u = currentUser;
 
-  const changePw = () => {
-    if (pw.current !== u.password) { toast("Current password is incorrect.", "warn"); return; }
-    if (pw.next.length < 6) { toast("New password must be at least 6 characters.", "warn"); return; }
-    if (pw.next !== pw.confirm) { toast("New passwords don't match.", "warn"); return; }
-    update((d) => { d.users.find((x) => x.id === u.id)!.password = pw.next; });
-    setPw({ current: "", next: "", confirm: "" });
-    toast("Password changed.");
+  const saveProfile = async () => {
+    const nextUsername = username.trim().toLowerCase();
+    if (!nextUsername) { toast("Username is required.", "warn"); return; }
+    if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(nextUsername)) {
+      toast("Username must be 3-64 characters using letters, numbers, dot, underscore or hyphen.", "warn");
+      return;
+    }
+    if (pw.next && pw.next.length < 6) { toast("New password must be at least 6 characters.", "warn"); return; }
+    if (pw.next && pw.next !== pw.confirm) { toast("New passwords don't match.", "warn"); return; }
+    if (pw.next && !pw.current) { toast("Enter your current password to change your password.", "warn"); return; }
+    setSaving(true);
+    try {
+      await updateMyProfile({ username: nextUsername, fullName: fullName.trim(), currentPassword: pw.current || undefined, newPassword: pw.next || undefined });
+      setPw({ current: "", next: "", confirm: "" });
+      setUsername(nextUsername);
+      toast("Profile updated.");
+      await reconnect();
+    } catch (e) {
+      toast((e as Error).message || "Could not update your profile.", "warn");
+    } finally {
+      setSaving(false);
+    }
   };
-
   const pairs = teacherPairs(db, u);
   const me = studentOf(db, u);
   const kids = childrenOf(db, u);
@@ -1540,15 +1524,17 @@ export function ProfilePage() {
         </Panel>
 
         <Panel className="anim-rise p-5 md:col-span-3">
-          <h2 className="font-display text-[15px] font-bold">Change password</h2>
-          <p className="mt-0.5 text-[11.5px] text-soft">Credentials are checked against this account only — one authentication system for every role.</p>
-          <div className="mt-4 grid gap-4 sm:grid-cols-3">
-            <Field label="Current"><TextInput type="password" value={pw.current} onChange={(e) => setPw((p) => ({ ...p, current: e.target.value }))} className="font-mono" /></Field>
-            <Field label="New"><TextInput type="password" value={pw.next} onChange={(e) => setPw((p) => ({ ...p, next: e.target.value }))} className="font-mono" /></Field>
-            <Field label="Confirm new"><TextInput type="password" value={pw.confirm} onChange={(e) => setPw((p) => ({ ...p, confirm: e.target.value }))} className="font-mono" /></Field>
+          <h2 className="font-display text-[15px] font-bold">Account settings</h2>
+          <p className="mt-0.5 text-[11.5px] text-soft">Update your username and password. Passwords are changed directly in the authentication system and are never stored in your profile.</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <Field label="Username" required><TextInput value={username} onChange={(e) => setUsername(e.target.value)} className="font-mono" autoComplete="username" /></Field>
+            <Field label="Full name"><TextInput value={fullName} onChange={(e) => setFullName(e.target.value)} autoComplete="name" /></Field>
+            <Field label="Current password"><TextInput type="password" value={pw.current} onChange={(e) => setPw((p) => ({ ...p, current: e.target.value }))} className="font-mono" autoComplete="current-password" /></Field>
+            <Field label="New password"><TextInput type="password" value={pw.next} onChange={(e) => setPw((p) => ({ ...p, next: e.target.value }))} className="font-mono" autoComplete="new-password" /></Field>
+            <Field label="Confirm new password" className="sm:col-span-2"><TextInput type="password" value={pw.confirm} onChange={(e) => setPw((p) => ({ ...p, confirm: e.target.value }))} className="font-mono" autoComplete="new-password" /></Field>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Btn onClick={changePw}><Lock className="h-4 w-4" /> Update password</Btn>
+            <Btn onClick={saveProfile} disabled={saving}><Lock className="h-4 w-4" /> {saving ? "Saving…" : "Save account settings"}</Btn>
             <Btn variant="outline" onClick={() => { logout(); nav("/login", { replace: true }); }}><X className="h-4 w-4" /> Sign out</Btn>
           </div>
 

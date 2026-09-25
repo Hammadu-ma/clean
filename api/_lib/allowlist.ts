@@ -493,6 +493,24 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     },
   },
   delete_user_account: { read: false, rateLimit: 20, args: { p_id: { type: "string", maxLength: 64 } } },
+  change_user_password: {
+    read: false,
+    rateLimit: 30,
+    args: {
+      p_id: { type: "string", maxLength: 128 },
+      p_password: { type: "string", maxLength: 200 },
+    },
+  },
+  update_my_profile: {
+    read: false,
+    rateLimit: 20,
+    args: {
+      p_username: { type: "string", maxLength: 64 },
+      p_current_password: { type: "string", optional: true, maxLength: 200 },
+      p_new_password: { type: "string", optional: true, maxLength: 200 },
+      p_full_name: { type: "string", optional: true, maxLength: 200 },
+    },
+  },
 };
 
 export interface ValidationResult {

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, ArrowLeft, Loader2, Database } from "lucide-react";
 import { homePathFor, useApp } from "../store";
@@ -20,6 +20,10 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [shake, setShake] = useState(0);
+
+  useEffect(() => {
+    document.title = db.settings.schoolName?.trim() || "School Management System";
+  }, [db.settings.schoolName]);
 
   const doLogin = async (u: string, p: string) => {
     setBusy(true);
@@ -106,7 +110,7 @@ export function LoginPage() {
             </span>
             <div>
               <p className="font-display text-[16px] font-extrabold leading-none text-ink">{db.settings.schoolName}</p>
-              <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-soft">School Manager</p>
+              <p className="mt-0.5 max-w-[220px] truncate text-[10px] font-semibold uppercase tracking-[0.18em] text-soft">{db.settings.motto || "School portal"}</p>
             </div>
           </div>
 

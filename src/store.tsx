@@ -309,7 +309,6 @@ interface Ctx {
    *  something the person must know actually persisted (e.g. creating a
    *  login) should await it and check. */
   update: (fn: (d: DB) => void) => Promise<string[]>;
-  resetData: () => void;
   yearId: string;
   setYear: (id: string) => void;
   sessionUserId: string | null;
@@ -969,12 +968,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const toast = (msg: string, tone: "ok" | "warn" = "ok") => setToastState({ id: Date.now(), msg, tone });
   const dismissToast = () => setToastState(null);
 
-  const resetData = () => {
-    toast("Data lives in Supabase — use the SQL editor or bootstrap script to reseed.", "warn");
-  };
-
   const value = {
-    db, update, resetData,
+    db, update,
     yearId, setYear,
     sessionUserId, currentUser, login, logout,
     toast, ui: { toast: toastState }, dismissToast,
@@ -987,7 +982,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       <div className="flex min-h-screen items-center justify-center bg-paper">
         <div className="anim-rise text-center">
           <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
-          <p className="font-display text-[15px] font-bold text-ink">School Manager</p>
+          <p className="font-display text-[15px] font-bold text-ink">{db.settings.schoolName || "School Management System"}</p>
           <p className="mt-1 text-[12px] text-soft">{"Connecting…"}</p>
         </div>
       </div>

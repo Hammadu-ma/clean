@@ -48,7 +48,7 @@ export type DbMode = "live" | "local" | "off";
  *   error   — probe itself failed (network blip, timeout, rate limit, transient
  *             5xx…) — NOT the same as "missing". Treating this the same as
  *             "missing" used to flip a live, already-signed-in session into
- *             fake local-demo data on nothing more than a dropped request —
+ *             fake local fallback data on nothing more than a dropped request —
  *             which looked like data loss / being logged out on refresh.
  */
 export async function checkSchema(): Promise<DbMode | "missing" | "error"> {
@@ -564,7 +564,7 @@ export async function hydrateCore(yearId?: string): Promise<{ db: DB; mode: DbMo
   const { db, remote } = boot ?? await hydrateCoreViaTables(seed, yearId);
 
   // In live mode, lazy-loaded fields start genuinely empty rather than the
-  // demo seed's placeholder content, so a page can tell "not fetched yet"
+  // local seed placeholder content, so a page can tell "not fetched yet"
   // apart from "no rows" and show a loading state instead of fake data
   // until hydrateGroup() fills the field in.
   if (remote) {
@@ -1585,8 +1585,12 @@ async function syncNotifications(oldDB: DB, newDB: DB, errors: string[]) {
     if (error) errors.push(`clearing notifications: ${error.message}`);
   } else {
     for (const n of del) {
-      const { error } = await sb()!.rpc("delete_notification", { p_notification_id: n.id });
+      const { data, error } = await sb()!.rpc("delete_notification", { p_notification_id: n.id });
       if (error) errors.push(`deleting notification: ${error.message}`);
+      else if (data && typeof data === "object" && data.deleted === false) {
+        // Non-UUID legacy/offline notification IDs are safe no-ops on the live server.
+        // The local optimistic state has already removed them.
+      }
     }
   }
 }
@@ -1661,6 +1665,9 @@ async function syncProfiles(oldDB: DB, newDB: DB, errors: string[]) {
         p_email: email, p_phone: u.phone ?? null,
       });
       if (error) { console.warn("[backend] create_user_account:", error.message); errors.push(`login for ${u.name}: ${error.message}`); continue; }
+      // The password is a one-shot Auth credential. Never leave it in the
+      // client-side profile after the server has consumed it.
+      u.password = "";
       if (u.role === "guardian" && u.childrenIds?.length && newId) {
         // Link the new guardian to their children through the same
         // SECURITY DEFINER RPC used when *editing* a guardian below

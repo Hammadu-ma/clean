@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Banknote, Bell, CalendarCheck2, CalendarDays, CalendarRange, Settings2, ClipboardList, Clock as ClockIcon, FileBarChart2, GraduationCap,
-  HeartHandshake, History, Inbox, KeyRound, LayoutDashboard, Layers, Megaphone, Menu, RefreshCw,
+  HeartHandshake, History, Inbox, KeyRound, LayoutDashboard, Layers, Megaphone, Menu,
   ShieldAlert, ShieldCheck, Table2, Users, X, Contact,
   AlertTriangle, Check, ChevronDown, User, BookOpen, Baby, PenLine,
 } from "lucide-react";
@@ -67,6 +67,7 @@ const NAV: Record<Role, NavGroup[]> = {
       ],
     },
     { group: "Communication", items: [...COMM_ITEMS, { to: "/moderation", label: "Moderation", icon: <ShieldAlert className="h-4 w-4" />, perm: "communication.moderate" }] },
+    { group: "Account", items: [{ to: "/profile", label: "My profile", icon: <User className="h-4 w-4" /> }] },
   ],
   teacher: [
     { group: "Overview", items: [{ to: "/teacher/dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" /> }] },
@@ -139,7 +140,7 @@ function Clock() {
 }
 
 export function AppShell() {
-  const { db, currentUser, yearId, setYear, ui, dismissToast, resetData } = useApp();
+  const { db, currentUser, yearId, setYear, ui, dismissToast } = useApp();
   // Notifications are global header state, so keep exactly one live notification
   // loader mounted from the shell rather than creating another SSE stream on the
   // notifications page itself.
@@ -153,6 +154,10 @@ export function AppShell() {
     setMobileOpen(false);
     window.scrollTo({ top: 0 });
   }, [loc.pathname]);
+
+  useEffect(() => {
+    document.title = db.settings.schoolName?.trim() || "School Management System";
+  }, [db.settings.schoolName]);
 
   const toastId = ui.toast?.id;
   useEffect(() => {
@@ -228,7 +233,7 @@ export function AppShell() {
         </span>
         <span>
           <span className="font-display block max-w-[150px] truncate text-[15px] font-extrabold leading-none tracking-tight text-white">{db.settings.schoolName || "School"}</span>
-          <span className="mt-1 block text-[9.5px] font-semibold uppercase tracking-[0.18em] text-pine-300">School Manager</span>
+          <span className="mt-1 block max-w-[150px] truncate text-[9.5px] font-semibold uppercase tracking-[0.18em] text-pine-300">{db.settings.motto || "School portal"}</span>
         </span>
       </button>
 
@@ -279,12 +284,7 @@ export function AppShell() {
       </nav>
 
       <div className="border-t border-pine-800/80 p-3">
-        {currentUser.role === "admin" && (
-          <button onClick={resetData} className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[12px] font-semibold text-pine-300 transition-colors hover:bg-pine-900 hover:text-white">
-            <RefreshCw className="h-3.5 w-3.5" /> Reset demo data
-          </button>
-        )}
-        <p className="mt-1 px-2.5 text-[10px] text-pine-500">{db.settings.schoolName || "School"} SMS · role-based access</p>
+        <p className="px-2.5 text-[10px] text-pine-500">{db.settings.schoolName || "School"}</p>
       </div>
     </div>
   );

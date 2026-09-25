@@ -72,6 +72,24 @@ const STALE = {
 const rpc = <T>(fn: string, args: Record<string, unknown> = {}) => callRpc<T>(fn, args);
 const write = <T>(fn: string, args: Record<string, unknown> = {}) => callWrite<T>(fn, args);
 
+export async function updateMyProfile(args: {
+  username: string;
+  currentPassword?: string;
+  newPassword?: string;
+  fullName?: string;
+}): Promise<{ username: string; fullName: string; passwordChanged: boolean }> {
+  return callWrite("update_my_profile", {
+    p_username: args.username,
+    p_current_password: args.currentPassword || null,
+    p_new_password: args.newPassword || null,
+    p_full_name: args.fullName || null,
+  });
+}
+
+export async function changeUserPassword(userId: string, password: string): Promise<{ userId: string; changed: boolean }> {
+  return callWrite("change_user_password", { p_id: userId, p_password: password });
+}
+
 /* ========================================================================
    Bootstrap — one request, role-shaped, year-scoped.
    Replaces get_app_bootstrap()'s full-database dump.

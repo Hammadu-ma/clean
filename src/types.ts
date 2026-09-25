@@ -26,7 +26,7 @@ export interface User {
   id: ID;
   name: string;
   username: string;
-  /** Demo credential. A real deployment would store a salted hash server-side. */
+  /** Transient credential used only while creating a new Auth account; live profiles never store passwords. */
   password: string;
   /**
    * Base role — the entity type that drives RELATIONSHIPS (who this person is

@@ -502,10 +502,10 @@ export function buildSeed(): DB {
     events,
     audit,
     settings: {
-      schoolName: "School Manager Demo School",
+      schoolName: "Your School",
       motto: "Knowledge · Discipline · Service",
       bankAccounts: [
-        { id: "bank-1", bankName: "Commercial Bank of Ethiopia", accountName: "School Manager Demo School", accountNumber: "1000123456789", branch: "Bole Branch" },
+        { id: "bank-1", bankName: "Commercial Bank of Ethiopia", accountName: "Your School", accountNumber: "1000123456789", branch: "Bole Branch" },
       ],
       workingDays: [0, 1, 2, 3, 4],
       periods: PERIODS,

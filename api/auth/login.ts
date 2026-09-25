@@ -74,16 +74,20 @@ export default async function handler(req: Request): Promise<Response> {
       console.error("[login] profile lookup failed:", profileError.code, profileError.message);
     }
 
-    // The Auth identity uses the server-side school login domain configured for this installation.
-    // Do NOT use profiles.email here: that column is the *contact* address an
-    // admin typed into the form (e.g. a guardian's gmail) and it never matches
-    // the Auth email, so using it made every such account fail with a 401.
-    const emailDomain = (process.env.SCHOOL_AUTH_EMAIL_DOMAIN || "riverside.school").trim().replace(/^@+/, "");
-    const email = username.includes("@") ? username : `${username}@${emailDomain}`;
-
     if (profile && profile.status !== "active") {
       // Deliberately the same message: whether an account is disabled is not
       // something an unauthenticated caller should be able to learn.
+      return fail("unauthenticated", GENERIC);
+    }
+
+    // Resolve the actual Auth email from this profile's Auth user. The profile
+    // username is the human-facing login identifier and can now change without
+    // forcing an Auth email migration.
+    if (!profile) return fail("unauthenticated", GENERIC);
+    const authAccount = await admin.auth.admin.getUserById(profile.id);
+    const email = authAccount.data.user?.email;
+    if (!email) {
+      console.error("[login] auth account email missing");
       return fail("unauthenticated", GENERIC);
     }
 

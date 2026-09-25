@@ -430,6 +430,9 @@ export interface Settings {
   /** Uploaded school logos. The active key selects which one the app uses. */
   logos: { key: string; name: string }[];
   activeLogoKey?: string;
+  /** Temporary public branding fields used before authentication on the login page. */
+  publicLogoKey?: string;
+  publicLogoUrl?: string;
   /** Bank accounts guardians can transfer fees into manually. */
   bankAccounts: BankAccount[];
   /** Which of the 7 calendar weekdays (0=Sunday..6=Saturday, matching

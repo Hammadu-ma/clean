@@ -246,6 +246,26 @@ export interface ServerProfile {
  *  Note: the endpoint itself answers 200 with `profile: null` for "not
  *  signed in" rather than 401 — see api/auth/session.ts for why — so this
  *  only treats a genuine transport failure or an explicit error as null. */
+
+export interface PublicSchoolBranding {
+  schoolName: string;
+  motto: string;
+  logoKey?: string;
+  logoUrl?: string;
+}
+
+/** Public school identity used before authentication on the login/loading page. */
+export async function apiPublicSchoolBranding(): Promise<PublicSchoolBranding | null> {
+  try {
+    const res = await fetch("/api/public-branding", { credentials: "same-origin", cache: "no-store" });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok || !payload?.ok || !payload.branding) return null;
+    return payload.branding as PublicSchoolBranding;
+  } catch {
+    return null;
+  }
+}
+
 export async function apiSession(): Promise<ServerProfile | null> {
   try {
     const res = await fetch("/api/auth/session", { credentials: "same-origin" });

@@ -4,6 +4,7 @@ import type {
 } from "./types";
 import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
+import { apiPublicSchoolBranding } from "./lib/http";
 import {
   hydrate, hydrateCore, hydrateGroup, ALL_LAZY_GROUPS, sync, setProfileId, loadProfileForSession,
   mapConversations, mapMessages, dbCache, fetchMyPermissions,
@@ -450,6 +451,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // that branch) still knows who to write the refreshed cache back for.
     let uidForCache: string | null = null;
 
+    // Load the public school identity before authentication so the getting/login
+    // screen uses the same name, motto, and active logo configured by the admin.
+    void apiPublicSchoolBranding().then((branding) => {
+      if (!mounted || !branding) return;
+      const current = dbRef.current;
+      const next: DB = {
+        ...current,
+        settings: {
+          ...current.settings,
+          schoolName: branding.schoolName,
+          motto: branding.motto,
+          publicLogoKey: branding.logoKey,
+          publicLogoUrl: branding.logoUrl,
+        },
+      };
+      dbRef.current = next;
+      setDb(next);
+      document.title = branding.schoolName.trim() || "School Management System";
+    });
+
     const attempt = async (isRetry: boolean) => {
       if (!isRetry && isSupabaseConfigured && supabase) {
         const { data } = await supabase.auth.getSession();
@@ -504,7 +525,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const mergedCore = mergeFreshCore(core, dbRef.current, loadedGroupsRef.current);
+      const mergedCoreBase = mergeFreshCore(core, dbRef.current, loadedGroupsRef.current);
+      const publicSettings = dbRef.current.settings;
+      const mergedCore: DB = {
+        ...mergedCoreBase,
+        settings: {
+          ...mergedCoreBase.settings,
+          ...(publicSettings.schoolName.trim() && !mergedCoreBase.settings.schoolName.trim() ? { schoolName: publicSettings.schoolName } : {}),
+          ...(publicSettings.motto.trim() && !mergedCoreBase.settings.motto.trim() ? { motto: publicSettings.motto } : {}),
+          ...(publicSettings.publicLogoKey ? { publicLogoKey: publicSettings.publicLogoKey, publicLogoUrl: publicSettings.publicLogoUrl } : {}),
+        },
+      };
       dbRef.current = mergedCore;
       setDb(mergedCore);
       setMode(m);

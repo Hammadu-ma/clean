@@ -1425,7 +1425,11 @@ async function syncPaymentRequests(oldDB: DB, newDB: DB, errors: string[]) {
 }
 
 async function syncSettings(oldDB: DB, newDB: DB, errors: string[]) {
-  if (JSON.stringify(oldDB.settings) === JSON.stringify(newDB.settings)) return;
+  const comparable = (settings: DB["settings"]) => {
+    const { publicLogoKey: _publicLogoKey, publicLogoUrl: _publicLogoUrl, ...persisted } = settings;
+    return persisted;
+  };
+  if (JSON.stringify(comparable(oldDB.settings)) === JSON.stringify(comparable(newDB.settings))) return;
   const { error } = await sb()!.rpc("update_school_settings", {
     p_name: newDB.settings.schoolName, p_motto: newDB.settings.motto,
     p_bank_accounts: JSON.stringify(newDB.settings.bankAccounts ?? []),

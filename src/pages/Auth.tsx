@@ -113,7 +113,7 @@ export function LoginPage() {
                   autoFocus
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="e.g. admin"
+                  placeholder="e.g. chala"
                   autoComplete="username"
                   className="w-full rounded-lg border border-mist bg-card px-3.5 py-2.5 text-[14px] outline-none transition-all focus:border-pine-500 focus:ring-2 focus:ring-pine-500/20"
                 />

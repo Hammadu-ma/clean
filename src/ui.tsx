@@ -330,13 +330,18 @@ export function Ring({ pct, size = 54, stroke = 5, color = "var(--color-pine-600
   );
 }
 
-export function SchoolLogo({ settings, size = 40, className = "" }: { settings: { schoolName?: string; logos?: { key: string; name: string }[]; activeLogoKey?: string }; size?: number; className?: string }) {
+export function SchoolLogo({ settings, size = 40, className = "" }: { settings: { schoolName?: string; logos?: { key: string; name: string }[]; activeLogoKey?: string; publicLogoKey?: string; publicLogoUrl?: string }; size?: number; className?: string }) {
   const active = settings.activeLogoKey || settings.logos?.[0]?.key;
-  const url = useSignedUrl("school_logo", "school-1", active);
+  // On the login page there is no authenticated session yet, so the normal
+  // private R2 signer cannot be used. The public branding endpoint supplies
+  // a short-lived URL for exactly the currently-active school logo.
+  const publicUrl = settings.publicLogoKey && settings.publicLogoKey === active ? settings.publicLogoUrl : undefined;
+  const signedUrl = useSignedUrl("school_logo", "school-1", publicUrl ? undefined : active);
+  const url = publicUrl || signedUrl;
   if (url) {
     return <img src={url} alt="School logo" className={`shrink-0 rounded-xl bg-white object-contain p-1 ring-1 ring-pine-700/40 ${className}`} style={{ width: size, height: size }} />;
   }
-  return <span className={`flex shrink-0 items-center justify-center rounded-xl bg-pine-800 ring-1 ring-pine-700 ${className}`} style={{ width: size, height: size }}><span className="font-display text-[15px] font-extrabold text-gold-300">{(settings as any).schoolName?.trim()?.slice(0,1)?.toUpperCase() || "S"}</span></span>;
+  return <span className={`flex shrink-0 items-center justify-center rounded-xl bg-pine-800 ring-1 ring-pine-700 ${className}`} style={{ width: size, height: size }}><span className="font-display text-[15px] font-extrabold text-gold-300">{settings.schoolName?.trim()?.slice(0,1)?.toUpperCase() || "S"}</span></span>;
 }
 
 const avatarColors = ["#2c654c", "#3a6b8c", "#96543f", "#55618f", "#337a77", "#b07e24", "#557d3b", "#8a3325"];

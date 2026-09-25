@@ -475,7 +475,8 @@ export function SchoolSettingsPage() {
                 className="sr-only"
                 disabled={!isStorageConfigured}
                 onChange={async (e) => {
-                  const files = Array.from(e.target.files ?? []);
+                  const input = e.currentTarget;
+                  const files = Array.from(input.files ?? []);
                   if (!files.length) return;
                   try {
                     const schoolId = "school-1";
@@ -499,7 +500,7 @@ export function SchoolSettingsPage() {
                   } catch (err) {
                     toast((err as Error).message || "Logo upload failed.", "warn");
                   } finally {
-                    e.currentTarget.value = "";
+                    input.value = "";
                   }
                 }}
               />

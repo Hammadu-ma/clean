@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Banknote, Bell, CalendarCheck2, CalendarDays, CalendarRange, Settings2, ClipboardList, Clock as ClockIcon, FileBarChart2, GraduationCap,
@@ -6,11 +6,11 @@ import {
   ShieldAlert, ShieldCheck, Table2, Users, X, Contact,
   AlertTriangle, Check, ChevronDown, User, BookOpen, Baby, PenLine,
 } from "lucide-react";
-import { homePathFor, useApp, useLazyGroups } from "./store";
+import { homePathFor, timeAgo, useApp, useLazyGroups } from "./store";
 import { useAdminPendingFeePayments } from "./lib/api";
 import { hasPermission, totalUnreadMessages, unreadNotifications } from "./rbac";
 import { Chip, RoleBadge, SchoolLogo, UserAvatar } from "./ui";
-import type { Role } from "./types";
+import type { AppNotification, Role } from "./types";
 
 interface NavItem {
   to: string;
@@ -140,11 +140,52 @@ function Clock() {
 }
 
 export function AppShell() {
-  const { db, currentUser, yearId, setYear, ui, dismissToast } = useApp();
+  const { db, currentUser, yearId, setYear, ui, dismissToast, update } = useApp();
   // Notifications are global header state, so keep exactly one live notification
   // loader mounted from the shell rather than creating another SSE stream on the
   // notifications page itself.
-  useLazyGroups("notifications");
+  const notificationsLoaded = useLazyGroups("notifications");
+  const [incomingNotification, setIncomingNotification] = useState<AppNotification | null>(null);
+  const seenNotificationIdsRef = useRef<Set<string>>(new Set());
+  const notificationWatcherReadyRef = useRef(false);
+  const notificationUserIdRef = useRef<string | null>(null);
+  const incomingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Show a polished in-app popup when a genuinely new notification arrives
+  // while the app is open. The first hydrated notification batch is marked as
+  // seen so existing notifications never flash as if they were new.
+  useEffect(() => {
+    if (!notificationsLoaded || !currentUser) return;
+    const currentIds = new Set(db.notifications.filter((n) => n.userId === currentUser.id).map((n) => n.id));
+    if (notificationUserIdRef.current !== currentUser.id) {
+      notificationUserIdRef.current = currentUser.id;
+      seenNotificationIdsRef.current = currentIds;
+      notificationWatcherReadyRef.current = true;
+      setIncomingNotification(null);
+      return;
+    }
+    if (!notificationWatcherReadyRef.current) {
+      seenNotificationIdsRef.current = currentIds;
+      notificationWatcherReadyRef.current = true;
+      return;
+    }
+
+    const fresh = db.notifications
+      .filter((n) => n.userId === currentUser.id && !seenNotificationIdsRef.current.has(n.id))
+      .sort((a, b) => a.at.localeCompare(b.at));
+
+    seenNotificationIdsRef.current = currentIds;
+    if (!fresh.length) return;
+
+    const newest = fresh[fresh.length - 1];
+    setIncomingNotification(newest);
+    if (incomingTimerRef.current) clearTimeout(incomingTimerRef.current);
+    incomingTimerRef.current = setTimeout(() => setIncomingNotification(null), 6500);
+
+    return () => {
+      if (incomingTimerRef.current) clearTimeout(incomingTimerRef.current);
+    };
+  }, [db.notifications, currentUser?.id, notificationsLoaded]);
   const nav = useNavigate();
   const loc = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -347,6 +388,40 @@ export function AppShell() {
       <main className="px-4 py-6 sm:px-6 lg:px-8">
         <Outlet />
       </main>
+
+      {incomingNotification && (
+        <div className="pointer-events-none fixed left-4 right-4 top-4 z-[80] sm:left-auto sm:right-5 sm:w-[380px]">
+          <button
+            type="button"
+            onClick={() => {
+              const n = incomingNotification;
+              void update((d) => {
+                const item = d.notifications.find((x) => x.id === n.id && x.userId === currentUser?.id);
+                if (item) item.read = true;
+              });
+              setIncomingNotification(null);
+              nav(n.targetRoute || "/notifications");
+            }}
+            className="pointer-events-auto group w-full cursor-pointer rounded-2xl border border-pine-200 bg-card px-4 py-3.5 text-left shadow-2xl ring-1 ring-black/5 transition hover:-translate-y-0.5 hover:shadow-[0_18px_45px_rgba(0,0,0,0.16)]"
+            aria-label="Open new notification"
+          >
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-pine-900 text-gold-400 shadow-sm">
+                <Bell className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-start justify-between gap-3">
+                  <span className="text-[10px] font-extrabold uppercase tracking-[0.12em] text-pine-700">New notification</span>
+                  <span className="shrink-0 text-[10px] font-semibold text-soft">{timeAgo(incomingNotification.at)}</span>
+                </span>
+                <span className="mt-1 block truncate text-[13.5px] font-extrabold text-ink">{incomingNotification.title}</span>
+                <span className="mt-0.5 block max-h-10 overflow-hidden text-[12px] leading-relaxed text-soft">{incomingNotification.body}</span>
+                <span className="mt-2 block text-[11px] font-bold text-pine-700 transition-colors group-hover:text-pine-900">Tap to view →</span>
+              </span>
+            </div>
+          </button>
+        </div>
+      )}
 
       {ui.toast && (
         <div key={ui.toast.id} className="anim-toast fixed bottom-4 left-4 right-4 z-[70] sm:bottom-5 sm:left-auto sm:right-5">

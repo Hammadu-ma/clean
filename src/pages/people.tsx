@@ -19,11 +19,13 @@ import { getDownloadUrl, isStorageConfigured, uploadFile } from "../lib/storage"
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
 import { changeUserPassword, updateMyProfile } from "../lib/api";
+import { deleteStudentRecord, deleteUserAccount } from "../lib/backend";
 import { IDCardModal, RegistrationWizard } from "./registration";
 
 /* ================= students directory (role-scoped) ================= */
 export function StudentsPage({ scoped }: { scoped?: boolean }) {
-  const { db, currentUser, yearId, update, toast } = useApp();
+  const { db, currentUser, yearId, update, toast, reconnect } = useApp();
+  const confirm = useConfirm();
   const groupsLoaded = useLazyGroups("attendance");
   const nav = useNavigate();
   const [q, setQ] = useState("");
@@ -33,7 +35,31 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
 
   const isAdmin = currentUser?.role === "admin";
   const canRegister = hasPermission(db, currentUser, "students.create");
+  const canDeleteStudent = isAdmin && hasPermission(db, currentUser, "students.delete");
   const role = currentUser?.role ?? "admin";
+
+  const removeStudent = async (student: Student) => {
+    if (!canDeleteStudent) {
+      toast("You don't have permission to delete students.", "warn");
+      return;
+    }
+    const ok = await confirm({
+      title: `Delete ${shortName(student)}?`,
+      body: `This permanently removes the student record and its linked school data. This cannot be undone.${student.photo || student.documents.length ? " Any stored student files will also be removed from the record." : ""}`,
+      confirmLabel: "Delete student",
+      cancelLabel: "Keep student",
+      variant: "danger",
+    });
+    if (!ok) return;
+
+    const result = await deleteStudentRecord(student.id);
+    if (result.error) {
+      toast(result.error, "warn");
+      return;
+    }
+    toast(`${shortName(student)} was permanently deleted.`);
+    await reconnect();
+  };
 
   // Level-1 view gate — matches the sidebar's perm for this route, so a role
   // that has the link removed can't reach the page directly either.
@@ -132,8 +158,21 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
                           )}
                         </span>
                       </td>
-                      <td className={`${tdCls()} text-right`}>
-                        <Chip tone="gray">View <Eye className="h-3 w-3" /></Chip>
+                      <td className={`${tdCls()} text-right whitespace-nowrap`} onClick={(e) => e.stopPropagation()}>
+                        <span className="inline-flex items-center gap-1">
+                          <Chip tone="gray">View <Eye className="h-3 w-3" /></Chip>
+                          {canDeleteStudent && (
+                            <button
+                              type="button"
+                              onClick={() => removeStudent(s)}
+                              className="cursor-pointer rounded p-1.5 text-soft transition hover:bg-rust-100 hover:text-rust-600"
+                              title={`Delete ${shortName(s)}`}
+                              aria-label={`Delete ${shortName(s)}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </span>
                       </td>
                     </tr>
                   );
@@ -1242,6 +1281,7 @@ export function FamiliesPage() {
 /* ================= user management (admin, req 16) ================= */
 export function UsersPage() {
   const { db, currentUser, update, toast, reconnect } = useApp();
+  const confirm = useConfirm();
   const [edit, setEdit] = useState<User | "new" | null>(null);
   const [conflict, setConflict] = useState<User | null>(null);
   const [tab, setTab] = useState<"all" | "teacher" | "student" | "guardian" | "admin">("all");
@@ -1346,6 +1386,30 @@ export function UsersPage() {
     setEdit(null);
   };
 
+  const removeUser = async (user: User) => {
+    if (user.id === currentUser?.id) {
+      toast("You can't delete your own account.", "warn");
+      return;
+    }
+
+    const ok = await confirm({
+      title: `Delete ${user.name}?`,
+      body: `This permanently removes the ${user.role} account and prevents future sign-in. Accounts with important school history may need to be disabled instead so their records remain intact.`,
+      confirmLabel: "Delete user",
+      cancelLabel: "Keep user",
+      variant: "danger",
+    });
+    if (!ok) return;
+
+    const result = await deleteUserAccount(user.id);
+    if (result.error) {
+      toast(result.error, "warn");
+      return;
+    }
+    toast(`${user.name}'s account was permanently deleted.`);
+    await reconnect();
+  };
+
   const save = async () => {
     if (!draft) return;
     if (!draft.name.trim() || !draft.username.trim()) { toast("Name and username are required.", "warn"); return; }
@@ -1430,7 +1494,7 @@ export function UsersPage() {
                   <td className={`${tdCls()} text-right whitespace-nowrap`}>
                     <span className="inline-flex gap-1">
                       <button onClick={() => setEdit({ ...u, password: "" })} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
-                      <button onClick={() => removeUser(u)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => removeUser(u)} disabled={u.id === currentUser?.id} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600 disabled:cursor-not-allowed disabled:opacity-30" title={u.id === currentUser?.id ? "You can't delete your own account" : `Delete ${u.name}`} aria-label={u.id === currentUser?.id ? "You can't delete your own account" : `Delete ${u.name}`}><Trash2 className="h-3.5 w-3.5" /></button>
                     </span>
                   </td>
                 </tr>

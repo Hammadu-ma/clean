@@ -35,6 +35,23 @@ export async function clearAuditLog(): Promise<{ error: string | null }> {
   return { error: error?.message ?? null };
 }
 
+/** Permanently removes a user account. The database enforces users.manage,
+ * self-delete protection, and the last-active-admin guard. */
+export async function deleteUserAccount(userId: string): Promise<{ error: string | null }> {
+  if (!supabase) return { error: "Supabase is not configured." };
+  const { error } = await supabase.rpc("delete_user_account", { p_id: userId });
+  return { error: error?.message ?? null };
+}
+
+/** Permanently removes a student and its dependent school records. The
+ * database enforces students.delete and handles any linked student login
+ * account before deleting the student row. */
+export async function deleteStudentRecord(studentId: string): Promise<{ error: string | null }> {
+  if (!supabase) return { error: "Supabase is not configured." };
+  const { error } = await supabase.rpc("delete_student", { p_student_id: studentId });
+  return { error: error?.message ?? null };
+}
+
 /** Falls back to these only if a school row genuinely has none set yet
  *  (e.g. these migrations haven't been applied). Once set, a school's own
  *  configured days/periods (however many, whichever ones) always win.
@@ -1024,8 +1041,8 @@ async function syncTerms(oldDB: DB, newDB: DB, errors: string[]) {
 
 /** Students — create/edit via save_student(), status-only transitions
  *  (transfer/withdraw/graduate/reactivate) via the narrower
- *  set_student_status(). There is no delete_student op because the app has
- *  never offered to hard-delete a student, only to change status. */
+ *  set_student_status(). Permanent deletion is exposed as a direct admin
+ *  action through delete_student() rather than inferred from the generic diff. */
 async function syncStudents(oldDB: DB, newDB: DB, errors: string[]) {
   const yr = activeYearId(newDB);
   for (const s of newDB.students) {

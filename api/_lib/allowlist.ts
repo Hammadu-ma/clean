@@ -516,6 +516,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     },
   },
   delete_user_account: { read: false, rateLimit: 20, args: { p_id: { type: "string", maxLength: 64 } } },
+  delete_student: { read: false, rateLimit: 20, args: { p_student_id: { type: "string", maxLength: 128 } } },
   change_user_password: {
     read: false,
     rateLimit: 30,

@@ -242,6 +242,7 @@ const AUDIT_ACTIVITY: Record<string, { label: string; past: string; tone: "pine"
   "user.deactivate": { label: "deactivated a user account", past: "User account deactivated", tone: "rust" },
   "user.delete": { label: "deleted a user account", past: "User account deleted", tone: "rust" },
   "user.password_change": { label: "changed a user's password", past: "Password changed", tone: "gold" },
+  "student.delete": { label: "deleted a student record", past: "Student record deleted", tone: "rust" },
   "profile.identity_update": { label: "updated a profile identity", past: "Profile identity updated", tone: "steel" },
   "profile.password_and_identity_update": { label: "updated profile and password information", past: "Profile and password updated", tone: "gold" },
   "conversation.open": { label: "opened a conversation", past: "Conversation opened", tone: "steel" },
@@ -299,7 +300,7 @@ export function AuditPage() {
   const ACTION_TONE: Record<string, "pine" | "gold" | "rust" | "steel" | "gray"> = {
     "role.update": "gold", "role.create": "gold", "role.delete": "rust", "role.enable": "pine", "role.disable": "rust",
     "announcement.publish": "pine", "announcement.schedule": "steel", "announcement.draft": "gray",
-    "user.deactivate": "rust", "user.create": "pine", "conversation.open": "steel", "message.report": "rust",
+    "user.deactivate": "rust", "user.create": "pine", "student.delete": "rust", "conversation.open": "steel", "message.report": "rust",
     "message.delete": "rust", "report.resolved": "pine", "report.dismissed": "gray", "conversation.hide": "rust",
     "event.create": "steel", "fees.payment.approve": "pine", "fees.payment.reject": "rust", "fees.receipt.clear": "rust",
     "file.upload": "steel", "file.delete": "rust",

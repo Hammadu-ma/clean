@@ -129,6 +129,10 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     read: true,
     args: { p_year_id: ID, p_before: { type: "timestamp", optional: true }, p_limit: LIMIT },
   },
+  clear_fee_receipt: {
+    read: false,
+    args: { p_request_id: { type: "string", maxLength: 128 } },
+  },
 
   /* ---------- writes ---------- */
   save_student_marks: {

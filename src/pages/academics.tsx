@@ -21,10 +21,10 @@ import { hasPermission, isSuperAdmin, pushAudit, pushNotifications } from "../rb
 import { WEEKDAYS } from "../data/seed";
 import { DEFAULT_PERIODS, requestMarksReopen, reviewMarksReopen } from "../lib/backend";
 import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
-import { getDownloadUrl } from "../lib/storage";
+import { clearFeeReceipt, getDownloadUrl } from "../lib/storage";
 import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Select, SkeletonCards, SkeletonPanel, SkeletonRows,
-  Stat, Tabs, TextArea, TextInput, tdCls, thCls,
+  Stat, Tabs, TextArea, TextInput, tdCls, thCls, useConfirm,
 } from "../ui";
 import { AccessDenied } from "./Auth";
 
@@ -2163,9 +2163,24 @@ export function FeesPage() {
   const [reviewRequest, setReviewRequest] = useState<PaymentRequest | null>(null);
   const [bankOpen, setBankOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [receiptPreview, setReceiptPreview] = useState<PaymentRequest | null>(null);
+  const [receiptQuery, setReceiptQuery] = useState("");
+  const [receiptFeeFilter, setReceiptFeeFilter] = useState("all");
+  const [receiptStatus, setReceiptStatus] = useState("all");
   const [bankDraft, setBankDraft] = useState({ bankName: "", accountName: "", accountNumber: "", branch: "" });
 
   const pendingRequests = db.paymentRequests.filter((r) => r.status === "pending");
+  const receiptFeeOptions = [...new Set(db.paymentRequests.filter((r) => r.receiptPath || r.receiptDataUrl).map((r) => db.fees.find((f) => f.id === r.feeItemId)?.label).filter(Boolean) as string[])].sort((a, b) => a.localeCompare(b));
+  const receiptRows = db.paymentRequests.filter((r) => {
+    if (!r.receiptPath && !r.receiptDataUrl) return false;
+    const item = db.fees.find((f) => f.id === r.feeItemId);
+    const student = db.students.find((s) => s.id === r.studentId);
+    const feeMatch = receiptFeeFilter === "all" || item?.label === receiptFeeFilter;
+    const statusMatch = receiptStatus === "all" || r.status === receiptStatus;
+    const q = receiptQuery.trim().toLowerCase();
+    const qMatch = !q || `${student ? fullName(student) : ""} ${item?.label ?? ""} ${r.bankName} ${r.reference ?? ""}`.toLowerCase().includes(q);
+    return feeMatch && statusMatch && qMatch;
+  }).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
   const bankAccounts = db.settings.bankAccounts ?? [];
 
   const addBankAccount = () => {
@@ -2245,6 +2260,45 @@ export function FeesPage() {
         </Panel>
       )}
 
+      {currentUser?.role === "admin" && (
+        <Panel className="anim-rise mb-4 overflow-hidden">
+          <div className="border-b border-mist px-4 py-3 sm:px-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="font-display text-[14px] font-bold">Receipts</h3>
+                <p className="mt-0.5 text-[11px] text-soft">Uploaded receipts remain here after approval until an admin clears them.</p>
+              </div>
+              <Chip tone="gray">{receiptRows.length}</Chip>
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px_140px]">
+              <TextInput value={receiptQuery} onChange={(e) => setReceiptQuery(e.target.value)} placeholder="Search student, fee, bank or reference…" />
+              <Select value={receiptFeeFilter} onChange={(e) => setReceiptFeeFilter(e.target.value)}><option value="all">All fee names</option>{receiptFeeOptions.map((label) => <option key={label} value={label}>{label}</option>)}</Select>
+              <Select value={receiptStatus} onChange={(e) => setReceiptStatus(e.target.value)}><option value="all">All statuses</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></Select>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px]">
+              <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Student</th><th className={thCls()}>Fee</th><th className={`${thCls()} text-center`}>Amount</th><th className={thCls()}>Status</th><th className={thCls()}>Submitted</th><th className={thCls()}></th></tr></thead>
+              <tbody className="divide-y divide-mist/70">
+                {receiptRows.map((r) => {
+                  const st = db.students.find((x) => x.id === r.studentId);
+                  const item = db.fees.find((f) => f.id === r.feeItemId);
+                  return <tr key={r.id} className="hover:bg-pine-50/40">
+                    <td className={`${tdCls()} whitespace-nowrap font-semibold text-ink`}>{st ? fullName(st) : r.studentId}</td>
+                    <td className={`${tdCls()} whitespace-nowrap`}>{item?.label ?? r.feeItemId}</td>
+                    <td className={`${tdCls()} whitespace-nowrap text-center font-mono font-bold`}>Br {r.amount.toLocaleString()}</td>
+                    <td className={tdCls()}><Chip tone={r.status === "approved" ? "pine" : r.status === "pending" ? "gold" : "rust"}>{r.status}</Chip></td>
+                    <td className={`${tdCls()} whitespace-nowrap text-soft`}>{fmtDate(r.submittedAt.slice(0, 10))}</td>
+                    <td className={`${tdCls()} text-right`}><Btn size="sm" variant="soft" onClick={() => setReceiptPreview(r)}><Eye className="h-3.5 w-3.5" /> Preview</Btn></td>
+                  </tr>;
+                })}
+                {receiptRows.length === 0 && <tr><td colSpan={6}><EmptyState icon={<Receipt className="h-5 w-5" />} title="No stored receipts" body="Uploaded receipts will stay here until an admin clears them." /></td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
+
       <Panel className="anim-rise overflow-x-auto">
         <table className="w-full min-w-[640px]">
           <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Student</th><th className={thCls()}>Section</th><th className={`${thCls()} text-center`}>Billed</th><th className={`${thCls()} text-center`}>Paid</th><th className={`${thCls()} text-center`}>Outstanding</th><th className={thCls()}></th></tr></thead>
@@ -2304,6 +2358,7 @@ export function FeesPage() {
 
       {openStudent && <FeeLedgerModal student={openStudent} canManage={canManage} onClose={() => setOpenStudent(null)} />}
       {reviewRequest && <ReviewPaymentRequestModal request={reviewRequest} onClose={() => setReviewRequest(null)} />}
+      {receiptPreview && <ReceiptPreviewModal request={receiptPreview} onClose={() => setReceiptPreview(null)} />}
       {bulkOpen && <BulkFeeModal onClose={() => setBulkOpen(false)} />}
     </div>
   );
@@ -2382,6 +2437,64 @@ function BulkFeeModal({ onClose }: { onClose: () => void }) {
           ))}
           {scoped.length === 0 && <p className="px-3 py-6 text-center text-[12px] text-soft">No enrolled students match this scope.</p>}
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ReceiptPreviewModal({ request, onClose }: { request: PaymentRequest; onClose: () => void }) {
+  const { db, toast, update } = useApp();
+  const confirm = useConfirm();
+  const [url, setUrl] = useState<string | undefined>(request.receiptDataUrl);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const student = db.students.find((x) => x.id === request.studentId);
+  const item = db.fees.find((f) => f.id === request.feeItemId);
+
+  useEffect(() => {
+    if (!request.receiptPath || url) return;
+    setLoading(true);
+    getDownloadUrl("fee_receipt", request.studentId, request.receiptPath)
+      .then(setUrl)
+      .catch((e) => toast(`Couldn't load the receipt: ${e instanceof Error ? e.message : String(e)}`, "warn"))
+      .finally(() => setLoading(false));
+  }, [request.receiptPath, request.receiptDataUrl]);
+
+  const clear = async () => {
+    const ok = await confirm({ title: "Clear receipt?", body: "This permanently removes the uploaded receipt file. The payment record and audit history stay intact.", confirmLabel: "Clear receipt", danger: true });
+    if (!ok) return;
+    if (!request.receiptPath) {
+      update((d) => { const r = d.paymentRequests.find((x) => x.id === request.id); if (r) { r.receiptDataUrl = undefined; r.receiptName = undefined; } });
+      toast("Receipt cleared.");
+      onClose();
+      return;
+    }
+    setBusy(true);
+    try {
+      await clearFeeReceipt(request.id, request.studentId, request.receiptPath);
+      update((d) => {
+        const r = d.paymentRequests.find((x) => x.id === request.id);
+        if (r) { r.receiptPath = undefined; r.receiptDataUrl = undefined; r.receiptName = undefined; }
+      });
+      toast("Receipt cleared. Payment record remains.");
+      onClose();
+    } catch (e) {
+      toast(`Couldn't clear the receipt: ${e instanceof Error ? e.message : String(e)}`, "warn");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={item?.label ?? "Fee receipt"} kicker={student ? fullName(student) : "Student"} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Close</Btn><Btn variant="dangerSoft" onClick={clear} busy={busy}><Trash2 className="h-4 w-4" /> Clear receipt</Btn></>}>
+      <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-soft">
+        <span>Br {request.amount.toLocaleString()}</span><span>{request.status}</span><span>{fmtDate(request.submittedAt.slice(0, 10))}</span>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-mist bg-paper/50 p-2">
+        {loading ? <p className="py-16 text-center text-[12px] text-soft">Loading receipt…</p> : url ? (
+          request.receiptName?.toLowerCase().endsWith(".pdf") ? <iframe src={url} title="Receipt" className="h-[68vh] min-h-[420px] w-full rounded-lg" /> : <a href={url} target="_blank" rel="noopener"><img src={url} alt="Payment receipt" className="mx-auto max-h-[68vh] w-full rounded-lg object-contain" /></a>
+        ) : <p className="py-16 text-center text-[12px] text-soft">No receipt file is available.</p>}
       </div>
     </Modal>
   );

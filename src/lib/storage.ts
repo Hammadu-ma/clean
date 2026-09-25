@@ -101,6 +101,13 @@ export async function deleteFile(ownerType: FileOwnerType, ownerId: string, key:
   await callWrite("unregister_file", { p_storage_key: key });
 }
 
+/** Clears a fee receipt from the school's receipt register after the R2 object is removed.
+ * The payment request and its audit trail remain intact; only the receipt file reference is cleared. */
+export async function clearFeeReceipt(requestId: string, ownerId: string, key: string) {
+  await deleteFile("fee_receipt", ownerId, key);
+  await callWrite("clear_fee_receipt", { p_request_id: requestId });
+}
+
 /**
  * Resolves a stored value to something an <img src> can use directly.
  *  - undefined/empty            -> undefined (caller shows a placeholder)

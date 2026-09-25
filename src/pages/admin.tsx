@@ -225,21 +225,29 @@ export function AuditPage() {
   const groupsLoaded = useLazyGroups("audit");
   const [query, setQuery] = useState("");
   const [actionFilter, setActionFilter] = useState("all");
+  const [actorFilter, setActorFilter] = useState("all");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const [sortBy, setSortBy] = useState<"when" | "user" | "action" | "target">("when");
   const [sortDirection, setSortDirection] = useState<"desc" | "asc">("desc");
   const ACTION_TONE: Record<string, "pine" | "gold" | "rust" | "steel" | "gray"> = {
     "role.update": "gold", "role.create": "gold", "role.delete": "rust", "role.enable": "pine", "role.disable": "rust",
     "announcement.publish": "pine", "announcement.schedule": "steel", "announcement.draft": "gray",
     "user.deactivate": "rust", "user.create": "pine", "conversation.open": "steel", "message.report": "rust",
-    "report.resolved": "pine", "report.dismissed": "gray", "conversation.hide": "rust", "event.create": "steel",
+    "report.resolved": "pine", "report.dismissed": "gray", "conversation.hide": "rust", "event.create": "steel", "fees.payment.approve": "pine", "fees.payment.reject": "rust", "fees.receipt.clear": "rust", "file.upload": "steel", "file.delete": "rust",
   };
   const actionOptions = useMemo(() => [...new Set(db.audit.map((a) => a.action))].sort((a, b) => a.localeCompare(b)), [db.audit]);
+  const actorOptions = useMemo(() => [...new Set(db.audit.map((a) => a.userName).filter(Boolean))].sort((a, b) => a.localeCompare(b)), [db.audit]);
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = db.audit.filter((a) => {
       const matchesAction = actionFilter === "all" || a.action === actionFilter;
+      const matchesActor = actorFilter === "all" || a.userName === actorFilter;
+      const date = a.at.slice(0, 10);
+      const matchesFrom = !fromDate || date >= fromDate;
+      const matchesTo = !toDate || date <= toDate;
       const haystack = `${a.userName} ${a.action} ${a.target} ${a.detail ?? ""}`.toLowerCase();
-      return matchesAction && (!q || haystack.includes(q));
+      return matchesAction && matchesActor && matchesFrom && matchesTo && (!q || haystack.includes(q));
     });
     return [...filtered].sort((a, b) => {
       let cmp = 0;
@@ -249,11 +257,11 @@ export function AuditPage() {
       if (sortBy === "target") cmp = a.target.localeCompare(b.target, undefined, { sensitivity: "base" });
       return sortDirection === "asc" ? cmp : -cmp;
     });
-  }, [db.audit, query, actionFilter, sortBy, sortDirection]);
+  }, [db.audit, query, actionFilter, actorFilter, fromDate, toDate, sortBy, sortDirection]);
   if (!hasPermission(db, currentUser, "audit.view")) {
     return <AccessDenied required="audit.view" reason="You don't have permission to view the audit trail." />;
   }
-  const hasFilters = query.trim() || actionFilter !== "all";
+  const hasFilters = query.trim() || actionFilter !== "all" || actorFilter !== "all" || fromDate || toDate;
   return (
     <div className="mx-auto max-w-4xl">
       <PageHead kicker="System" title="Audit log" sub="Permission-sensitive actions, with who did what, to which target, and when." />
@@ -268,6 +276,9 @@ export function AuditPage() {
               <option value="all">All actions</option>
               {actionOptions.map((action) => <option key={action} value={action}>{action}</option>)}
             </Select>
+            <Select value={actorFilter} onChange={(e) => setActorFilter(e.target.value)} aria-label="Filter by user"><option value="all">All users</option>{actorOptions.map((name) => <option key={name} value={name}>{name}</option>)}</Select>
+            <TextInput type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} aria-label="From date" />
+            <TextInput type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} aria-label="To date" />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-soft"><SlidersHorizontal className="h-3.5 w-3.5" /> Sort</span>
@@ -279,7 +290,7 @@ export function AuditPage() {
               {sortBy === "when" ? (sortDirection === "desc" ? "Newest" : "Oldest") : (sortDirection === "desc" ? "Z–A" : "A–Z")}
             </Btn>
             <span className="ml-auto text-[11px] text-soft">{rows.length} entr{rows.length === 1 ? "y" : "ies"}</span>
-            {hasFilters && <Btn size="sm" variant="ghost" onClick={() => { setQuery(""); setActionFilter("all"); }}>Clear filters</Btn>}
+            {hasFilters && <Btn size="sm" variant="ghost" onClick={() => { setQuery(""); setActionFilter("all"); setActorFilter("all"); setFromDate(""); setToDate(""); }}>Clear filters</Btn>}
           </div>
         </div>
       </Panel>

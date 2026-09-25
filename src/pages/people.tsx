@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   BadgeCheck, Baby, BookOpen, CalendarCheck2, CreditCard, FileBarChart2, History, Inbox, KeyRound, Layers, Lock,
@@ -613,26 +613,36 @@ function PayFeeModal({ student, item, onClose }: { student: Student; item: FeeIt
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
   const [reference, setReference] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
 
   const outstanding = item.amount - item.paid;
   const account = accounts.find((a) => a.id === accountId);
+
+  useEffect(() => () => { if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
 
   const copyAccount = async () => {
     if (!account) return;
     try {
       await navigator.clipboard.writeText(account.accountNumber);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => setCopied(false), 1800);
     } catch {
-      toast("Couldn't copy — select and copy the number manually.", "warn");
+      toast("Couldn't copy the account number.", "warn");
     }
   };
 
+  const pickFile = (next: File | null) => {
+    if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
+    setFile(next);
+    setPreviewUrl(next ? URL.createObjectURL(next) : null);
+  };
+
   const submit = async () => {
-    if (!account) { toast("Choose which bank account you paid into.", "warn"); return; }
-    if (!file) { toast("Upload a photo or PDF of the receipt.", "warn"); return; }
+    if (!account) { toast("Choose the bank account.", "warn"); return; }
+    if (!file) { toast("Choose the receipt file first.", "warn"); return; }
     setBusy(true);
     try {
       let receiptPath: string | undefined;
@@ -657,47 +667,75 @@ function PayFeeModal({ student, item, onClose }: { student: Student; item: FeeIt
           status: "pending",
         });
       });
-      toast("Receipt submitted — it'll show as pending until the office confirms it.");
-      onClose();
+      setSubmitted(true);
+      toast("Receipt submitted for review.");
     } catch (e) {
-      toast(`Couldn't submit: ${e instanceof Error ? e.message : String(e)}`, "warn");
+      toast(`Couldn't upload the receipt: ${e instanceof Error ? e.message : String(e)}`, "warn");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Modal title={`Pay — ${item.label}`} kicker={`Outstanding: ETB ${outstanding.toLocaleString()}`} onClose={onClose}
-      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit} busy={busy}><Wallet className="h-4 w-4" /> Submit for review</Btn></>}>
-      {accounts.length === 0 ? (
-        <p className="py-6 text-center text-[12.5px] text-soft">No bank account is set up for transfers yet — please contact the office.</p>
+    <Modal title={`Pay — ${item.label}`} kicker={`Outstanding · ETB ${outstanding.toLocaleString()}`} onClose={onClose}
+      footer={submitted ? <Btn onClick={onClose}>Done</Btn> : <><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit} busy={busy}><Wallet className="h-4 w-4" /> Upload receipt</Btn></>}>
+      {submitted ? (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-pine-200 bg-pine-50 px-4 py-3 text-center">
+            <p className="text-[13px] font-bold text-pine-800">Receipt uploaded</p>
+            <p className="mt-1 text-[11.5px] text-pine-700">The school will review it before the payment is confirmed.</p>
+          </div>
+          {previewUrl && (
+            <div className="overflow-hidden rounded-xl border border-mist bg-paper/50 p-2">
+              {file?.type === "application/pdf" ? (
+                <iframe src={previewUrl} title="Receipt preview" className="h-80 w-full rounded-lg" />
+              ) : (
+                <img src={previewUrl} alt="Receipt preview" className="mx-auto max-h-80 w-full rounded-lg object-contain" />
+              )}
+            </div>
+          )}
+        </div>
+      ) : accounts.length === 0 ? (
+        <p className="py-8 text-center text-[12.5px] text-soft">No bank account is available yet.</p>
       ) : (
-        <>
-          <Field label="Pay into" required>
+        <div className="space-y-3">
+          <div className="rounded-xl border border-mist bg-paper/60 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-soft">Pay into</p>
+                <p className="mt-0.5 truncate text-[13px] font-bold text-ink">{account?.bankName} · {account?.accountName}</p>
+                <p className="mt-1 font-mono text-[13.5px] font-extrabold text-ink">{account?.accountNumber}</p>
+              </div>
+              <Btn size="sm" variant={copied ? "soft" : "gold"} onClick={copyAccount}>{copied ? "Copied" : "Copy"}</Btn>
+            </div>
+          </div>
+          <Field label="Bank account">
             <Select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
               {accounts.map((a) => <option key={a.id} value={a.id}>{a.bankName} — {a.accountName}</option>)}
             </Select>
           </Field>
-          {account && (
-            <div className="mt-3 rounded-lg border border-mist bg-paper/60 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Account number</p>
-                  <p className="truncate font-mono text-[15px] font-extrabold text-ink">{account.accountNumber}</p>
-                </div>
-                <Btn size="sm" variant={copied ? "soft" : "gold"} onClick={copyAccount}>{copied ? "Copied" : "Copy"}</Btn>
-              </div>
-              <p className="mt-2 text-[11.5px] text-soft">{account.accountName}{account.branch ? ` · ${account.branch}` : ""}</p>
-              {account.note && <p className="mt-1 text-[11.5px] text-soft">{account.note}</p>}
-            </div>
-          )}
-          <p className="mt-3 text-[12px] text-soft">Transfer ETB {outstanding.toLocaleString()} using your own bank or mobile banking app, then come back and upload the receipt below.</p>
-          <Field label="Your reference / slip number" className="mt-3"><TextInput value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional, if you have one" /></Field>
-          <Field label="Receipt" required className="mt-3">
-            <input type="file" accept="image/*,.pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="w-full rounded-lg border border-mist bg-card px-3 py-2 text-[12.5px]" />
-            {file && <p className="mt-1 text-[11px] text-soft">{file.name}</p>}
+          <Field label="Reference" className="mt-2">
+            <TextInput value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional transaction/slip number" />
           </Field>
-        </>
+          <Field label="Receipt" required className="mt-2">
+            <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-mist bg-paper/40 px-4 py-5 text-center hover:bg-paper">
+              <Wallet className="h-5 w-5 text-soft" />
+              <span className="mt-1.5 text-[12.5px] font-bold text-ink">Choose photo or PDF</span>
+              <span className="mt-0.5 text-[10.5px] text-soft">Up to 10 MB</span>
+              <input type="file" accept="image/*,.pdf" className="hidden" onChange={(e) => pickFile(e.currentTarget.files?.[0] ?? null)} />
+            </label>
+            {file && previewUrl && (
+              <div className="mt-2 overflow-hidden rounded-xl border border-mist bg-paper/50 p-2">
+                {file.type === "application/pdf" ? (
+                  <iframe src={previewUrl} title="Receipt preview" className="h-64 w-full rounded-lg" />
+                ) : (
+                  <img src={previewUrl} alt="Receipt preview" className="mx-auto max-h-64 w-full rounded-lg object-contain" />
+                )}
+                <p className="mt-1 px-1 text-[10.5px] text-soft">{file.name}</p>
+              </div>
+            )}
+          </Field>
+        </div>
       )}
     </Modal>
   );

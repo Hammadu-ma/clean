@@ -49,7 +49,7 @@ interface YearContextValue {
 
 const YearContext = createContext<YearContextValue | null>(null);
 
-const STORAGE_KEY = "riverside.selected-year";
+const STORAGE_KEY = "sms.selected-year";
 
 export function AcademicYearProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();

@@ -8,7 +8,7 @@ import type { DB } from "../types";
  * about not making the person stare at a spinner for data they already had a
  * moment ago.
  */
-const KEY = "riverside.cache.v1";
+const KEY = "sms.cache.v1";
 
 export function loadCachedDb(): DB | null {
   try {

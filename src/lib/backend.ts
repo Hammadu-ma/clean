@@ -216,7 +216,7 @@ export const ALL_LAZY_GROUPS: LazyGroup[] = [
    people on a shared computer never collide.
    ========================================================================= */
 const CACHE_VERSION = "v1";
-const cachePrefix = (uid: string) => `riverside_cache_${CACHE_VERSION}_${uid}_`;
+const cachePrefix = (uid: string) => `sms_cache_${CACHE_VERSION}_${uid}_`;
 
 function cacheKey(uid: string, part: "core" | LazyGroup): string {
   return `${cachePrefix(uid)}${part}`;

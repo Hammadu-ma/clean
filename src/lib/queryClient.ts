@@ -38,7 +38,7 @@ export const queryClient = new QueryClient({
  *  key an older build of this app used to persist the cache under, so
  *  anyone upgrading from that build doesn't keep carrying a stale offline
  *  copy of school data around in their browser. */
-const LEGACY_STORAGE_KEY = "riverside.query-cache.v1";
+const LEGACY_STORAGE_KEY = "sms.query-cache.v1";
 
 // One-time cleanup on load, not just on logout — someone upgrading from the
 // old persisted-cache build has that key sitting in localStorage right now,

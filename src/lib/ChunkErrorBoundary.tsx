@@ -12,7 +12,7 @@ import { Component, type ReactNode } from "react";
 export const isChunkLoadError = (err: unknown) =>
   err instanceof Error && /dynamically imported module|Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk/i.test(err.message);
 
-const RELOAD_GUARD_KEY = "riverside.chunk-reload";
+const RELOAD_GUARD_KEY = "sms.chunk-reload";
 
 /** Call once, anywhere that's reliably rendered after a successful load
  *  (e.g. the app root), so a *future* stale-chunk error after the next

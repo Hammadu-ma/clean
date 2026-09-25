@@ -1211,6 +1211,32 @@ export function UsersPage() {
   const [cls, setCls] = useState("");
   const [sec, setSec] = useState("");
 
+  // Class/section filtering only applies to accounts that are linked to
+  // student records (students and guardians). Keeping it explicit prevents
+  // the filter controls from rendering for roles where the relationship is
+  // not class-scoped.
+  const showClassFilter = tab === "student" || tab === "guardian";
+
+  const rows = db.users
+    .filter((u) => tab === "all" || u.role === tab)
+    .filter((u) => {
+      const needle = q.trim().toLowerCase();
+      return !needle || u.name.toLowerCase().includes(needle) || u.username.toLowerCase().includes(needle);
+    })
+    .filter((u) => {
+      if (!showClassFilter || !cls) return true;
+      const ids = u.role === "student"
+        ? [u.studentId].filter(Boolean) as string[]
+        : u.role === "guardian"
+          ? (u.childrenIds ?? [])
+          : [];
+      return ids.some((studentId) => {
+        const student = db.students.find((s) => s.id === studentId);
+        return student?.enrollment?.classId === cls && (!sec || student.enrollment.sectionId === sec);
+      });
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   // Route-level Guard only checks the coarse base role ("admin"), which
   // several role profiles share (Admin, Super Admin, Coordinator, …) without
   // all having users.manage — the same gap that let a Coordinator reach the

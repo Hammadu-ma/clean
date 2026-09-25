@@ -128,6 +128,8 @@ async function request<T>(
       body: JSON.stringify(body),
     });
 
+    const payload = await res.json().catch(() => null);
+
     if (res.status === 401 && !isRetry) {
       // Access token expired mid-session. Refresh once and replay; the
       // person never sees it happen.
@@ -135,7 +137,18 @@ async function request<T>(
       if (refreshed) return request<T>(path, body, opts, true);
     }
 
-    const payload = await res.json().catch(() => null);
+    if (
+      res.status === 403 &&
+      !isRetry &&
+      payload?.error?.code === "forbidden" &&
+      /invalid request token/i.test(String(payload?.error?.message ?? ""))
+    ) {
+      // A session restored from an older tab/deployment can have a stale CSRF
+      // cookie while its auth cookie is still valid. Refresh rotates the CSRF
+      // token and its paired session cookies; retry once automatically.
+      const refreshed = await refreshSession();
+      if (refreshed) return request<T>(path, body, opts, true);
+    }
 
     if (!res.ok || !payload?.ok) {
       const err = payload?.error ?? {};

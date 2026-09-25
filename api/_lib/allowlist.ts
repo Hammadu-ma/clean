@@ -133,6 +133,11 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     read: false,
     args: { p_request_id: { type: "string", maxLength: 128 } },
   },
+  clear_audit_log: {
+    read: false,
+    rateLimit: 10,
+    args: {},
+  },
 
   /* ---------- writes ---------- */
   save_student_marks: {

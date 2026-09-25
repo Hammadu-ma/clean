@@ -393,6 +393,7 @@ const fmtClock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "
 
 export function MessagesPage() {
   const { db, currentUser, update, toast, onlineUserIds } = useApp();
+  const confirm = useConfirm();
   const groupsLoaded = useLazyGroups("messaging");
   const { id } = useParams();
   const nav = useNavigate();

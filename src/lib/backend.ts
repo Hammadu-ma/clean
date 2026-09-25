@@ -52,6 +52,16 @@ export async function deleteStudentRecord(studentId: string): Promise<{ error: s
   return { error: error?.message ?? null };
 }
 
+/** Permanently removes a message the signed-in user owns. The database enforces
+ * sender ownership and conversation membership, and records the audit entry.
+ * This is called directly by the message UI rather than through the generic
+ * optimistic DB diff so a deletion cannot be replayed by a later hydration. */
+export async function deleteMessageRecord(messageId: string): Promise<{ error: string | null }> {
+  if (!supabase) return { error: "Supabase is not configured." };
+  const { error } = await supabase.rpc("delete_message", { p_message_id: messageId });
+  return { error: error?.message ?? null };
+}
+
 /** Falls back to these only if a school row genuinely has none set yet
  *  (e.g. these migrations haven't been applied). Once set, a school's own
  *  configured days/periods (however many, whichever ones) always win.

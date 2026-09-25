@@ -4,7 +4,7 @@ import {
   AlertTriangle, ArrowLeft, Bell, CalendarDays, Check, CheckCheck, CheckCircle2, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2, Wallet,
 } from "lucide-react";
 import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, sectionShort, timeAgo, uid } from "../store";
-import { getMessageReportContext, markAnnouncementRead, startConversation } from "../lib/backend";
+import { deleteMessageRecord, getMessageReportContext, markAnnouncementRead, startConversation } from "../lib/backend";
 import {
   canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canSendMessage, canTargetAudience,
   canViewConversation, contactContext, contactGroups, conversationsFor, effectiveAnnouncementStatus,
@@ -514,11 +514,21 @@ export function MessagesPage() {
       variant: "danger",
     });
     if (!confirmed) return;
-    const errors = await update((d) => {
-      const idx = d.messages.findIndex((m) => m.id === messageId && m.senderId === currentUser.id);
+
+    // Delete directly on the server first. Message deletion is a destructive
+    // RPC with ownership checks, so it must not travel through the generic
+    // optimistic DB diff (which can replay the same delete during hydration).
+    const result = await deleteMessageRecord(messageId);
+    if (result.error) {
+      toast(result.error, "warn");
+      return;
+    }
+
+    // Server confirmed the deletion; now update the local conversation copy.
+    await update((d) => {
+      const idx = d.messages.findIndex((m) => m.id === messageId);
       if (idx >= 0) d.messages.splice(idx, 1);
     });
-    if (errors.length) toast(describeSyncErrors(errors), "warn");
   };
 
   const other = active ? db.users.find((u) => u.id === active.participants.find((p) => p !== currentUser?.id)) : undefined;

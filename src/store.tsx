@@ -5,6 +5,7 @@ import type {
 import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
 import { apiPublicSchoolBranding } from "./lib/http";
+import { detachDevicePush, syncGrantedDevicePush } from "./lib/push";
 import {
   hydrate, hydrateCore, hydrateGroup, ALL_LAZY_GROUPS, sync, setProfileId, loadProfileForSession,
   mapConversations, mapMessages, dbCache, fetchMyPermissions,
@@ -854,6 +855,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const modeRef = useRef(mode);
   modeRef.current = mode;
+
+  useEffect(() => {
+    if (!sessionUserId || mode !== "live") return;
+    void syncGrantedDevicePush(sessionUserId).catch((error) => {
+      console.warn("[push] background registration failed:", error);
+    });
+  }, [sessionUserId, mode]);
   const yearIdRef = useRef(yearId);
   yearIdRef.current = yearId;
 
@@ -980,6 +988,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    if (sessionUserId) void detachDevicePush().catch((error) => console.warn("[push] detach on logout failed:", error));
     supabase?.auth.signOut();
     if (sessionUserId) dbCache.clearUserCache(sessionUserId);
     applySessionUserId(null);

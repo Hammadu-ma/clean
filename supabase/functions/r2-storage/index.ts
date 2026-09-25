@@ -30,8 +30,19 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 // Add new owner types here as the app grows (staff photos, a school logo, …).
 // Keep this list in sync with the `when` branches in the SQL functions.
-const ALLOWED_OWNER_TYPES = new Set(["student_photo", "student_document", "fee_receipt"]);
-const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // 15 MB safety cap
+const ALLOWED_OWNER_TYPES = new Set(["student_photo", "student_document", "fee_receipt", "school_logo"]);
+const MAX_UPLOAD_BYTES: Record<string, number> = {
+  student_photo: 5 * 1024 * 1024,
+  student_document: 20 * 1024 * 1024,
+  fee_receipt: 10 * 1024 * 1024,
+  school_logo: 5 * 1024 * 1024,
+};
+const ALLOWED_MIME: Record<string, RegExp> = {
+  student_photo: /^image\/(jpeg|png|webp)$/,
+  student_document: /^(image\/(jpeg|png|webp)|application\/pdf)$/,
+  fee_receipt: /^(image\/(jpeg|png|webp)|application\/pdf)$/,
+  school_logo: /^image\/(svg\+xml|jpeg|png|webp)$/,
+};
 const URL_TTL_SECONDS = 300;
 
 const CORS = {
@@ -62,7 +73,6 @@ Deno.serve(async (req) => {
 
   const authHeader = req.headers.get("Authorization") ?? "";
   const jwt = authHeader.replace(/^Bearer\s+/i, "");
-  if (!jwt) return json({ error: "Missing Authorization header" }, 401);
 
   let body: any;
   try {
@@ -77,13 +87,6 @@ Deno.serve(async (req) => {
   }
   if (!ALLOWED_OWNER_TYPES.has(ownerType)) return json({ error: `Unknown ownerType: ${ownerType}` }, 400);
 
-  // Bound to the CALLER's identity — RLS/RPC checks below are exactly the
-  // checks that user's own supabase-js calls would be subject to.
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${jwt}` } },
-    auth: { persistSession: false },
-  });
-
   const aws = new AwsClient({
     accessKeyId: R2_ACCESS_KEY_ID,
     secretAccessKey: R2_SECRET_ACCESS_KEY,
@@ -91,6 +94,29 @@ Deno.serve(async (req) => {
     service: "s3",
   });
   const r2Origin = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+
+  // The getting/login page has no authenticated session. This is the only
+  // unauthenticated action and is restricted to the school_logo namespace.
+  // All upload/download/delete actions below still require a real JWT.
+  if (action === "presign-public-logo") {
+    if (ownerType !== "school_logo" || ownerId !== "school-1" || typeof key !== "string" || !key.startsWith("school_logo/school-1/")) {
+      return json({ error: "Forbidden" }, 403);
+    }
+    if (jwt) return json({ error: "Use the public branding route for this action." }, 403);
+    const url = new URL(`${r2Origin}/${R2_BUCKET}/${key}`);
+    url.searchParams.set("X-Amz-Expires", "3600");
+    const signed = await aws.sign(new Request(url, { method: "GET" }), { aws: { signQuery: true } });
+    return json({ url: signed.url });
+  }
+
+  if (!jwt) return json({ error: "Missing Authorization header" }, 401);
+
+  // Bound to the CALLER's identity — RLS/RPC checks below are exactly the
+  // checks that user's own supabase-js calls would be subject to.
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${jwt}` } },
+    auth: { persistSession: false },
+  });
 
   // A key always starts with "ownerType/ownerId/…" — this stops a user who
   // is authorized for their OWN owner_id from feeding in a key that belongs
@@ -102,8 +128,12 @@ Deno.serve(async (req) => {
       if (typeof filename !== "string" || typeof contentType !== "string") {
         return json({ error: "filename and contentType are required" }, 400);
       }
-      if (typeof size === "number" && size > MAX_UPLOAD_BYTES) {
-        return json({ error: `File exceeds the ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit` }, 400);
+      const maxBytes = MAX_UPLOAD_BYTES[ownerType] ?? 0;
+      if (typeof size !== "number" || !Number.isFinite(size) || size <= 0 || size > maxBytes) {
+        return json({ error: `File exceeds the ${maxBytes / (1024 * 1024)} MB limit` }, 400);
+      }
+      if (!ALLOWED_MIME[ownerType].test(contentType)) {
+        return json({ error: "That file type isn't allowed here." }, 400);
       }
 
       const { data: allowed, error } = await supabase.rpc("can_manage_file", {

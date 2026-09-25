@@ -12,6 +12,7 @@ import {
   unreadInConversation, unreadNotifications, userNotifications, visibleAnnouncements, audienceUserIds,
 } from "../rbac";
 import type { Announcement, Audience, Conversation, User } from "../types";
+import { useDevicePush } from "../lib/push";
 import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonPanel, SkeletonRows, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls, useConfirm } from "../ui";
 import { AccessDenied } from "./Auth";
 
@@ -823,6 +824,7 @@ export function NotificationsPage() {
   const { db, currentUser, update, toast, isGroupLoaded } = useApp();
   const confirm = useConfirm();
   const nav = useNavigate();
+  const devicePush = useDevicePush(currentUser?.id ?? null);
   const groupsLoaded = isGroupLoaded("notifications");
   const list = userNotifications(db, currentUser);
   const notificationDestination = (n: import("../types").AppNotification) => {
@@ -887,6 +889,52 @@ export function NotificationsPage() {
           <Btn variant="soft" onClick={clearAll} disabled={!list.length}><Trash2 className="h-4 w-4" /> Clear all</Btn>
         </div>
       </PageHead>
+
+      {devicePush.supported && currentUser && devicePush.permission !== "denied" && (
+        <Panel className="mb-4 anim-rise border border-mist bg-card">
+          <div className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${devicePush.enabled ? "bg-pine-100 text-pine-800" : "bg-paper text-soft"}`}><Bell className="h-4 w-4" /></span>
+                <div>
+                  <p className="text-[13px] font-bold text-ink">Device notifications</p>
+                  <p className="text-[11.5px] leading-relaxed text-soft">{devicePush.enabled ? "New alerts can pop up on this device even when the app is closed." : "Get school alerts as normal device notifications."}</p>
+                </div>
+              </div>
+            </div>
+            <Btn
+              variant={devicePush.enabled ? "soft" : "gold"}
+              disabled={devicePush.busy}
+              onClick={async () => {
+                try {
+                  if (devicePush.enabled) {
+                    await devicePush.disable();
+                    toast("Device notifications turned off.");
+                  } else {
+                    await devicePush.enable();
+                    toast("Device notifications enabled.");
+                  }
+                } catch (error) {
+                  toast(error instanceof Error ? error.message : "Couldn't change device notification settings.", "warn");
+                }
+              }}
+            >
+              <Bell className="h-4 w-4" />
+              {devicePush.busy ? "Updating…" : devicePush.enabled ? "Turn off" : "Enable"}
+            </Btn>
+          </div>
+        </Panel>
+      )}
+
+      {devicePush.supported && devicePush.permission === "denied" && currentUser && (
+        <Panel className="mb-4 anim-rise border border-rust-200 bg-rust-50/40">
+          <div className="px-4 py-3.5">
+            <p className="text-[13px] font-bold text-ink">Device notifications are blocked</p>
+            <p className="mt-0.5 text-[11.5px] leading-relaxed text-soft">Allow notifications for this site in your browser settings, then return here to enable device alerts.</p>
+          </div>
+        </Panel>
+      )}
+
       <Panel className="anim-rise overflow-hidden">
         <ul className="divide-y divide-mist/70">
           {!groupsLoaded ? (

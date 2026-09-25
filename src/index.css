@@ -253,6 +253,8 @@ li {
 .audit-table th,
 .audit-table td {
   white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
   vertical-align: middle;
 }
 
@@ -327,4 +329,20 @@ li {
   overflow: hidden;
   position: relative;
   box-shadow: 0 8px 24px rgba(13, 33, 26, 0.25);
+}
+
+/* ---------- Reports / academic result readability ----------
+   Keep names, assessment descriptions and percentages on one readable line.
+   The containing panel remains horizontally scrollable on narrow screens. */
+.reports-table th,
+.reports-table td,
+.academic-results-table th,
+.academic-results-table td {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.reports-table td,
+.academic-results-table td {
+  line-height: 1.35;
 }

@@ -439,7 +439,8 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
 
 /* ================= ID card ================= */
 export function IDCardModal({ student, onClose }: { student: Student; onClose: () => void }) {
-  const { db, yearId, toast } = useApp();
+  const { db, yearId, toast, currentUser } = useApp();
+  const canExport = currentUser?.role === "admin";
   const activeYear = getYear(db, yearId) ?? db.years.find((y) => y.active);
   const school = db.settings.schoolName;
   const enr = student.enrollment;
@@ -522,8 +523,8 @@ export function IDCardModal({ student, onClose }: { student: Student; onClose: (
       footer={
         <>
           <Btn variant="ghost" onClick={onClose}>Close</Btn>
-          <Btn variant="soft" onClick={() => window.print()}><Printer className="h-4 w-4" /> Print</Btn>
-          <Btn variant="gold" onClick={downloadPdf}><Download className="h-4 w-4" /> Download PDF</Btn>
+          {canExport && <Btn variant="soft" onClick={() => window.print()}><Printer className="h-4 w-4" /> Print</Btn>}
+          {canExport && <Btn variant="gold" onClick={downloadPdf}><Download className="h-4 w-4" /> Download PDF</Btn>}
         </>
       }>
       <div className="idcard-sheet flex flex-wrap items-start justify-center gap-6">

@@ -347,7 +347,7 @@ export function StudentProfilePage() {
               </div>
             </div>
             <div className="ml-auto flex gap-2">
-              {(isAdmin || isGuardian) && (
+              {isAdmin && (
                 <Btn variant="soft" size="sm" onClick={() => setIdCardOpen(true)}><CreditCard className="h-3.5 w-3.5" /> ID card</Btn>
               )}
               {isAdmin && (
@@ -432,9 +432,9 @@ export function StudentProfilePage() {
               <p className="text-[11.5px] text-soft">Totals and percentages are weighted from each subject's assessment structure.</p>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[620px]">
+              <table className="academic-results-table w-full min-w-[760px]">
                 <thead className="border-b border-mist bg-paper/60">
-                  <tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={thCls()}>Structure</th><th className={thCls()}>%</th><th className={thCls()}>Grade</th><th className={thCls()}>Position</th></tr>
+                  <tr><th className={`${thCls()} whitespace-nowrap`}>Subject</th><th className={`${thCls()} whitespace-nowrap`}>Period</th><th className={`${thCls()} min-w-[220px] whitespace-nowrap`}>Structure</th><th className={`${thCls()} w-[100px] whitespace-nowrap`}>%</th><th className={`${thCls()} w-[100px] whitespace-nowrap`}>Grade</th><th className={`${thCls()} min-w-[120px] whitespace-nowrap`}>Position</th></tr>
                 </thead>
                 <tbody className="divide-y divide-mist/70">
                   {results.map(({ st, calc, subject }) => {
@@ -442,12 +442,12 @@ export function StudentProfilePage() {
                     const band = gradeFor(calc.pct, db.grading);
                     return (
                       <tr key={st.id} className="transition-colors hover:bg-pine-50/50">
-                        <td className={tdCls()}><span className="flex items-center gap-2 font-bold text-ink"><span className="h-4 w-1 rounded-full" style={{ background: subject?.color }} />{subject?.name}</span></td>
-                        <td className={`${tdCls()} text-soft`}>{st.period}</td>
-                        <td className={`${tdCls()} text-[11.5px] text-soft`}>{st.items.map((i) => i.name).join(" · ")}</td>
-                        <td className={`${tdCls()} font-mono text-[12.5px] font-bold ${calc.complete ? "text-pine-800" : "text-gold-600"}`}>{calc.complete ? `${calc.pct}%` : "in progress"}</td>
-                        <td className={tdCls()}>{calc.complete ? <Chip tone={calc.pct >= 80 ? "pine" : calc.pct >= 50 ? "gold" : "rust"}>{band.grade}</Chip> : "—"}</td>
-                        <td className={`${tdCls()} text-soft`}>{calc.complete && ranks[s.id] ? `${ordinal(ranks[s.id])} of ${Object.keys(ranks).length}` : "—"}</td>
+                        <td className={`${tdCls()} whitespace-nowrap`}><span className="flex items-center gap-2 whitespace-nowrap font-bold text-ink"><span className="h-4 w-1 shrink-0 rounded-full" style={{ background: subject?.color }} />{subject?.name}</span></td>
+                        <td className={`${tdCls()} whitespace-nowrap text-soft`}>{st.period}</td>
+                        <td className={`${tdCls()} min-w-[220px] whitespace-nowrap text-[11.5px] text-soft`}>{st.items.map((i) => i.name).join(" · ")}</td>
+                        <td className={`${tdCls()} whitespace-nowrap font-mono text-[12.5px] font-bold ${calc.complete ? "text-pine-800" : "text-gold-600"}`}>{calc.complete ? `${calc.pct}%` : "in progress"}</td>
+                        <td className={`${tdCls()} whitespace-nowrap`}>{calc.complete ? <Chip tone={calc.pct >= 80 ? "pine" : calc.pct >= 50 ? "gold" : "rust"}>{band.grade}</Chip> : "—"}</td>
+                        <td className={`${tdCls()} whitespace-nowrap text-soft`}>{calc.complete && ranks[s.id] ? `${ordinal(ranks[s.id])} of ${Object.keys(ranks).length}` : "—"}</td>
                       </tr>
                     );
                   })}
@@ -1216,6 +1216,24 @@ export function UsersPage() {
   // the filter controls from rendering for roles where the relationship is
   // not class-scoped.
   const showClassFilter = tab === "student" || tab === "guardian";
+
+  const relLabel = (u: User) => {
+    if (u.role === "admin") return "Administrative account";
+    if (u.role === "teacher") {
+      const teacher = u.teacherId ? db.teachers.find((t) => t.id === u.teacherId) : undefined;
+      return teacher?.name ? `Staff · ${teacher.name}` : "Staff record not linked";
+    }
+    if (u.role === "student") {
+      const student = u.studentId ? db.students.find((s) => s.id === u.studentId) : undefined;
+      if (!student) return "Student record not linked";
+      const enrollment = student.enrollment;
+      const cls = enrollment ? getClass(db, enrollment.classId)?.name : undefined;
+      const sec = enrollment ? getSection(db, enrollment.classId, enrollment.sectionId)?.name : undefined;
+      return cls ? `Student · ${cls}${sec ? ` · ${sec}` : ""}` : "Student record";
+    }
+    const count = u.childrenIds?.length ?? 0;
+    return count === 1 ? "Guardian · 1 child" : `Guardian · ${count} children`;
+  };
 
   const rows = db.users
     .filter((u) => tab === "all" || u.role === tab)

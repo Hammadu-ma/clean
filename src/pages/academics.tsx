@@ -449,8 +449,8 @@ export function MarkEntryPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   {savedAt && status === "draft" && <Chip tone="pine" className="!border-pine-600 !bg-pine-800 !text-pine-100"><Check className="h-3 w-3" /> Saved {savedAt}</Chip>}
                   <SubmissionChip status={status} />
-                  <Btn size="sm" variant="soft" onClick={() => exportMarkSheetCsv(db, structure, roster)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>
-                  <Btn size="sm" variant="soft" onClick={() => exportMarkSheetPdf(db, structure, roster)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>
+                  {isAdmin && <Btn size="sm" variant="soft" onClick={() => exportMarkSheetCsv(db, structure, roster)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>}
+                  {isAdmin && <Btn size="sm" variant="soft" onClick={() => exportMarkSheetPdf(db, structure, roster)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>}
                   {canEditStructure && <Btn size="sm" variant="gold" onClick={() => setEditStruct(structure)}><Pencil className="h-3.5 w-3.5" /> Edit structure</Btn>}
                   {canManageStructures && !canEditStructure && !isAdmin && status !== "draft" && <Chip tone="steel"><ShieldCheck className="h-3 w-3" /> Structure locked</Chip>}
                 </div>
@@ -1711,7 +1711,7 @@ export function AttendancePage() {
               return (
                 <tr key={s.id} className="transition-colors hover:bg-pine-50/40">
                   <td className={`${tdCls()} tnum text-soft`}>{i + 1}</td>
-                  <td className={tdCls()}><span className="flex items-center gap-2.5"><Avatar student={s} size={30} /><span className="font-bold text-ink">{shortName(s)}</span></span></td>
+                  <td className={`${tdCls()} whitespace-nowrap`}><span className="flex items-center gap-2.5 whitespace-nowrap"><Avatar student={s} size={30} /><span className="whitespace-nowrap font-bold text-ink">{shortName(s)}</span></span></td>
                   <td className={`${tdCls()} text-center`}>
                     <span className="inline-flex gap-1">
                       {(["present", "late", "absent"] as AttendanceStatus[]).map((st) => (
@@ -1933,6 +1933,7 @@ export function ReportsPage() {
   const { db, currentUser } = useApp();
   const groupsLoaded = useLazyGroups("academics");
   const role = currentUser?.role ?? "admin";
+  const isAdmin = role === "admin";
 
   if (role === "student" || role === "guardian") {
     return <ReportCardViewer />;
@@ -1961,9 +1962,9 @@ export function ReportsPage() {
       {!groupsLoaded ? (
         <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
       ) : (
-      <Panel className="anim-rise overflow-hidden">
-        <table className="w-full">
-          <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-10`}>#</th><th className={thCls()}>Student</th><th className={thCls()}>Section</th><th className={`${thCls()} text-center`}>Average</th><th className={thCls()}></th></tr></thead>
+      <Panel className="anim-rise overflow-x-auto">
+        <table className="reports-table w-full min-w-[760px]">
+          <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-10 whitespace-nowrap`}>#</th><th className={`${thCls()} min-w-[240px] whitespace-nowrap`}>Student</th><th className={`${thCls()} min-w-[140px] whitespace-nowrap`}>Section</th><th className={`${thCls()} min-w-[130px] whitespace-nowrap text-center`}>Average</th><th className={`${thCls()} w-[100px] whitespace-nowrap`}></th></tr></thead>
           <tbody className="divide-y divide-mist/70">
             {roster.map((s, i) => {
               const avg = studentAverage(db, s);
@@ -1971,19 +1972,19 @@ export function ReportsPage() {
                 <tr key={s.id} className="transition-colors hover:bg-pine-50/50">
                   <td className={`${tdCls()} tnum text-soft`}>{i + 1}</td>
                   <td className={tdCls()}><span className="flex items-center gap-2.5"><Avatar student={s} size={30} /><span className="font-bold text-ink">{shortName(s)}</span></span></td>
-                  <td className={tdCls()}>{s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "—"}</td>
-                  <td className={`${tdCls()} text-center font-mono font-bold`}>{avg != null ? `${avg}%` : "—"}</td>
-                  <td className={`${tdCls()} text-right`}><Btn size="sm" variant="ghost" onClick={() => setOpenStudent(s)}><Eye className="h-3.5 w-3.5" /> View</Btn></td>
+                  <td className={`${tdCls()} whitespace-nowrap`}>{s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "—"}</td>
+                  <td className={`${tdCls()} whitespace-nowrap text-center font-mono font-bold`}>{avg != null ? `${avg}%` : "—"}</td>
+                  <td className={`${tdCls()} whitespace-nowrap text-right`}><Btn size="sm" variant="ghost" onClick={() => setOpenStudent(s)}><Eye className="h-3.5 w-3.5" /> View</Btn></td>
                 </tr>
               );
             })}
-            {roster.length === 0 && <tr><td colSpan={showGrade ? 5 : 4}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
+            {roster.length === 0 && <tr><td colSpan={5}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
           </tbody>
         </table>
       </Panel>
       )}
 
-      {openStudent && <ReportCardModal student={openStudent} onClose={() => setOpenStudent(null)} adminView />}
+      {openStudent && <ReportCardModal student={openStudent} onClose={() => setOpenStudent(null)} adminView={isAdmin} />}
     </div>
   );
 }
@@ -2011,9 +2012,11 @@ function ReportCardViewer() {
 }
 
 function ReportCardModal({ student, onClose, adminView }: { student: Student; onClose: () => void; adminView?: boolean }) {
+  const { currentUser } = useApp();
+  const canExport = currentUser?.role === "admin";
   return (
     <Modal title={fullName(student)} kicker="Report card" onClose={onClose} wide
-      footer={<><Btn variant="ghost" onClick={onClose}>Close</Btn><Btn onClick={() => window.print()}><Printer className="h-4 w-4" /> Print</Btn></>}>
+      footer={<><Btn variant="ghost" onClick={onClose}>Close</Btn>{canExport && <Btn onClick={() => window.print()}><Printer className="h-4 w-4" /> Print</Btn>}</>}>
       <ReportCardBody student={student} publishedOnly={!adminView} />
     </Modal>
   );
@@ -2062,7 +2065,8 @@ function exportReportCardPdf(db: DB, student: Student, results: ReturnType<typeo
 }
 
 function ReportCardBody({ student, publishedOnly }: { student: Student; publishedOnly?: boolean }) {
-  const { db } = useApp();
+  const { db, currentUser } = useApp();
+  const canExport = currentUser?.role === "admin";
   const all = studentResults(db, student);
   const results = publishedOnly ? all.filter((r) => submissionStatus(db, r.st.id) === "published") : all;
   const completeOnes = results.filter((r) => r.calc.complete);
@@ -2079,17 +2083,17 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
           <p className="text-[11.5px] text-soft">{student.enrollment ? sectionShort(db, student.enrollment.classId, student.enrollment.sectionId) : "—"} · Reg. {student.regId}</p>
         </div>
         {avg != null && <span className="text-right"><span className="block font-mono text-[20px] font-extrabold text-pine-800">{avg}%</span><span className="block text-[10.5px] font-semibold text-soft">overall average</span></span>}
-        <div className="ml-auto flex gap-2">
+        {canExport && <div className="ml-auto flex gap-2">
           <Btn size="sm" variant="soft" onClick={() => exportReportCardCsv(db, student, results)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>
           <Btn size="sm" variant="soft" onClick={() => exportReportCardPdf(db, student, results)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>
-        </div>
+        </div>}
       </div>
 
       <div className="mb-3"><Tabs tabs={[{ id: "summary", label: "Summary", icon: <FileBarChart2 className="h-3.5 w-3.5" /> }, { id: "detailed", label: "Detailed", icon: <Table2 className="h-3.5 w-3.5" /> }]} active={tab} onChange={(id) => setTab(id as any)} /></div>
 
       {tab === "summary" ? (
         <Panel className="overflow-x-auto">
-          <table className="w-full min-w-[560px]">
+          <table className="academic-results-table w-full min-w-[700px]">
             <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th>{showGrade && <th className={`${thCls()} text-center`}>Grade</th>}</tr></thead>
             <tbody className="divide-y divide-mist/70">
               {results.map((r, i) => {
@@ -2117,7 +2121,7 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
                 <span className="font-mono text-[12.5px] font-bold text-pine-800">{r.calc.complete ? `${fmt1(r.calc.total)} (${fmt1(r.calc.pct)}%)` : "Incomplete"}</span>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[420px]">
+                <table className="academic-results-table w-full min-w-[520px]">
                 <thead className="border-b border-mist bg-paper/40"><tr><th className={thCls()}>Assessment</th><th className={`${thCls()} text-center`}>Max</th><th className={`${thCls()} text-center`}>Weight</th><th className={`${thCls()} text-center`}>Score</th></tr></thead>
                 <tbody className="divide-y divide-mist/70">
                   {r.st.items.map((it) => (
@@ -2583,7 +2587,7 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
             <Chip tone={f.paid >= f.amount ? "pine" : f.paid > 0 ? "gold" : "rust"}>{f.paid >= f.amount ? "Paid" : f.paid > 0 ? "Partial" : "Unpaid"}</Chip>
             {canManage && f.paid < f.amount && <Btn size="sm" variant="soft" onClick={() => { setPayItem(f); setPayAmount(f.amount - f.paid); setPayMethod("telebirr"); setPayReference(""); setPayBank(ETH_BANKS[0]); }}><Wallet className="h-3.5 w-3.5" /> Record payment</Btn>}
             {(f.payments?.length ?? 0) > 0 && <Btn size="sm" variant="ghost" onClick={() => setHistoryItem(f)}><Eye className="h-3.5 w-3.5" /> History</Btn>}
-            <Btn size="sm" variant="ghost" onClick={() => printReceipt(f)}><Printer className="h-3.5 w-3.5" /> Receipt</Btn>
+            {currentUser?.role === "admin" && <Btn size="sm" variant="ghost" onClick={() => printReceipt(f)}><Printer className="h-3.5 w-3.5" /> Receipt</Btn>}
             {canManage && <button onClick={() => removeItem(f)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>}
           </div>
         ))}

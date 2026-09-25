@@ -1023,7 +1023,18 @@ export function EventsPage() {
           )}
         </ul>
       </Panel>
-      {open && <EventModal onClose={() => setOpen(false)} onSave={(ev) => { update((d) => { d.events.push(ev); pushAudit(d, currentUser, "event.create", ev.title); }); toast("Event added."); setOpen(false); }} />}
+      {open && <EventModal onClose={() => setOpen(false)} onSave={(ev) => { update((d) => {
+        d.events.push(ev);
+        pushAudit(d, currentUser, "event.create", ev.title, audienceLabel(d, ev.audience));
+        const targets = audienceUserIds(d, ev.audience).filter((id) => id !== currentUser?.id);
+        const when = `${fmtShort(ev.date)}${ev.time ? ` at ${ev.time}` : ""}`;
+        const where = ev.location ? ` · ${ev.location}` : "";
+        pushNotifications(d, targets, "event", "New school event", `${ev.title} — ${when}${where}`, {
+          targetType: "event",
+          targetId: ev.id,
+          targetRoute: "/events",
+        });
+      }); toast("Event added."); setOpen(false); }} />}
     </div>
   );
 }

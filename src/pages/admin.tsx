@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronUp, History, KeyRound, Plus, Search, Settings2, ShieldCheck, Trash2, Users as UsersIcon, X, Eye, SlidersHorizontal, ImagePlus, Star, UploadCloud } from "lucide-react";
+import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronUp, History, KeyRound, Plus, Search, Settings2, ShieldCheck, Trash2, Download, Users as UsersIcon, X, Eye, SlidersHorizontal, ImagePlus, Star, UploadCloud } from "lucide-react";
 import { useApp, useLazyGroups, fmtDate, timeAgo, uid } from "../store";
 import {
   PERMISSION_CATALOG, PERMISSION_CATEGORIES, getRoleProfile, hasPermission, pushAudit,
@@ -8,6 +8,7 @@ import type { Role, RoleDef, Settings } from "../types";
 import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonRows, TextArea, TextInput, tdCls, thCls, useConfirm } from "../ui";
 import { AccessDenied } from "./Auth";
 import { deleteFile, isStorageConfigured, uploadFile, useSignedUrl } from "../lib/storage";
+import { clearAuditLog } from "../lib/backend";
 
 const BASE_ROLES: { value: Role; label: string }[] = [
   { value: "admin", label: "Administrator" },
@@ -220,8 +221,73 @@ function RoleModal({ draft, canEditPerms, onClose, onSave, setDraft }: {
 }
 
 /* ================= Audit log ================= */
+
+const AUDIT_ACTIVITY: Record<string, { label: string; past: string; tone: "pine" | "gold" | "rust" | "steel" | "gray" }> = {
+  "role.update": { label: "updated a role", past: "Role updated", tone: "gold" },
+  "role.create": { label: "created a role", past: "Role created", tone: "pine" },
+  "role.delete": { label: "deleted a role", past: "Role deleted", tone: "rust" },
+  "role.enable": { label: "enabled a role", past: "Role enabled", tone: "pine" },
+  "role.disable": { label: "disabled a role", past: "Role disabled", tone: "rust" },
+  "announcement.publish": { label: "published an announcement", past: "Announcement published", tone: "pine" },
+  "announcement.schedule": { label: "scheduled an announcement", past: "Announcement scheduled", tone: "steel" },
+  "announcement.draft": { label: "saved an announcement as a draft", past: "Announcement drafted", tone: "gray" },
+  "announcement.create": { label: "created an announcement", past: "Announcement created", tone: "pine" },
+  "announcement.update": { label: "updated an announcement", past: "Announcement updated", tone: "steel" },
+  "announcement.delete": { label: "deleted an announcement", past: "Announcement deleted", tone: "rust" },
+  "announcement.archive": { label: "archived an announcement", past: "Announcement archived", tone: "gray" },
+  "announcement.restore": { label: "restored an announcement", past: "Announcement restored", tone: "pine" },
+  "user.create": { label: "created a user account", past: "User account created", tone: "pine" },
+  "user.update": { label: "updated a user account", past: "User account updated", tone: "steel" },
+  "user.replace": { label: "replaced a user account", past: "User account replaced", tone: "steel" },
+  "user.deactivate": { label: "deactivated a user account", past: "User account deactivated", tone: "rust" },
+  "user.delete": { label: "deleted a user account", past: "User account deleted", tone: "rust" },
+  "user.password_change": { label: "changed a user's password", past: "Password changed", tone: "gold" },
+  "profile.identity_update": { label: "updated a profile identity", past: "Profile identity updated", tone: "steel" },
+  "profile.password_and_identity_update": { label: "updated profile and password information", past: "Profile and password updated", tone: "gold" },
+  "conversation.open": { label: "opened a conversation", past: "Conversation opened", tone: "steel" },
+  "conversation.start": { label: "started a conversation", past: "Conversation started", tone: "steel" },
+  "conversation.hide": { label: "hid a conversation", past: "Conversation hidden", tone: "rust" },
+  "message.delete": { label: "deleted a message", past: "Message deleted", tone: "rust" },
+  "message.report": { label: "reported a message", past: "Message reported", tone: "rust" },
+  "report.file": { label: "filed a message report", past: "Message report filed", tone: "rust" },
+  "report.resolved": { label: "resolved a message report", past: "Message report resolved", tone: "pine" },
+  "report.dismissed": { label: "dismissed a message report", past: "Message report dismissed", tone: "gray" },
+  "event.create": { label: "created a school event", past: "Event created", tone: "steel" },
+  "event.save": { label: "updated a school event", past: "Event updated", tone: "steel" },
+  "event.delete": { label: "deleted a school event", past: "Event deleted", tone: "rust" },
+  "fees.bill": { label: "created a fee bill", past: "Fee bill created", tone: "gold" },
+  "fees.create": { label: "created a fee item", past: "Fee item created", tone: "gold" },
+  "fees.delete": { label: "deleted a fee item", past: "Fee item deleted", tone: "rust" },
+  "fees.manage": { label: "managed fee information", past: "Fee information updated", tone: "gold" },
+  "fees.pay": { label: "recorded a fee payment", past: "Fee payment recorded", tone: "pine" },
+  "fees.payment": { label: "submitted a fee payment", past: "Fee payment submitted", tone: "steel" },
+  "fees.payment.approve": { label: "approved a fee payment", past: "Fee payment approved", tone: "pine" },
+  "fees.payment.reject": { label: "rejected a fee payment", past: "Fee payment rejected", tone: "rust" },
+  "fees.payment_request": { label: "submitted a fee payment request", past: "Fee payment request submitted", tone: "steel" },
+  "fees.receipt.clear": { label: "removed a fee receipt", past: "Fee receipt removed", tone: "rust" },
+  "file.upload": { label: "uploaded a file", past: "File uploaded", tone: "steel" },
+  "file.delete": { label: "deleted a file", past: "File deleted", tone: "rust" },
+};
+
+function auditActivity(a: { action: string; target: string; detail?: string; userName: string }) {
+  const meta = AUDIT_ACTIVITY[a.action];
+  const action = meta?.label ?? a.action.replace(/[._-]+/g, " ");
+  const target = a.target?.trim();
+  return {
+    meta: meta ?? { label: action, past: action, tone: "gray" as const },
+    sentence: target ? `${a.userName} ${action}: ${target}` : `${a.userName} ${action}`,
+    targetLabel: target || "—",
+    detail: a.detail?.trim() || "",
+  };
+}
+
+function csvCell(value: string) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+
 export function AuditPage() {
-  const { db, currentUser } = useApp();
+  const { db, currentUser, update, toast } = useApp();
+  const confirm = useConfirm();
   const groupsLoaded = useLazyGroups("audit");
   const [query, setQuery] = useState("");
   const [actionFilter, setActionFilter] = useState("all");
@@ -234,47 +300,122 @@ export function AuditPage() {
     "role.update": "gold", "role.create": "gold", "role.delete": "rust", "role.enable": "pine", "role.disable": "rust",
     "announcement.publish": "pine", "announcement.schedule": "steel", "announcement.draft": "gray",
     "user.deactivate": "rust", "user.create": "pine", "conversation.open": "steel", "message.report": "rust",
-    "report.resolved": "pine", "report.dismissed": "gray", "conversation.hide": "rust", "event.create": "steel", "fees.payment.approve": "pine", "fees.payment.reject": "rust", "fees.receipt.clear": "rust", "file.upload": "steel", "file.delete": "rust",
+    "message.delete": "rust", "report.resolved": "pine", "report.dismissed": "gray", "conversation.hide": "rust",
+    "event.create": "steel", "fees.payment.approve": "pine", "fees.payment.reject": "rust", "fees.receipt.clear": "rust",
+    "file.upload": "steel", "file.delete": "rust",
   };
   const actionOptions = useMemo(() => [...new Set(db.audit.map((a) => a.action))].sort((a, b) => a.localeCompare(b)), [db.audit]);
   const actorOptions = useMemo(() => [...new Set(db.audit.map((a) => a.userName).filter(Boolean))].sort((a, b) => a.localeCompare(b)), [db.audit]);
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = db.audit.filter((a) => {
+      const activity = auditActivity(a);
       const matchesAction = actionFilter === "all" || a.action === actionFilter;
       const matchesActor = actorFilter === "all" || a.userName === actorFilter;
       const date = a.at.slice(0, 10);
       const matchesFrom = !fromDate || date >= fromDate;
       const matchesTo = !toDate || date <= toDate;
-      const haystack = `${a.userName} ${a.action} ${a.target} ${a.detail ?? ""}`.toLowerCase();
+      const haystack = `${a.userName} ${activity.sentence} ${activity.targetLabel} ${activity.detail} ${a.action}`.toLowerCase();
       return matchesAction && matchesActor && matchesFrom && matchesTo && (!q || haystack.includes(q));
     });
     return [...filtered].sort((a, b) => {
       let cmp = 0;
       if (sortBy === "when") cmp = a.at.localeCompare(b.at);
       if (sortBy === "user") cmp = a.userName.localeCompare(b.userName, undefined, { sensitivity: "base" });
-      if (sortBy === "action") cmp = a.action.localeCompare(b.action, undefined, { sensitivity: "base" });
+      if (sortBy === "action") cmp = auditActivity(a).meta.label.localeCompare(auditActivity(b).meta.label, undefined, { sensitivity: "base" });
       if (sortBy === "target") cmp = a.target.localeCompare(b.target, undefined, { sensitivity: "base" });
       return sortDirection === "asc" ? cmp : -cmp;
     });
   }, [db.audit, query, actionFilter, actorFilter, fromDate, toDate, sortBy, sortDirection]);
+
   if (!hasPermission(db, currentUser, "audit.view")) {
     return <AccessDenied required="audit.view" reason="You don't have permission to view the audit trail." />;
   }
+
   const hasFilters = query.trim() || actionFilter !== "all" || actorFilter !== "all" || fromDate || toDate;
+
+  const exportAudit = () => {
+    if (!rows.length) {
+      toast("There are no audit entries to export.", "warn");
+      return;
+    }
+    const lines = [
+      ["Date", "Time", "User", "Activity", "Target", "Details"].map(csvCell).join(","),
+      ...rows.map((a) => {
+        const activity = auditActivity(a);
+        const when = new Date(a.at);
+        return [
+          when.toLocaleDateString(),
+          when.toLocaleTimeString(),
+          a.userName,
+          activity.meta.label,
+          activity.targetLabel,
+          activity.detail,
+        ].map(csvCell).join(",");
+      }),
+    ];
+    const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast(`${rows.length} audit ${rows.length === 1 ? "entry" : "entries"} exported.`);
+  };
+
+  const clearAudit = async () => {
+    if (!db.audit.length) {
+      toast("The audit log is already empty.", "warn");
+      return;
+    }
+    if (!isSuperAdmin(db, currentUser)) {
+      toast("Only the Super Admin can clear the audit log.", "warn");
+      return;
+    }
+    const confirmed = await confirm({
+      title: "Clear the audit log?",
+      body: <>This will permanently remove <strong>{db.audit.length} audit entries</strong> from the school system. Export the log first if you need to keep a record. This cannot be undone.</>,
+      confirmLabel: "Clear audit log",
+      cancelLabel: "Keep log",
+      variant: "danger",
+    });
+    if (!confirmed) return;
+    const result = await clearAuditLog();
+    if (result.error) {
+      toast(`Could not clear the audit log: ${result.error}`, "warn");
+      return;
+    }
+    update((d) => { d.audit = []; });
+    toast("Audit log cleared.");
+  };
+
   return (
-    <div className="mx-auto max-w-4xl">
-      <PageHead kicker="System" title="Audit log" sub="Permission-sensitive actions, with who did what, to which target, and when." />
+    <div className="mx-auto max-w-5xl">
+      <PageHead kicker="System" title="Activity & audit log" sub="A plain-language record of important changes made in the school system.">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Btn variant="soft" onClick={exportAudit} disabled={!groupsLoaded || !rows.length}>
+            <Download className="h-4 w-4" /> Export CSV
+          </Btn>
+          {isSuperAdmin(db, currentUser) && (
+            <Btn variant="dangerSoft" onClick={clearAudit} disabled={!groupsLoaded || !db.audit.length}>
+              <Trash2 className="h-4 w-4" /> Clear log
+            </Btn>
+          )}
+        </div>
+      </PageHead>
       <Panel className="mb-4 anim-rise overflow-hidden">
         <div className="flex flex-col gap-3 p-3 sm:p-4">
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
-              <TextInput value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by user, action, target or details…" className="!pl-9" />
+              <TextInput value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by person, activity, target or details…" className="!pl-9" />
             </div>
             <Select value={actionFilter} onChange={(e) => setActionFilter(e.target.value)} aria-label="Filter by action">
-              <option value="all">All actions</option>
-              {actionOptions.map((action) => <option key={action} value={action}>{action}</option>)}
+              <option value="all">All activities</option>
+              {actionOptions.map((action) => <option key={action} value={action}>{AUDIT_ACTIVITY[action]?.past ?? action.replace(/[._-]+/g, " ")}</option>)}
             </Select>
             <Select value={actorFilter} onChange={(e) => setActorFilter(e.target.value)} aria-label="Filter by user"><option value="all">All users</option>{actorOptions.map((name) => <option key={name} value={name}>{name}</option>)}</Select>
             <TextInput type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} aria-label="From date" />
@@ -283,7 +424,7 @@ export function AuditPage() {
           <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-soft"><SlidersHorizontal className="h-3.5 w-3.5" /> Sort</span>
             <Select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} className="w-auto min-w-[130px]">
-              <option value="when">When</option><option value="user">User</option><option value="action">Action</option><option value="target">Target</option>
+              <option value="when">When</option><option value="user">User</option><option value="action">Activity</option><option value="target">Target</option>
             </Select>
             <Btn size="sm" variant="soft" onClick={() => setSortDirection((d) => d === "desc" ? "asc" : "desc")} title={sortDirection === "desc" ? "Descending" : "Ascending"}>
               {sortDirection === "desc" ? <ArrowDown className="h-3.5 w-3.5" /> : <ArrowUp className="h-3.5 w-3.5" />}
@@ -298,28 +439,36 @@ export function AuditPage() {
         <div className="audit-table-wrap overflow-x-auto">
         <table className="audit-table w-full min-w-[920px]">
           <thead className="border-b border-mist bg-paper/60">
-            <tr><th className={thCls()}>When</th><th className={thCls()}>User</th><th className={thCls()}>Action</th><th className={thCls()}>Target</th></tr>
+            <tr><th className={thCls()}>When</th><th className={thCls()}>User</th><th className={thCls()}>Activity</th><th className={thCls()}>Details</th></tr>
           </thead>
           <tbody className="divide-y divide-mist/70">
             {!groupsLoaded ? (
               <SkeletonRows rows={6} cols={4} />
             ) : (
             <>
-            {rows.map((a) => (
-              <tr key={a.id} className="transition-colors hover:bg-pine-50/40">
-                <td className={`${tdCls()} whitespace-nowrap text-soft`}>
-                  <span className="block text-[12px] font-semibold text-ink">{fmtDate(a.at.slice(0, 10))}</span>
-                  <span className="text-[10.5px]">{timeAgo(a.at)}</span>
-                </td>
-                <td className={`${tdCls()} whitespace-nowrap font-semibold text-ink`}>{a.userName}</td>
-                <td className={`${tdCls()} whitespace-nowrap`}><Chip tone={ACTION_TONE[a.action] ?? "gray"}><History className="h-3 w-3" /> {a.action}</Chip></td>
-                <td className={`${tdCls()} audit-detail-cell`}>
-                  <span className="font-semibold text-ink whitespace-nowrap">{a.target}</span>
-                  {a.detail && <span className="block text-[11px] text-soft whitespace-nowrap">{a.detail}</span>}
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && <tr><td colSpan={4}><EmptyState icon={<History className="h-5 w-5" />} title="No matching entries" body="Permission-sensitive actions will be recorded here." /></td></tr>}
+            {rows.map((a) => {
+              const activity = auditActivity(a);
+              return (
+                <tr key={a.id} className="transition-colors hover:bg-pine-50/40">
+                  <td className={`${tdCls()} whitespace-nowrap text-soft`}>
+                    <span className="block text-[12px] font-semibold text-ink">{fmtDate(a.at.slice(0, 10))}</span>
+                    <span className="text-[10.5px]">{timeAgo(a.at)}</span>
+                  </td>
+                  <td className={`${tdCls()} whitespace-nowrap font-semibold text-ink`}>{a.userName}</td>
+                  <td className={`${tdCls()} min-w-[300px]`}>
+                    <div className="flex items-start gap-2">
+                      <Chip tone={activity.meta.tone}><History className="h-3 w-3" /> {activity.meta.past}</Chip>
+                    </div>
+                    <p className="mt-1 text-[12.5px] font-medium leading-relaxed text-ink">{activity.sentence}</p>
+                  </td>
+                  <td className={`${tdCls()} min-w-[280px]`}>
+                    <span className="font-semibold text-ink">{activity.targetLabel}</span>
+                    {activity.detail && <span className="mt-0.5 block text-[11px] leading-relaxed text-soft">{activity.detail}</span>}
+                  </td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && <tr><td colSpan={4}><EmptyState icon={<History className="h-5 w-5" />} title="No matching entries" body="Important changes will appear here in plain language." /></td></tr>}
             </>
             )}
           </tbody>

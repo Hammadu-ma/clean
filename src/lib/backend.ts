@@ -26,6 +26,15 @@ import type {
  */
 
 const SCHOOL_ID = "school-1";
+
+/** Permanently removes the school's audit history. The database enforces
+ * Super Admin authorization; the client only uses this after a successful RPC. */
+export async function clearAuditLog(): Promise<{ error: string | null }> {
+  if (!supabase) return { error: "Supabase is not configured." };
+  const { error } = await supabase.rpc("clear_audit_log");
+  return { error: error?.message ?? null };
+}
+
 /** Falls back to these only if a school row genuinely has none set yet
  *  (e.g. these migrations haven't been applied). Once set, a school's own
  *  configured days/periods (however many, whichever ones) always win.

@@ -423,6 +423,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
      most, never in a loop. Delete this entry once no page needs it.
      ---------------------------------------------------------------------- */
   get_app_snapshot: { read: true, rateLimit: 10, args: { p_year_id: ID } },
+  get_app_group: { read: true, rateLimit: 60, args: { p_group: { type: "string", maxLength: 40 }, p_year_id: ID } },
 
   /* ----------------------------------------------------------------------
      Also deprecated, and the reason the app reported itself unable to

@@ -165,26 +165,39 @@ export async function checkSchema(): Promise<DbMode | "missing" | "error"> {
 const snapshotPromises = new Map<string, Promise<Record<string, any[]> | null>>();
 
 /**
- * `get_app_snapshot()` is used as a compatibility read path for legacy pages.
- * It is safe to deduplicate concurrent callers, but it must NEVER cache a
- * resolved snapshot: resolved caching made realtime/polling reads permanently
- * stale until a full page reload. The map therefore contains only in-flight
- * requests and is cleared in `finally()` when each request settles.
+ * Temporary compatibility reads for legacy pages. Unlike the old
+ * get_app_snapshot() path, each request is limited to one feature group.
+ * Concurrent callers for the same group/year are coalesced, while resolved
+ * results are never cached here so polling always gets fresh data.
  */
-function legacySnapshot(yearId?: string): Promise<Record<string, any[]> | null> {
-  const key = yearId ?? "__active__";
+const GROUPS_BY_TABLE: Record<string, LazyGroup | "core"> = {
+  schools: "core", academic_years: "core", terms: "core", classes: "core", sections: "core",
+  subjects: "core", teachers: "core", teacher_assignments: "core", students: "core", enrollments: "core",
+  student_documents: "core", role_defs: "core", role_permissions: "core", profiles: "core", guardian_students: "core",
+  assessment_structures: "academics", assessment_items: "academics", assessment_marks: "academics",
+  mark_submissions: "academics", grade_bands: "academics",
+  attendance_registers: "attendance", attendance_entries: "attendance",
+  fee_items: "fees", fee_payment_requests: "fees", homework: "homework", timetable_entries: "timetable",
+  announcements: "announcements", announcement_reads: "announcements", conversations: "messaging",
+  conversation_participants: "messaging", messages: "messaging", notifications: "notifications",
+  events: "events", audit_log: "audit", message_reports: "reports",
+};
+
+function legacyGroupSnapshot(group: LazyGroup | "core", yearId?: string): Promise<Record<string, any[]> | null> {
+  const key = `${group}:${yearId ?? "__active__"}`;
   const cached = snapshotPromises.get(key);
   if (cached) return cached;
 
   const p = (async () => {
-    const { data, error } = await sb()!.rpc<Record<string, any[]>>("get_app_snapshot", {
-      p_year_id: yearId ?? null,
-    });
+    const { data, error } = await sb()!.rpc<Record<string, any[]>>(
+      group === "core" ? "get_app_group" : "get_app_group",
+      { p_group: group, p_year_id: yearId ?? null },
+    );
     if (error) {
-      if (/going a bit fast|rate.?limit|too many requests/i.test(error.message)) {
-        console.debug("[backend] legacy snapshot temporarily rate-limited; live polling will retry at its next interval.");
+      if (/going a bit fast|rate.?limit/i.test(error.message)) {
+        console.debug(`[backend] ${group} read temporarily rate-limited; the next refresh will retry.`);
       } else {
-        console.warn("[backend] legacy snapshot failed:", error.message);
+        console.warn(`[backend] ${group} compatibility read failed:`, error.message);
       }
       return null;
     }
@@ -197,18 +210,22 @@ function legacySnapshot(yearId?: string): Promise<Record<string, any[]> | null> 
   return p;
 }
 
-/** Clears only currently in-flight snapshot deduplication entries. Resolved
- * snapshots are never retained, so subsequent reads are always fresh. */
+/** Clears only currently in-flight compatibility reads. */
 export function invalidateLegacySnapshot() {
   snapshotPromises.clear();
 }
 
 async function sel<T = any>(table: string, yearId?: string, _select = "*"): Promise<T[] | null> {
-  const snap = await legacySnapshot(yearId);
+  const group = GROUPS_BY_TABLE[table];
+  if (!group) {
+    console.warn(`[backend] "${table}" has no compatibility group — migrate this read to src/lib/api.ts`);
+    return [];
+  }
+  const snap = await legacyGroupSnapshot(group, yearId);
   if (!snap) return null;
   const rows = snap[table];
   if (!Array.isArray(rows)) {
-    console.warn(`[backend] "${table}" is not in the snapshot — migrate this read to src/lib/api.ts`);
+    console.warn(`[backend] "${table}" is not in compatibility group "${group}" — migrate this read to src/lib/api.ts`);
     return [];
   }
   return rows as T[];

@@ -47,7 +47,7 @@ export default async function handler(req: Request): Promise<Response> {
   if (!csrfValid(req)) return fail("forbidden", "Invalid request token.");
 
   const rl = await rateLimit(`storage:${ctx.userId}`, 60);
-  if (!rl.allowed) return fail("rate_limited", "Too many uploads. Please wait a moment.");
+  if (!rl.allowed) return fail("rate_limited", "Too many file operations. Please wait a moment.");
 
   const body = await readJson<{
     action?: string;
@@ -60,9 +60,17 @@ export default async function handler(req: Request): Promise<Response> {
   }>(req, 8192);
   if (!body) return fail("invalid_request", "Malformed request.");
 
-  const action = body.action === "presign-download" ? "presign-download" : "presign-upload";
+  const requestedAction = String(body.action ?? "");
+  if (!["presign-upload", "presign-download", "delete"].includes(requestedAction)) {
+    return fail("invalid_request", "Unsupported storage action.");
+  }
+  const action = requestedAction as "presign-upload" | "presign-download" | "delete";
   const ownerType = String(body.ownerType ?? "");
   if (!OWNER_TYPES.has(ownerType)) return fail("invalid_request", "Unsupported file category.");
+
+  if ((action === "presign-download" || action === "delete") && typeof body.key !== "string") {
+    return fail("invalid_request", "A storage key is required.");
+  }
 
   if (action === "presign-upload") {
     const rule = RULES[ownerType];

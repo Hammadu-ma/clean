@@ -93,7 +93,7 @@ const READ_FUNCTIONS = new Set([
   "list_conversations", "list_messages", "get_message_report_context", "list_notifications", "list_audit",
   // Legacy whole-database reads. Listed so they are coalesced like any other
   // read — several components booting at once must not each trigger one.
-  "get_app_bootstrap", "get_app_snapshot",
+  "get_app_bootstrap", "get_app_snapshot", "get_app_group",
 ]);
 
 /**

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import {
   Banknote, BookOpen, CalendarCheck2, CalendarRange, Check, CheckCheck, CheckCircle2, Settings2,
   ClipboardList, Clock as ClockIcon, Eye, FileBarChart2, FileDown, Globe2, Layers,
@@ -18,7 +19,7 @@ import {
 } from "../store";
 import { hasPermission, isSuperAdmin, pushAudit, pushNotifications } from "../rbac";
 import { WEEKDAYS } from "../data/seed";
-import { DEFAULT_PERIODS } from "../lib/backend";
+import { DEFAULT_PERIODS, requestMarksReopen, reviewMarksReopen } from "../lib/backend";
 import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
 import { getDownloadUrl } from "../lib/storage";
 import {
@@ -98,7 +99,8 @@ function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Stud
 
 /* ================= mark entry (admin full / teacher scoped) ================= */
 export function MarkEntryPage() {
-  const { db, currentUser, yearId, setYear, update, toast } = useApp();
+  const { db, currentUser, yearId, update, toast, refreshGroup } = useApp();
+  const location = useLocation();
   const groupsLoaded = useLazyGroups("academics");
   const role = currentUser?.role ?? "admin";
   const isAdmin = role === "admin";
@@ -119,10 +121,22 @@ export function MarkEntryPage() {
   const subjectOptions = [...new Set(allowedStructures.map((st) => st.subjectId))];
   const periodOptions = [...new Set(allowedStructures.map((st) => st.period))];
 
-  const [filterClassId, setFilterClassId] = useState<string>("");
+  const requestedStructureId = new URLSearchParams(location.search).get("structure");
+  const requestedStructure = requestedStructureId ? allowedStructures.find((st) => st.id === requestedStructureId) : undefined;
+  const requestedStructureKey = requestedStructure ? `${requestedStructure.id}|${requestedStructure.classId}|${requestedStructure.subjectId}|${requestedStructure.period}` : "";
+
+  const [filterClassId, setFilterClassId] = useState<string>(requestedStructure?.classId ?? "");
   const [filterSectionId, setFilterSectionId] = useState<string>("");
-  const [filterSubjectId, setFilterSubjectId] = useState<string>("");
-  const [filterPeriod, setFilterPeriod] = useState<string>("");
+  const [filterSubjectId, setFilterSubjectId] = useState<string>(requestedStructure?.subjectId ?? "");
+  const [filterPeriod, setFilterPeriod] = useState<string>(requestedStructure?.period ?? "");
+
+  useEffect(() => {
+    if (!requestedStructure) return;
+    setFilterClassId(requestedStructure.classId);
+    setFilterSubjectId(requestedStructure.subjectId);
+    setFilterPeriod(requestedStructure.period);
+    setFilterSectionId("");
+  }, [requestedStructureKey]);
 
   const filteredStructures = allowedStructures.filter((st) => {
     if (filterClassId && st.classId !== filterClassId) return false;
@@ -181,7 +195,16 @@ export function MarkEntryPage() {
   // show a spinner and every button can be disabled — without this there was
   // no feedback while `update()` was awaiting the server round-trip, which
   // made a slow save look hung and invited a second, overlapping click.
-  const [workflowBusy, setWorkflowBusy] = useState<"submit" | "approve" | "return" | "publish" | "reopen" | null>(null);
+  const [workflowBusy, setWorkflowBusy] = useState<"submit" | "approve" | "return" | "publish" | "reopen" | "reopenRequest" | "reopenReview" | null>(null);
+  const [reopenRequestOpen, setReopenRequestOpen] = useState(false);
+  const [reopenRequestReason, setReopenRequestReason] = useState("");
+  const [reopenReviewOpen, setReopenReviewOpen] = useState(false);
+  const [reopenReviewDecision, setReopenReviewDecision] = useState<"approved" | "rejected">("approved");
+  const [reopenReviewNote, setReopenReviewNote] = useState("");
+
+  const canEditStructure = canManageStructures && (isAdmin || status === "draft");
+  const canRequestReopen = !isAdmin && role === "teacher" && ["submitted", "approved", "published"].includes(status);
+  const hasPendingReopenRequest = submission?.reopenRequestStatus === "pending";
 
   const ensureSubmission = (d: { submissions: Submission[] }, structureId: string): Submission => {
     let s = d.submissions.find((x) => x.structureId === structureId);
@@ -190,6 +213,42 @@ export function MarkEntryPage() {
       d.submissions.push(s);
     }
     return s;
+  };
+
+  const doRequestReopen = async () => {
+    if (!structure || !reopenRequestReason.trim() || workflowBusy) {
+      if (!reopenRequestReason.trim()) toast("Please explain why these marks need to be reopened.", "warn");
+      return;
+    }
+    setWorkflowBusy("reopenRequest");
+    const error = await requestMarksReopen(structure.id, reopenRequestReason.trim());
+    setWorkflowBusy(null);
+    if (error) {
+      toast(error, "warn");
+      return;
+    }
+    await refreshGroup("academics");
+    setReopenRequestReason("");
+    setReopenRequestOpen(false);
+    toast("Reopen request sent to administrators.");
+  };
+
+  const doReviewReopen = async () => {
+    if (!structure || workflowBusy || (reopenReviewDecision === "rejected" && !reopenReviewNote.trim())) {
+      if (reopenReviewDecision === "rejected" && !reopenReviewNote.trim()) toast("A reason is required when rejecting the request.", "warn");
+      return;
+    }
+    setWorkflowBusy("reopenReview");
+    const error = await reviewMarksReopen(structure.id, reopenReviewDecision, reopenReviewNote.trim() || undefined);
+    setWorkflowBusy(null);
+    if (error) {
+      toast(error, "warn");
+      return;
+    }
+    await refreshGroup("academics");
+    setReopenReviewNote("");
+    setReopenReviewOpen(false);
+    toast(reopenReviewDecision === "approved" ? "Request approved — the teacher can edit marks again." : "Reopen request rejected.");
   };
 
   const doSubmit = async () => {
@@ -310,11 +369,9 @@ export function MarkEntryPage() {
       </PageHead>
 
       <div className="anim-rise mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-mist bg-card p-3">
-        <Field label="Academic year" className="w-40">
-          <Select value={yearId} onChange={(e) => setYear(e.target.value)}>
-            {db.years.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}
-          </Select>
-        </Field>
+        <div className="flex min-h-[44px] items-center rounded-lg border border-pine-200 bg-pine-50 px-3 text-[11.5px] font-semibold text-pine-800">
+          <span>Academic year: <strong>{getYear(db, yearId)?.name ?? "Selected in header"}</strong></span>
+        </div>
 
         <Field label="Semester" className="w-36">
           <Select value={filterPeriod} onChange={(e) => setFilterPeriod(e.target.value)}>
@@ -394,7 +451,8 @@ export function MarkEntryPage() {
                   <SubmissionChip status={status} />
                   <Btn size="sm" variant="soft" onClick={() => exportMarkSheetCsv(db, structure, roster)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>
                   <Btn size="sm" variant="soft" onClick={() => exportMarkSheetPdf(db, structure, roster)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>
-                  {canManageStructures && <Btn size="sm" variant="gold" onClick={() => setEditStruct(structure)}><Pencil className="h-3.5 w-3.5" /> Edit structure</Btn>}
+                  {canEditStructure && <Btn size="sm" variant="gold" onClick={() => setEditStruct(structure)}><Pencil className="h-3.5 w-3.5" /> Edit structure</Btn>}
+                  {canManageStructures && !canEditStructure && !isAdmin && status !== "draft" && <Chip tone="steel"><ShieldCheck className="h-3 w-3" /> Structure locked</Chip>}
                 </div>
               </div>
 
@@ -416,6 +474,12 @@ export function MarkEntryPage() {
                   {(status === "approved" || status === "published") && canReopen && (
                     <Btn size="sm" variant="ghost" disabled={!!workflowBusy} onClick={() => setReopenOpen(true)}><RotateCcw className="h-3.5 w-3.5" /> Reopen</Btn>
                   )}
+                  {canRequestReopen && !hasPendingReopenRequest && (
+                    <Btn size="sm" variant="ghost" disabled={!!workflowBusy} onClick={() => setReopenRequestOpen(true)}><RotateCcw className="h-3.5 w-3.5" /> Request reopen</Btn>
+                  )}
+                  {canRequestReopen && hasPendingReopenRequest && (
+                    <Chip tone="gold"><ClockIcon className="h-3 w-3" /> Reopen request pending</Chip>
+                  )}
                 </div>
                 {!canEdit && (
                   <p className="ml-auto flex items-center gap-1.5 text-[11.5px] font-semibold text-soft">
@@ -427,6 +491,22 @@ export function MarkEntryPage() {
                   <p className="ml-auto max-w-md truncate text-[11.5px] font-semibold text-rust-600" title={submission.returnReason}>↩ {submission.returnReason}</p>
                 )}
               </div>
+
+              {isAdmin && hasPendingReopenRequest && submission && (
+                <div className="border-b border-gold-200 bg-gold-50 px-4 py-3.5 sm:px-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-[12px] font-extrabold text-ink"><RotateCcw className="h-4 w-4 text-gold-700" /> Teacher requested a reopen</div>
+                      <p className="mt-1 text-[12px] text-soft">{submission.reopenRequestReason || "No reason provided."}</p>
+                      <p className="mt-1 text-[10.5px] font-semibold text-soft">Requested {submission.reopenRequestedAt ? fmtDate(submission.reopenRequestedAt) : "recently"} · {submission.reopenRequestedBy ? (db.users.find((u) => u.id === submission.reopenRequestedBy)?.name ?? "Assigned teacher") : "Assigned teacher"}</p>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <Btn size="sm" variant="dangerSoft" disabled={!!workflowBusy} onClick={() => { setReopenReviewDecision("rejected"); setReopenReviewOpen(true); }}>Reject</Btn>
+                      <Btn size="sm" variant="gold" disabled={!!workflowBusy} onClick={() => { setReopenReviewDecision("approved"); setReopenReviewOpen(true); }}><Check className="h-3.5 w-3.5" /> Approve & reopen</Btn>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="mark-entry-table-wrap overflow-x-auto">
                 <table className="mark-entry-table w-full min-w-[980px]">
@@ -523,6 +603,23 @@ export function MarkEntryPage() {
         </Modal>
       )}
 
+      {structure && reopenRequestOpen && (
+        <Modal title="Request marks to be reopened" kicker="Administrator review required" onClose={() => !workflowBusy && setReopenRequestOpen(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setReopenRequestOpen(false)}>Cancel</Btn><Btn busy={workflowBusy === "reopenRequest"} onClick={doRequestReopen}><Send className="h-4 w-4" /> Send request</Btn></>}>
+          <p className="text-[13px] leading-relaxed text-ink">These marks are locked. Explain what needs to be corrected so an administrator can decide whether to reopen them.</p>
+          <div className="mt-3"><Field label="Reason" required><TextArea value={reopenRequestReason} onChange={(e) => setReopenRequestReason(e.target.value)} placeholder="e.g. I entered two students' marks against the wrong assessment item." /></Field></div>
+          <p className="mt-2 text-[11.5px] text-soft">The request will remain pending until an authorized administrator approves or rejects it.</p>
+        </Modal>
+      )}
+
+      {structure && reopenReviewOpen && (
+        <Modal title={reopenReviewDecision === "approved" ? "Approve reopen request" : "Reject reopen request"} kicker="Teacher request" onClose={() => !workflowBusy && setReopenReviewOpen(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setReopenReviewOpen(false)}>Cancel</Btn><Btn variant={reopenReviewDecision === "approved" ? "gold" : "danger"} busy={workflowBusy === "reopenReview"} onClick={doReviewReopen}>{reopenReviewDecision === "approved" ? <><RotateCcw className="h-4 w-4" /> Approve & reopen</> : <><Undo2 className="h-4 w-4" /> Reject request</>}</Btn></>}>
+          <p className="text-[13px] leading-relaxed text-ink">{submission?.reopenRequestReason || "No reason provided by the teacher."}</p>
+          <div className="mt-3"><Field label={reopenReviewDecision === "rejected" ? "Reason for rejection" : "Note (optional)"} required={reopenReviewDecision === "rejected"}><TextArea value={reopenReviewNote} onChange={(e) => setReopenReviewNote(e.target.value)} placeholder={reopenReviewDecision === "rejected" ? "Explain why the marks should remain locked." : "Optional note for the teacher."} /></Field></div>
+        </Modal>
+      )}
+
       {structure && confirmPublish && (
         <Modal title="Publish results" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`} onClose={() => !workflowBusy && setConfirmPublish(false)}
           footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setConfirmPublish(false)}>Cancel</Btn><Btn variant="gold" busy={workflowBusy === "publish"} onClick={doPublish}><Globe2 className="h-4 w-4" /> Publish</Btn></>}>
@@ -571,53 +668,75 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
   };
 
   return (
-    <Modal title={existing ? "Edit assessment structure" : "New assessment structure"} kicker="Subject · class · weighted items" onClose={onClose} wide
-      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save structure</Btn></>}>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Field label="Class" required>
-          <Select value={classId} onChange={(e) => setClassId(e.target.value)}>
-            {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
-        </Field>
-        <Field label="Subject" required>
-          <Select value={subjectId} onChange={(e) => setSubjectId(e.target.value)}>
-            {db.subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </Select>
-        </Field>
-        <Field label="Period" required>
-          <Select value={period} onChange={(e) => setPeriod(e.target.value)}>
-            <option>Semester 1</option>
-            <option>Semester 2</option>
-            <option>Annual</option>
-          </Select>
-        </Field>
-      </div>
-
-      <div className="mt-4">
-        <div className="mb-2 flex items-center justify-between">
-          <p className="text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Assessment items — weight Σ {fmt1(weightSum)}%</p>
-          <Btn size="sm" variant="soft" onClick={addItem}><Plus className="h-3.5 w-3.5" /> Add item</Btn>
+    <Modal title={existing ? "Edit assessment structure" : "New assessment structure"} kicker={`${getYear(db, yearId)?.name ?? "Academic year"} · ${existing ? "Locked workflow aware" : "Build a weighted mark sheet"}`} onClose={onClose} wide
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save} disabled={weightSum !== 100}><Save className="h-4 w-4" /> Save structure</Btn></>}>
+      <div className="space-y-4">
+        <div className="grid gap-3 lg:grid-cols-[1.4fr_1.4fr_1fr]">
+          <div className="rounded-xl border border-mist bg-paper/70 p-3.5">
+            <p className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-soft">Class</p>
+            <Select value={classId} onChange={(e) => setClassId(e.target.value)} className="mt-1.5">
+              {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+          </div>
+          <div className="rounded-xl border border-mist bg-paper/70 p-3.5">
+            <p className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-soft">Subject</p>
+            <Select value={subjectId} onChange={(e) => setSubjectId(e.target.value)} className="mt-1.5">
+              {db.subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </Select>
+          </div>
+          <div className="rounded-xl border border-mist bg-paper/70 p-3.5">
+            <p className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-soft">Period</p>
+            <Select value={period} onChange={(e) => setPeriod(e.target.value)} className="mt-1.5">
+              <option>Semester 1</option><option>Semester 2</option><option>Annual</option>
+            </Select>
+          </div>
         </div>
-        {weightSum !== 100 && <p className="mb-2 text-[11.5px] font-semibold text-rust-600">Weights should add up to 100% (currently {fmt1(weightSum)}%).</p>}
-        <div className="space-y-2">
-          {items.map((it) => (
-            <div key={it.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-mist bg-paper/50 p-2.5">
-              <TextInput value={it.name} onChange={(e) => patchItem(it.id, { name: e.target.value })} placeholder="Item name" className="min-w-[160px] flex-1" />
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10.5px] font-bold uppercase text-soft">Max</span>
-                <input type="number" min={1} value={it.max} onChange={(e) => patchItem(it.id, { max: Math.max(1, Number(e.target.value) || 1) })} className="w-16 rounded-md border border-mist bg-card px-2 py-1.5 text-center font-mono text-[13px]" />
+
+        <div className={`rounded-xl border p-4 ${weightSum === 100 ? "border-pine-200 bg-pine-50/60" : "border-gold-200 bg-gold-50/70"}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="font-display text-[14px] font-extrabold text-ink">Assessment blueprint</p>
+              <p className="mt-0.5 text-[11.5px] text-soft">Each component contributes its weight to the final result.</p>
+            </div>
+            <div className="rounded-lg border border-white/70 bg-card px-3 py-2 text-right shadow-sm">
+              <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-soft">Total weight</p>
+              <p className={`font-mono text-[18px] font-extrabold ${weightSum === 100 ? "text-pine-700" : "text-gold-700"}`}>{fmt1(weightSum)}%</p>
+            </div>
+          </div>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-mist">
+            <div className={`h-full rounded-full transition-all ${weightSum === 100 ? "bg-pine-600" : "bg-gold-500"}`} style={{ width: `${Math.min(100, weightSum)}%` }} />
+          </div>
+          {weightSum !== 100 && <p className="mt-2 text-[11.5px] font-semibold text-gold-800">Adjust the component weights to exactly 100% before saving.</p>}
+        </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <div><p className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-soft">Components</p><p className="text-[11.5px] text-soft">Give every assessment a clear name, maximum mark and final weight.</p></div>
+          <Btn size="sm" variant="soft" onClick={addItem}><Plus className="h-3.5 w-3.5" /> Add component</Btn>
+        </div>
+
+        <div className="space-y-2.5">
+          {items.map((it, index) => (
+            <div key={it.id} className="rounded-xl border border-mist bg-card p-3.5 shadow-sm">
+              <div className="flex flex-wrap items-start gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-pine-100 font-mono text-[12px] font-extrabold text-pine-800">{String(index + 1).padStart(2, "0")}</div>
+                <div className="min-w-[180px] flex-1">
+                  <Field label="Assessment name" required><TextInput value={it.name} onChange={(e) => patchItem(it.id, { name: e.target.value })} placeholder="e.g. Midterm examination" /></Field>
+                </div>
+                <div className="w-full sm:w-28">
+                  <Field label="Max mark" required><TextInput type="number" min="1" value={it.max} onChange={(e) => patchItem(it.id, { max: Math.max(1, Number(e.target.value) || 1) })} /></Field>
+                </div>
+                <div className="w-full sm:w-28">
+                  <Field label="Weight %" required><TextInput type="number" min="0" max="100" step="0.01" value={it.weight} onChange={(e) => patchItem(it.id, { weight: Math.max(0, Number(e.target.value) || 0) })} /></Field>
+                </div>
+                <button onClick={() => removeItem(it.id)} disabled={items.length <= 1} aria-label={`Remove assessment ${index + 1}`} className="mt-6 cursor-pointer rounded-lg border border-mist p-2 text-soft transition hover:border-rust-200 hover:bg-rust-50 hover:text-rust-600 disabled:cursor-not-allowed disabled:opacity-25"><Trash2 className="h-4 w-4" /></button>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10.5px] font-bold uppercase text-soft">Weight %</span>
-                <input type="number" min={0} max={100} value={it.weight} onChange={(e) => patchItem(it.id, { weight: Math.max(0, Number(e.target.value) || 0) })} className="w-16 rounded-md border border-mist bg-card px-2 py-1.5 text-center font-mono text-[13px]" />
-              </div>
-              <button onClick={() => removeItem(it.id)} disabled={items.length <= 1} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600 disabled:opacity-30"><Trash2 className="h-3.5 w-3.5" /></button>
             </div>
           ))}
         </div>
       </div>
     </Modal>
   );
+
 }
 
 /* =========================================================================

@@ -227,6 +227,23 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_reason: { type: "string", optional: true, maxLength: 500 },
     },
   },
+  request_marks_reopen: {
+    read: false,
+    rateLimit: 20,
+    args: {
+      p_structure_id: { type: "string", maxLength: 128 },
+      p_reason: { type: "string", maxLength: 1000 },
+    },
+  },
+  review_marks_reopen: {
+    read: false,
+    rateLimit: 30,
+    args: {
+      p_structure_id: { type: "string", maxLength: 128 },
+      p_decision: { type: "string", maxLength: 20 },
+      p_note: { type: "string", optional: true, maxLength: 1000 },
+    },
+  },
 
   save_student: {
     read: false,

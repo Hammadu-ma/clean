@@ -283,6 +283,13 @@ function mapSubmissions(submissions: any[]) {
     approvedBy: s.approved_by, approvedAt: s.approved_at,
     returnedBy: s.returned_by, returnedAt: s.returned_at, returnReason: s.return_reason,
     publishedBy: s.published_by, publishedAt: s.published_at, reopenReason: s.reopen_reason,
+    reopenRequestStatus: s.reopen_request_status ?? "none",
+    reopenRequestedBy: s.reopen_requested_by ?? undefined,
+    reopenRequestedAt: s.reopen_requested_at ?? undefined,
+    reopenRequestReason: s.reopen_request_reason ?? undefined,
+    reopenDecidedBy: s.reopen_decided_by ?? undefined,
+    reopenDecidedAt: s.reopen_decided_at ?? undefined,
+    reopenDecisionNote: s.reopen_decision_note ?? undefined,
   }));
 }
 function mapGrading(gradeBands: any[]) {
@@ -1071,6 +1078,25 @@ async function syncMarks(oldDB: DB, newDB: DB, errors: string[]) {
 /** The submit → approve/return → publish (→ reopen) workflow, driven
  *  entirely through set_submission_status() so the transition rules the
  *  server enforces are the only ones that exist. */
+export async function requestMarksReopen(structureId: string, reason: string): Promise<string | null> {
+  if (!sb()) return "Backend is not configured.";
+  const { error } = await sb()!.rpc("request_marks_reopen", {
+    p_structure_id: structureId,
+    p_reason: reason,
+  });
+  return error?.message ?? null;
+}
+
+export async function reviewMarksReopen(structureId: string, decision: "approved" | "rejected", note?: string): Promise<string | null> {
+  if (!sb()) return "Backend is not configured.";
+  const { error } = await sb()!.rpc("review_marks_reopen", {
+    p_structure_id: structureId,
+    p_decision: decision,
+    p_note: note ?? null,
+  });
+  return error?.message ?? null;
+}
+
 async function syncSubmissions(oldDB: DB, newDB: DB, errors: string[]) {
   for (const s of newDB.submissions) {
     const before = oldDB.submissions.find((x) => x.structureId === s.structureId);

@@ -1,0 +1,330 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  Banknote, BookOpen, CalendarCheck2, CalendarRange, Check, CheckCheck, CheckCircle2, Settings2,
+  ClipboardList, Clock as ClockIcon, Eye, FileBarChart2, FileDown, Globe2, Layers,
+  PenLine, Pencil, Plus, Printer, Receipt, RotateCcw, Save, Send, ShieldCheck, Table2, Tag, Trash2,
+  Undo2, UserCheck, UserX, Wallet, AlertTriangle,
+} from "lucide-react";
+import type {
+  AcademicYear, AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, DB, FeeItem, Homework,
+  PaymentMethod, PaymentRequest, SchoolClass, Section, Student, Submission, Subject, Term, TimetableEntry,
+} from "../types";
+import {
+  assessmentCalc, attendanceStats, childrenOf, describeSyncErrors, feeStats, fmt1, fmtDate, fullName, getClass,
+  getSubject, getTeacher, getYear, gradeFor, ordinal, sectionLabel, sectionShort, shortName,
+  structureRanks, structureWeightSum, studentAverage, studentOf, studentResults, studentsOf,
+  submissionFor, submissionStatus, teacherFor, teacherPairs, teacherStudentIds,
+  todayISO, uid, useApp, useLazyGroups,
+} from "../store";
+import { hasPermission, isSuperAdmin, pushAudit, pushNotifications } from "../rbac";
+import { WEEKDAYS } from "../data/seed";
+import { DEFAULT_PERIODS } from "../lib/backend";
+import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
+import { getDownloadUrl } from "../lib/storage";
+import {
+  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Select, SkeletonCards, SkeletonPanel, SkeletonRows,
+  Stat, Tabs, TextArea, TextInput, tdCls, thCls,
+} from "../ui";
+import { AccessDenied } from "./Auth";
+
+// DAYS was a fixed 5-day week; the timetable now reads db.settings.workingDays
+// instead (a configurable subset of WEEKDAYS, imported below) so schools can
+// add or remove days rather than being stuck at exactly 5 or 6.
+const PERIODS = [1, 2, 3, 4, 5, 6];
+
+/* ================= submission status chip (used by mark entry) ================= */
+function SubmissionChip({ status }: { status: Submission["status"] }) {
+  const meta: Record<Submission["status"], { tone: "gray" | "steel" | "gold" | "pine" | "rust"; label: string }> = {
+    draft: { tone: "gray", label: "Draft" },
+    submitted: { tone: "steel", label: "Submitted" },
+    approved: { tone: "gold", label: "Approved" },
+    published: { tone: "pine", label: "Published" },
+    returned: { tone: "rust", label: "Returned" },
+  };
+  const m = meta[status];
+  return <Chip tone={m.tone}>{m.label}</Chip>;
+}
+
+function exportMarkSheetCsv(db: DB, structure: AssessmentStructure, roster: Student[]) {
+  const ranks = structureRanks(db, structure);
+  const showGrade = getYear(db, structure.yearId)?.showGrade !== false;
+  const header = ["#", "Student", "Reg. No", ...structure.items.map((i) => `${i.name} (/${i.max})`), "Total", "%", ...(showGrade ? ["Grade"] : []), "Rank"];
+  const rows: (string | number)[][] = [header];
+  roster.forEach((s, i) => {
+    const calc = assessmentCalc(db, structure, s.id);
+    const grade = calc?.complete ? gradeFor(calc.pct, db.grading) : null;
+    rows.push([
+      i + 1, fullName(s), s.regId,
+      ...structure.items.map((it) => calc?.raw[it.id] ?? ""),
+      calc?.complete ? fmt1(calc.total) : "",
+      calc?.complete ? fmt1(calc.pct) : "",
+      ...(showGrade ? [grade?.grade ?? ""] : []),
+      calc?.complete && ranks[s.id] ? ranks[s.id] : "",
+    ]);
+  });
+  const fname = `Marksheet-${getSubject(db, structure.subjectId)?.code ?? "subject"}-${getClass(db, structure.classId)?.name ?? ""}-${structure.period}.csv`.replace(/\s+/g, "-");
+  downloadCsv(fname, rows);
+}
+
+function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Student[]) {
+  const ranks = structureRanks(db, structure);
+  const showGrade = getYear(db, structure.yearId)?.showGrade !== false;
+  const doc = newThemedDoc("landscape");
+  const y0 = drawThemedHeader(doc, db.settings.schoolName, "Mark Sheet", `${getClass(db, structure.classId)?.name} · ${getSubject(db, structure.subjectId)?.name} · ${structure.period}`);
+  const columns = [
+    { header: "#", width: 8, align: "center" as const },
+    { header: "Student", width: 45 },
+    ...structure.items.map((it) => ({ header: `${it.name} /${it.max}`, width: 22, align: "center" as const })),
+    { header: "Total", width: 18, align: "center" as const },
+    { header: "%", width: 14, align: "center" as const },
+    ...(showGrade ? [{ header: "Grade", width: 14, align: "center" as const }] : []),
+    { header: "Rank", width: 12, align: "center" as const },
+  ];
+  const rows = roster.map((s, i) => {
+    const calc = assessmentCalc(db, structure, s.id);
+    const grade = calc?.complete ? gradeFor(calc.pct, db.grading) : null;
+    return [
+      i + 1, fullName(s),
+      ...structure.items.map((it) => calc?.raw[it.id] ?? "—"),
+      calc?.complete ? fmt1(calc.total) : "—",
+      calc?.complete ? `${fmt1(calc.pct)}%` : "—",
+      ...(showGrade ? [grade?.grade ?? "—"] : []),
+      calc?.complete && ranks[s.id] ? ordinal(ranks[s.id]) : "—",
+    ];
+  });
+  drawThemedTable(doc, y0 + 2, columns, rows);
+  doc.save(`Marksheet-${getSubject(db, structure.subjectId)?.code ?? "subject"}-${structure.period}.pdf`.replace(/\s+/g, "-"));
+}
+
+/* ================= mark entry (admin full / teacher scoped) ================= */
+export function MarkEntryPage() {
+  const { db, currentUser, yearId, setYear, update, toast } = useApp();
+  const groupsLoaded = useLazyGroups("academics");
+  const role = currentUser?.role ?? "admin";
+  const isAdmin = role === "admin";
+  const pairs = teacherPairs(db, currentUser);
+
+  if (!hasPermission(db, currentUser, "exams.view")) {
+    return <AccessDenied required="exams.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+
+  const allStructures = db.structures.filter((st) => st.yearId === yearId);
+
+  const allowedStructures = allStructures.filter((st) => {
+    if (isAdmin) return true;
+    return pairs.some((p) => p.classId === st.classId && p.subjectIds.includes(st.subjectId));
+  });
+
+  const classOptions = [...new Set(allowedStructures.map((st) => st.classId))];
+  const subjectOptions = [...new Set(allowedStructures.map((st) => st.subjectId))];
+  const periodOptions = [...new Set(allowedStructures.map((st) => st.period))];
+
+  const [filterClassId, setFilterClassId] = useState<string>("");
+  const [filterSectionId, setFilterSectionId] = useState<string>("");
+  const [filterSubjectId, setFilterSubjectId] = useState<string>("");
+  const [filterPeriod, setFilterPeriod] = useState<string>("");
+
+  const filteredStructures = allowedStructures.filter((st) => {
+    if (filterClassId && st.classId !== filterClassId) return false;
+    if (filterSectionId) {
+      const cls = getClass(db, st.classId);
+      if (!cls?.sections.some((s) => s.id === filterSectionId)) return false;
+    }
+    if (filterSubjectId && st.subjectId !== filterSubjectId) return false;
+    if (filterPeriod && st.period !== filterPeriod) return false;
+    return true;
+  });
+
+  const [editStruct, setEditStruct] = useState<AssessmentStructure | "new" | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  // With class + subject + period all chosen, exactly one structure should match.
+  const structure = filteredStructures.length === 1 ? filteredStructures[0] : null;
+
+  const availableSections = useMemo(() => {
+    if (!filterClassId) return [];
+    const cls = getClass(db, filterClassId);
+    return cls?.sections || [];
+  }, [db, filterClassId]);
+
+  const roster: Student[] = useMemo(() => {
+    if (!structure) return [];
+    let all = db.students.filter((s) => s.enrollment?.classId === structure.classId);
+    if (filterSectionId) all = all.filter((s) => s.enrollment?.sectionId === filterSectionId);
+    if (isAdmin) return all;
+    const allowed = teacherStudentIds(db, currentUser);
+    return all.filter((s) => allowed.has(s.id));
+  }, [db, structure, filterSectionId, isAdmin, currentUser]);
+
+
+  const ranks = structure ? structureRanks(db, structure) : {};
+
+  const submission = structure ? submissionFor(db, structure.id) : undefined;
+  const status = structure ? submissionStatus(db, structure.id) : "draft";
+  const canApprove = hasPermission(db, currentUser, "results.manage");
+  const showGrade = getYear(db, structure?.yearId)?.showGrade !== false;
+  const canPublish = hasPermission(db, currentUser, "results.publish");
+  const canReopen = isSuperAdmin(db, currentUser); // DB enforces super-admin-only for this transition
+  const canEnter = hasPermission(db, currentUser, "exams.enter_marks");
+  // The database only allows writing assessment structures with exams.manage —
+  // mirror that here so admin-shaped roles without it don't see buttons that
+  // would fail on save.
+  const canManageStructures = hasPermission(db, currentUser, "exams.manage");
+  const canEdit = canEnter && (status === "draft" || status === "returned");
+  const [confirmSubmit, setConfirmSubmit] = useState(false);
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState("");
+  const [confirmPublish, setConfirmPublish] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReasonInput, setReopenReasonInput] = useState("");
+  // Tracks which workflow action (if any) is mid-flight, so its button can
+  // show a spinner and every button can be disabled — without this there was
+  // no feedback while `update()` was awaiting the server round-trip, which
+  // made a slow save look hung and invited a second, overlapping click.
+  const [workflowBusy, setWorkflowBusy] = useState<"submit" | "approve" | "return" | "publish" | "reopen" | null>(null);
+
+  const ensureSubmission = (d: { submissions: Submission[] }, structureId: string): Submission => {
+    let s = d.submissions.find((x) => x.structureId === structureId);
+    if (!s) {
+      s = { id: uid(), structureId, status: "draft" };
+      d.submissions.push(s);
+    }
+    return s;
+  };
+
+  const doSubmit = async () => {
+    if (!structure || !currentUser || workflowBusy) return;
+    setWorkflowBusy("submit");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "submitted";
+      s.submittedBy = currentUser.id;
+      s.submittedAt = new Date().toISOString();
+      s.returnReason = undefined;
+      pushAudit(d, currentUser, "marks.submit", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name} · ${structure.period}`, "Submitted for review");
+      const approvers = d.users.filter((u) => u.status === "active" && u.id !== currentUser.id && d.roles.find((r) => r.id === u.roleId)?.permissions.includes("results.manage"));
+      pushNotifications(d, approvers.map((u) => u.id), "result", "Marks awaiting review", `${currentUser.name} submitted ${getSubject(db, structure.subjectId)?.name} — ${getClass(db, structure.classId)?.name}.`);
+    });
+    setWorkflowBusy(null);
+    setConfirmSubmit(false);
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Submitted for administrative review.");
+  };
+
+  const doApprove = async () => {
+    if (!structure || !currentUser || workflowBusy) return;
+    setWorkflowBusy("approve");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "approved";
+      s.approvedBy = currentUser.id;
+      s.approvedAt = new Date().toISOString();
+      pushAudit(d, currentUser, "marks.approve", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Approved");
+      if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks approved", `Your ${getSubject(db, structure.subjectId)?.name} marks were approved by ${currentUser.name}.`);
+    });
+    setWorkflowBusy(null);
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Marks approved.");
+  };
+
+  const doReturn = async () => {
+    if (!structure || !currentUser || !returnReason.trim() || workflowBusy) { if (!returnReason.trim()) toast("A reason is required to return marks.", "warn"); return; }
+    setWorkflowBusy("return");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "returned";
+      s.returnedBy = currentUser.id;
+      s.returnedAt = new Date().toISOString();
+      s.returnReason = returnReason.trim();
+      pushAudit(d, currentUser, "marks.return", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, returnReason.trim());
+      if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks returned for correction", returnReason.trim());
+    });
+    setWorkflowBusy(null);
+    setReturnOpen(false);
+    setReturnReason("");
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Returned for correction.");
+  };
+
+  const doPublish = async () => {
+    if (!structure || !currentUser || workflowBusy) return;
+    setWorkflowBusy("publish");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "published";
+      s.publishedBy = currentUser.id;
+      s.publishedAt = new Date().toISOString();
+      pushAudit(d, currentUser, "results.publish", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Published to students & families");
+      const classStudents = d.students.filter((st) => st.enrollment?.classId === structure.classId);
+      const recipients = d.users.filter((u) => u.status === "active" && (classStudents.some((st) => u.studentId === st.id) || (u.childrenIds ?? []).some((cid) => classStudents.some((st) => st.id === cid))));
+      pushNotifications(d, recipients.map((u) => u.id), "result", "Results published", `${getSubject(db, structure.subjectId)?.name} results for ${getClass(db, structure.classId)?.name} are now available.`);
+    });
+    setWorkflowBusy(null);
+    setConfirmPublish(false);
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Published — students and families can now view these results.");
+  };
+
+  const doReopen = async () => {
+    if (!structure || !currentUser || !reopenReasonInput.trim() || workflowBusy) { if (!reopenReasonInput.trim()) toast("A reason is required to reopen a marks workflow.", "warn"); return; }
+    setWorkflowBusy("reopen");
+    const errors = await update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "draft";
+      s.approvedBy = undefined; s.approvedAt = undefined; s.publishedBy = undefined; s.publishedAt = undefined;
+      s.reopenReason = reopenReasonInput.trim();
+      pushAudit(d, currentUser, "marks.reopen", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, reopenReasonInput.trim());
+    });
+    setWorkflowBusy(null);
+    setReopenOpen(false);
+    setReopenReasonInput("");
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Reopened — marks are editable again.");
+  };
+
+  const setScore = async (studentId: string, item: AssessmentItem, raw: string) => {
+    if (!structure || !canEdit) return;
+    const errors = await update((d) => {
+      const byStudent = (d.assessmentMarks[structure.id] = d.assessmentMarks[structure.id] ?? {});
+      const row = (byStudent[studentId] = byStudent[studentId] ?? {});
+      if (raw === "") {
+        delete row[item.id];
+        if (Object.keys(row).length === 0) delete byStudent[studentId];
+        return;
+      }
+      const v = Number(raw);
+      row[item.id] = isNaN(v) ? 0 : Math.max(0, Math.min(item.max, v));
+    });
+    if (errors.length) {
+      // Don't show a false "Saved" — the write may not have reached the server.
+      toast(describeSyncErrors(errors), "warn");
+    } else {
+      setSavedAt(new Date().toLocaleTimeString("en-GB"));
+    }
+  };
+
+  return (
+    <div className="mx-auto max-w-6xl">
+      <PageHead kicker="Examination" title="Mark entry" sub={isAdmin ? "Choose year, semester, grade, section and subject — totals, percentages, grades and ranks are all derived." : "Only subjects you are assigned to appear. Totals follow each structure's weights."}>
+        {canManageStructures && <Btn variant="gold" onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn>}
+      </PageHead>
+
+      <div className="anim-rise mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-mist bg-card p-3">
+        <Field label="Academic year" className="w-40">
+          <Select value={yearId} onChange={(e) => setYear(e.target.value)}>
+            {db.years.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}
+          </Select>
+        </Field>
+
+        <Field label="Semester" className="w-36">
+          <Select value={filterPeriod} onChange={(e) => setFilterPeriod(e.target.value)}>
+            <option value="">All</option>
+            {periodOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+          </Select>
+        </Field>
+
+        <Field label="Grade" className="w-40">
+          <Select
+            value={filterClassId}
+            onChange={(e) => { setFilterClassId(e.target.value); setFilterSectionId(""); }}
+          >

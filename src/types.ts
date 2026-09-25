@@ -217,6 +217,13 @@ export interface Submission {
   returnReason?: string;
   /** Required by the DB whenever a super admin reopens an approved/published submission. */
   reopenReason?: string;
+  reopenRequestStatus?: "none" | "pending" | "approved" | "rejected";
+  reopenRequestedBy?: ID;
+  reopenRequestedAt?: string;
+  reopenRequestReason?: string;
+  reopenDecidedBy?: ID;
+  reopenDecidedAt?: string;
+  reopenDecisionNote?: string;
 }
 
 export interface GradeBand {

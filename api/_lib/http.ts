@@ -93,7 +93,7 @@ export function failFromPostgres(err: { code?: string; message?: string }, conte
     return fail("invalid_request", "Some of the values sent aren't valid.");
   }
   const msg = err?.message ?? "";
-  if (/unknown payment request|unknown fee item|already been reviewed|amount must be positive|exceeds the|requires a transaction reference|unknown payment method|academic year .* is closed|a label is required|amount must be positive/i.test(msg)) {
+  if (/unknown payment request|unknown fee item|already been reviewed|amount must be positive|exceeds the|requires a transaction reference|unknown payment method|academic year .* is closed|a label is required|amount must be positive|password must be at least|current password is incorrect|enter your current password|authentication account not found|username is required|that username is already taken|message not found or not owned|that audit entry/i.test(msg)) {
     return fail("invalid_request", msg.replace(/^ERROR:\s*/i, ""));
   }
   return fail("upstream_error", `The request could not be completed. Reference: ${ref}`);

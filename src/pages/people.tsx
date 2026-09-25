@@ -1503,24 +1503,15 @@ export function ProfilePage() {
             <div className="flex justify-between gap-3"><dt className="text-soft">Phone</dt><dd className="font-semibold text-ink">{u.phone || "—"}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-soft">Member since</dt><dd className="font-semibold text-ink">{fmtDate(u.createdAt)}</dd></div>
           </dl>
-          <div className="mt-4 rounded-lg bg-paper p-3">
-            <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.1em] text-soft"><KeyRound className="h-3.5 w-3.5" /> What I can access</p>
-            <ul className="space-y-1 text-[12px] text-soft">
-              {u.role === "admin" && <><li>· Every record and setting in the school</li><li>· User accounts, roles and statuses</li></>}
-              {u.role === "teacher" && <>
-                <li>· {pairs.length} class section{pairs.length === 1 ? "" : "s"}: {pairs.map((p) => sectionShort(db, p.classId, p.sectionId)).join(", ") || "none yet"}</li>
-                <li>· Students enrolled in those sections only</li>
-              </>}
-              {u.role === "student" && <>
-                <li>· My record: {me ? `${shortName(me)} · ${sectionShort(db, me.enrollment?.classId, me.enrollment?.sectionId)}` : "not linked"}</li>
-                <li>· My grades, attendance, assignments & teachers</li>
-              </>}
-              {u.role === "guardian" && <>
-                <li>· {kids.length} child{kids.length === 1 ? "" : "ren"}: {kids.map((k) => shortName(k)).join(", ") || "none yet"}</li>
-                <li>· Their grades, attendance & assignments only</li>
-              </>}
-            </ul>
-          </div>
+          {u.role === "admin" && (
+            <div className="mt-4 rounded-lg bg-paper p-3">
+              <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.1em] text-soft"><KeyRound className="h-3.5 w-3.5" /> Administrative access</p>
+              <ul className="space-y-1 text-[12px] text-soft">
+                <li>· Every record and setting in the school</li>
+                <li>· User accounts, roles and statuses</li>
+              </ul>
+            </div>
+          )}
         </Panel>
 
         <Panel className="anim-rise p-5 md:col-span-3">

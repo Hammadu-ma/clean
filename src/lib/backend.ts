@@ -408,7 +408,16 @@ function applyCoreRows(seed: DB, rows: CoreRows, selectedYearId?: string): { db:
     if (s) {
       const days = Array.isArray(s.working_days) && s.working_days.length ? s.working_days : DEFAULT_WORKING_DAYS;
       const periods = Array.isArray(s.periods) && s.periods.length ? s.periods : DEFAULT_PERIODS;
-      db.settings = { schoolName: s.name, motto: s.motto ?? "", bankAccounts: mapBankAccounts(s.bank_accounts ?? []), workingDays: days, periods };
+      const logos = Array.isArray(s.logo_keys) ? s.logo_keys : [];
+      db.settings = {
+        schoolName: s.name ?? "",
+        motto: s.motto ?? "",
+        logos: logos.map((x: any) => typeof x === "string" ? { key: x, name: x.split("/").pop() || "School logo" } : { key: String(x.key ?? ""), name: String(x.name ?? "School logo") }).filter((x: any) => x.key),
+        activeLogoKey: s.active_logo_key ?? undefined,
+        bankAccounts: mapBankAccounts(s.bank_accounts ?? []),
+        workingDays: days,
+        periods,
+      };
     }
   }
   if (years) db.years = years.map((y: any) => ({ id: y.id, name: y.name, start: y.start_date, end: y.end_date, active: y.is_active, showGrade: y.show_grade !== false }));
@@ -1422,6 +1431,8 @@ async function syncSettings(oldDB: DB, newDB: DB, errors: string[]) {
     p_bank_accounts: JSON.stringify(newDB.settings.bankAccounts ?? []),
     p_working_days: JSON.stringify(newDB.settings.workingDays?.length ? newDB.settings.workingDays : DEFAULT_WORKING_DAYS),
     p_periods: JSON.stringify(newDB.settings.periods?.length ? newDB.settings.periods : DEFAULT_PERIODS),
+    p_logo_keys: JSON.stringify(newDB.settings.logos ?? []),
+    p_active_logo_key: newDB.settings.activeLogoKey ?? null,
   });
   if (error) errors.push(`settings: ${error.message}`);
 }

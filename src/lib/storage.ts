@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 import { isSupabaseConfigured, supabase } from "./supabase";
 import { callWrite } from "./http";
 
-export type FileOwnerType = "student_photo" | "student_document" | "fee_receipt";
+export type FileOwnerType = "student_photo" | "student_document" | "fee_receipt" | "school_logo";
 
 /** True once R2 uploads are actually wired up (needs the Supabase project + edge function). */
 export const isStorageConfigured = isSupabaseConfigured;

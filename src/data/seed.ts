@@ -93,37 +93,37 @@ export function buildSeed(): DB {
   const users: User[] = [
     {
       id: "u-root", name: "Dr. Selam Bekele", username: "root", password: "root123",
-      role: "admin", roleId: "superadmin", status: "active", email: "selam.bekele@riverside.edu", phone: "0911 000 000",
+      role: "admin", roleId: "superadmin", status: "active", email: "selam.bekele@example.school", phone: "0911 000 000",
       createdAt: addDays(-500),
     },
     {
       id: "u-admin", name: "Amara Tesfaye", username: "admin", password: "admin123",
-      role: "admin", roleId: "admin", status: "active", email: "admin@riverside.edu", phone: "0911 000 001",
+      role: "admin", roleId: "admin", status: "active", email: "admin@example.school", phone: "0911 000 001",
       createdAt: addDays(-400),
     },
     {
       id: "u-coord", name: "Ms. Lydia Fikre", username: "lydia", password: "coord123",
-      role: "admin", roleId: "coordinator", status: "active", email: "lydia.fikre@riverside.edu", phone: "0911 000 009",
+      role: "admin", roleId: "coordinator", status: "active", email: "lydia.fikre@example.school", phone: "0911 000 009",
       createdAt: addDays(-250),
     },
     {
       id: "u-t1", name: "Mr. Ahmed Yusuf", username: "ahmed", password: "teach123",
-      role: "teacher", roleId: "teacher", status: "active", email: "ahmed.yusuf@riverside.edu", phone: "0911 234 501",
+      role: "teacher", roleId: "teacher", status: "active", email: "ahmed.yusuf@example.school", phone: "0911 234 501",
       teacherId: "t1", createdAt: addDays(-320),
     },
     {
       id: "u-t2", name: "Ms. Hana Girma", username: "hana.g", password: "teach123",
-      role: "teacher", roleId: "teacher", status: "active", email: "hana.girma@riverside.edu", phone: "0911 234 502",
+      role: "teacher", roleId: "teacher", status: "active", email: "hana.girma@example.school", phone: "0911 234 502",
       teacherId: "t2", createdAt: addDays(-320),
     },
     {
       id: "u-s1", name: "Abebe Kebede", username: "abebe", password: "stud123",
-      role: "student", roleId: "student", status: "active", email: "abebe@student.riverside.edu",
+      role: "student", roleId: "student", status: "active", email: "abebe@student.example.school",
       studentId: "st1", createdAt: addDays(-45),
     },
     {
       id: "u-s2", name: "Hana Alemu", username: "hana.a", password: "stud123",
-      role: "student", roleId: "student", status: "active", email: "hana@student.riverside.edu",
+      role: "student", roleId: "student", status: "active", email: "hana@student.example.school",
       studentId: "st2", createdAt: addDays(-45),
     },
     {
@@ -138,7 +138,7 @@ export function buildSeed(): DB {
     },
     {
       id: "u-t3", name: "Mr. Ali Omar", username: "ali", password: "teach123",
-      role: "teacher", roleId: "teacher", status: "disabled", email: "ali.omar@riverside.edu",
+      role: "teacher", roleId: "teacher", status: "disabled", email: "ali.omar@example.school",
       teacherId: "t3", createdAt: addDays(-300),
     },
   ];
@@ -178,12 +178,12 @@ export function buildSeed(): DB {
   ];
 
   const teachers: DB["teachers"] = [
-    { id: "t1", name: "Mr. Ahmed Yusuf", phone: "0911 234 501", email: "ahmed.yusuf@riverside.edu", specialty: "Mathematics" },
-    { id: "t2", name: "Ms. Hana Girma", phone: "0911 234 502", email: "hana.girma@riverside.edu", specialty: "Biology" },
-    { id: "t3", name: "Mr. Ali Omar", phone: "0911 234 503", email: "ali.omar@riverside.edu", specialty: "English" },
-    { id: "t4", name: "Mrs. Selam Tesfaye", phone: "0911 234 504", email: "selam.tesfaye@riverside.edu", specialty: "Physics" },
-    { id: "t5", name: "Ms. Meron Alemu", phone: "0911 234 506", email: "meron.alemu@riverside.edu", specialty: "History" },
-    { id: "t6", name: "Mr. Samuel Tadesse", phone: "0911 234 507", email: "samuel.tadesse@riverside.edu", specialty: "Mathematics" },
+    { id: "t1", name: "Mr. Ahmed Yusuf", phone: "0911 234 501", email: "ahmed.yusuf@example.school", specialty: "Mathematics" },
+    { id: "t2", name: "Ms. Hana Girma", phone: "0911 234 502", email: "hana.girma@example.school", specialty: "Biology" },
+    { id: "t3", name: "Mr. Ali Omar", phone: "0911 234 503", email: "ali.omar@example.school", specialty: "English" },
+    { id: "t4", name: "Mrs. Selam Tesfaye", phone: "0911 234 504", email: "selam.tesfaye@example.school", specialty: "Physics" },
+    { id: "t5", name: "Ms. Meron Alemu", phone: "0911 234 506", email: "meron.alemu@example.school", specialty: "History" },
+    { id: "t6", name: "Mr. Samuel Tadesse", phone: "0911 234 507", email: "samuel.tadesse@example.school", specialty: "Mathematics" },
   ];
 
   /* subject → teacher is the central relationship. Grade 8A Mathematics goes to
@@ -222,7 +222,7 @@ export function buildSeed(): DB {
       firstName, middleName, lastName, gender, dob,
       status: "active",
       phone: `09${String(10000000 + Math.floor(rnd(i, 5) * 89999999)).slice(0, 8)}`,
-      email: `${firstName}.${lastName}`.toLowerCase() + "@student.riverside.edu",
+      email: `${firstName}.${lastName}`.toLowerCase() + "@student.example.school",
       address: addr,
       guardian: {
         father: `${["Kebede", "Alemu", "Mohammed", "Tesfay", "Girma", "Mengistu", "Tadesse", "Solomon"][i % 8]} ${lastName}`,
@@ -502,10 +502,12 @@ export function buildSeed(): DB {
     events,
     audit,
     settings: {
-      schoolName: "Your School",
-      motto: "Knowledge · Discipline · Service",
+      schoolName: "",
+      motto: "",
+      logos: [],
+      activeLogoKey: undefined,
       bankAccounts: [
-        { id: "bank-1", bankName: "Commercial Bank of Ethiopia", accountName: "Your School", accountNumber: "1000123456789", branch: "Bole Branch" },
+        { id: "bank-1", bankName: "Commercial Bank of Ethiopia", accountName: "", accountNumber: "1000123456789", branch: "Bole Branch" },
       ],
       workingDays: [0, 1, 2, 3, 4],
       periods: PERIODS,

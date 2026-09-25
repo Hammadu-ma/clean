@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronUp, History, KeyRound, Plus, Search, Settings2, ShieldCheck, Trash2, Users as UsersIcon, X, Eye, SlidersHorizontal } from "lucide-react";
+import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronUp, History, KeyRound, Plus, Search, Settings2, ShieldCheck, Trash2, Users as UsersIcon, X, Eye, SlidersHorizontal, ImagePlus, Star, UploadCloud } from "lucide-react";
 import { useApp, useLazyGroups, fmtDate, timeAgo, uid } from "../store";
 import {
   PERMISSION_CATALOG, PERMISSION_CATEGORIES, getRoleProfile, hasPermission, pushAudit,
 } from "../rbac";
 import type { Role, RoleDef, Settings } from "../types";
-import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonRows, TextArea, TextInput, tdCls, thCls } from "../ui";
+import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonRows, TextArea, TextInput, tdCls, thCls, useConfirm } from "../ui";
 import { AccessDenied } from "./Auth";
+import { deleteFile, isStorageConfigured, uploadFile, useSignedUrl } from "../lib/storage";
 
 const BASE_ROLES: { value: Role; label: string }[] = [
   { value: "admin", label: "Administrator" },
@@ -319,14 +320,35 @@ export function AuditPage() {
 }
 
 
+function SchoolLogoSettingCard({ logo, active, onActivate, onDelete }: { logo: { key: string; name: string }; active: boolean; onActivate: () => void; onDelete: () => void }) {
+  const url = useSignedUrl("school_logo", "school-1", logo.key);
+  return (
+    <div className={`overflow-hidden rounded-xl border ${active ? "border-gold-400 ring-2 ring-gold-400/20" : "border-mist"} bg-card`}>
+      <div className="flex h-32 items-center justify-center bg-paper/60 p-4">
+        {url ? <img src={url} alt={logo.name} className="max-h-full max-w-full object-contain" /> : <ImagePlus className="h-8 w-8 text-soft/50" />}
+      </div>
+      <div className="flex items-center justify-between gap-3 border-t border-mist px-3 py-2.5">
+        <div className="min-w-0"><p className="truncate text-[12.5px] font-bold text-ink">{logo.name}</p>{active && <p className="mt-0.5 flex items-center gap-1 text-[10.5px] font-semibold text-gold-700"><Star className="h-3 w-3 fill-current" /> Active logo</p>}</div>
+        <div className="flex shrink-0 items-center gap-1">
+          {!active && <Btn size="sm" variant="soft" onClick={onActivate}><Star className="h-3.5 w-3.5" /> Use</Btn>}
+          <Btn size="sm" variant="dangerSoft" onClick={onDelete}><Trash2 className="h-3.5 w-3.5" /></Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ================= School settings ================= */
 export function SchoolSettingsPage() {
   const { db, currentUser, update, toast } = useApp();
+  const confirm = useConfirm();
   const [draft, setDraft] = useState<Settings>(() => ({
     ...db.settings,
     bankAccounts: [...(db.settings.bankAccounts ?? [])],
     workingDays: [...(db.settings.workingDays ?? [])],
     periods: [...(db.settings.periods ?? [])],
+    logos: [...(db.settings.logos ?? [])],
+    activeLogoKey: db.settings.activeLogoKey,
   }));
 
   if (!hasPermission(db, currentUser, "settings.manage")) {
@@ -432,6 +454,85 @@ export function SchoolSettingsPage() {
             <Field label="Motto"><TextInput value={draft.motto} onChange={(e) => setDraft((current) => ({ ...current, motto: e.target.value }))} placeholder="Your school motto" /></Field>
           </div>
           <div className="mt-3 rounded-lg border border-pine-100 bg-pine-50/60 px-3 py-2.5 text-[11.5px] text-soft">The value is applied throughout the app after you save. No code change or redeployment is required.</div>
+        </Panel>
+
+        <Panel className="anim-rise overflow-hidden p-0">
+          <div className="border-b border-mist bg-paper/50 px-4 py-4 sm:px-5">
+            <div className="flex items-start gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-pine-100 text-pine-700"><ImagePlus className="h-5 w-5" /></span>
+              <div>
+                <h3 className="font-display text-[15px] font-bold text-ink">School logos</h3>
+                <p className="text-[12px] text-soft">Upload multiple logos and switch the active one whenever your school identity changes.</p>
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-4 p-4 sm:p-5">
+            <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border-2 border-dashed border-mist bg-paper/40 px-4 py-6 text-center transition hover:border-pine-300 hover:bg-pine-50/50">
+              <input
+                type="file"
+                accept="image/svg+xml,image/png,image/jpeg,image/webp"
+                multiple
+                className="sr-only"
+                disabled={!isStorageConfigured}
+                onChange={async (e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  if (!files.length) return;
+                  try {
+                    const schoolId = "school-1";
+                    const uploaded: { key: string; name: string }[] = [];
+                    for (const file of files) {
+                      const result = await uploadFile({ file, ownerType: "school_logo", ownerId: schoolId, kind: "logo" });
+                      uploaded.push({ key: result.key, name: file.name });
+                    }
+                    const nextLogos = [...draft.logos, ...uploaded];
+                    const nextActive = draft.activeLogoKey || uploaded[0]?.key;
+                    const errors = await update((d) => {
+                      d.settings.logos = nextLogos;
+                      d.settings.activeLogoKey = nextActive;
+                    });
+                    if (errors.length) {
+                      toast("Logo uploaded but could not update school identity. " + errors[0], "warn");
+                    } else {
+                      setDraft((current) => ({ ...current, logos: nextLogos, activeLogoKey: nextActive }));
+                      toast(`${uploaded.length} logo${uploaded.length === 1 ? "" : "s"} uploaded and saved.`);
+                    }
+                  } catch (err) {
+                    toast((err as Error).message || "Logo upload failed.", "warn");
+                  } finally {
+                    e.currentTarget.value = "";
+                  }
+                }}
+              />
+              <UploadCloud className="h-5 w-5 text-pine-600" />
+              <span><span className="block text-[13px] font-bold text-ink">Upload logo files</span><span className="block text-[11px] text-soft">PNG, JPG, WEBP or SVG · up to 5 MB each</span></span>
+            </label>
+            {!isStorageConfigured && <p className="text-[11px] text-rust-700">File storage is not configured, so logo uploads are currently unavailable.</p>}
+            {draft.logos.length === 0 ? (
+              <EmptyState icon={<ImagePlus className="h-5 w-5" />} title="No logos uploaded" body="Upload one or more school logos to start using a custom identity." />
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {draft.logos.map((logo) => <SchoolLogoSettingCard key={logo.key} logo={logo} active={draft.activeLogoKey === logo.key} onActivate={async () => {
+                  const errors = await update((d) => { d.settings.activeLogoKey = logo.key; });
+                  if (errors.length) { toast("Could not switch the active logo. " + errors[0], "warn"); return; }
+                  setDraft((current) => ({ ...current, activeLogoKey: logo.key }));
+                  toast("Active logo updated.");
+                }} onDelete={async () => {
+                  if (draft.logos.length <= 1) { toast("Keep at least one logo before deleting the last one.", "warn"); return; }
+                  const ok = await confirm({ title: "Remove this logo?", body: <>This will permanently remove <strong>{logo.name}</strong> from the school logo library.</>, confirmLabel: "Remove logo" });
+                  if (!ok) return;
+                  try {
+                    await deleteFile("school_logo", "school-1", logo.key);
+                    const logos = draft.logos.filter((x) => x.key !== logo.key);
+                    const activeLogoKey = draft.activeLogoKey === logo.key ? logos[0]?.key : draft.activeLogoKey;
+                    const errors = await update((d) => { d.settings.logos = logos; d.settings.activeLogoKey = activeLogoKey; });
+                    if (errors.length) { toast("Logo file removed, but school identity could not be saved. " + errors[0], "warn"); return; }
+                    setDraft((current) => ({ ...current, logos, activeLogoKey }));
+                    toast("Logo removed.");
+                  } catch (err) { toast((err as Error).message || "Could not remove logo.", "warn"); }
+                }} />)}
+              </div>
+            )}
+          </div>
         </Panel>
 
         <Panel className="anim-rise p-4 sm:p-5">

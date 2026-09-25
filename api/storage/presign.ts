@@ -22,7 +22,7 @@ export const config = { runtime: "edge" };
  * function directly with whatever they liked. These are enforced.
  */
 
-const OWNER_TYPES = new Set(["student_photo", "student_document", "fee_receipt"]);
+const OWNER_TYPES = new Set(["student_photo", "student_document", "fee_receipt", "school_logo"]);
 
 /** Per owner type: what may be uploaded, and how big. */
 const RULES: Record<string, { maxBytes: number; mime: RegExp }> = {
@@ -32,6 +32,7 @@ const RULES: Record<string, { maxBytes: number; mime: RegExp }> = {
     mime: /^(image\/(jpeg|png|webp)|application\/pdf)$/,
   },
   fee_receipt: { maxBytes: 10 * 1024 * 1024, mime: /^(image\/(jpeg|png|webp)|application\/pdf)$/ },
+  school_logo: { maxBytes: 5 * 1024 * 1024, mime: /^image\/(svg\+xml|jpeg|png|webp)$/ },
 };
 
 export default async function handler(req: Request): Promise<Response> {

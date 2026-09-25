@@ -399,6 +399,8 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_bank_accounts: { type: "string", optional: true, maxLength: 20_000 },
       p_working_days: { type: "string", optional: true, maxLength: 2_000 },
       p_periods: { type: "string", optional: true, maxLength: 5_000 },
+      p_logo_keys: { type: "string", optional: true, maxLength: 20_000 },
+      p_active_logo_key: { type: "string", optional: true, maxLength: 500 },
     },
   },
 

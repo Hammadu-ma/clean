@@ -427,6 +427,9 @@ export interface AuditEntry {
 export interface Settings {
   schoolName: string;
   motto: string;
+  /** Uploaded school logos. The active key selects which one the app uses. */
+  logos: { key: string; name: string }[];
+  activeLogoKey?: string;
   /** Bank accounts guardians can transfer fees into manually. */
   bankAccounts: BankAccount[];
   /** Which of the 7 calendar weekdays (0=Sunday..6=Saturday, matching

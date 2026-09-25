@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, ArrowLeft, Loader2, Database } from "lucide-react";
 import { homePathFor, useApp } from "../store";
-import { Btn, RoleBadge } from "../ui";
+import { Btn, RoleBadge, SchoolLogo } from "../ui";
 
 // Lazy: pulls in ~160KB of raw migration SQL text (see lib/migrations.ts),
 // needed only for the rare "schema not applied yet" case — never on a
@@ -63,9 +63,7 @@ export function LoginPage() {
         <div className="pointer-events-none absolute right-16 top-1/2 h-24 w-24 rounded-full border-[10px] border-gold-500/25" />
 
         <div className="relative flex items-center gap-3">
-          <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-pine-800 ring-1 ring-pine-700">
-            <GraduationCap className="h-6 w-6 text-gold-400" />
-          </span>
+          <SchoolLogo settings={db.settings} size={48} />
           <span>
             <span className="font-display block text-[19px] font-extrabold leading-none tracking-tight text-white">{db.settings.schoolName}</span>
             <span className="mt-1 block text-[10px] font-semibold uppercase tracking-[0.22em] text-pine-300">{db.settings.motto}</span>
@@ -73,31 +71,14 @@ export function LoginPage() {
         </div>
 
         <div className="relative max-w-md">
-          <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-gold-400">Role-based access</p>
-          <h1 className="font-display mt-3 text-[42px] font-extrabold leading-[1.05] tracking-tight text-white">
-            One account.<br />The right doors open.
+          <span className="inline-flex items-center rounded-full border border-pine-700 bg-pine-900/70 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-gold-300">Secure school portal</span>
+          <h1 className="font-display mt-4 text-[42px] font-extrabold leading-[1.05] tracking-tight text-white">
+            Welcome to<br />{db.settings.schoolName || "your school"}.
           </h1>
-          <p className="mt-4 text-[14px] leading-relaxed text-pine-200">
-            Every user signs in through a single authentication system. Their role — and their relationships to
-            classes, students and children — decides exactly what they can see and do.
+          <p className="mt-4 max-w-md text-[14px] leading-relaxed text-pine-200">
+            Sign in to continue to your school workspace. Your available pages and actions are loaded securely from your account.
           </p>
-          <div className="mt-6 space-y-2.5">
-            {[
-              ["Authenticates", "one credential set, four roles"],
-              ["Resolves relationships", "teacher → classes → students · guardian → children"],
-              ["Enforces authorization", "every route and record check happens underneath the UI"],
-            ].map(([t, s], i) => (
-              <div key={t} className="anim-rise flex items-start gap-3 rounded-lg border border-pine-800 bg-pine-900/60 px-4 py-3" style={{ animationDelay: `${200 + i * 120}ms` }}>
-                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-gold-400" />
-                <div>
-                  <p className="text-[13px] font-bold text-white">{t}</p>
-                  <p className="text-[11.5px] text-pine-300">{s}</p>
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
-
         <p className="relative text-[11px] text-pine-400">AY {db.years.find((y) => y.active)?.name} · {db.students.length} students · {db.teachers.length} teachers</p>
       </div>
 
@@ -105,9 +86,7 @@ export function LoginPage() {
       <div className="flex flex-1 items-center justify-center px-5 py-10">
         <div className="anim-rise w-full max-w-md">
           <div className="mb-7 flex items-center gap-3 lg:hidden">
-            <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-pine-900">
-              <GraduationCap className="h-5 w-5 text-gold-400" />
-            </span>
+            <SchoolLogo settings={db.settings} size={44} className="!ring-pine-900/20" />
             <div>
               <p className="font-display text-[16px] font-extrabold leading-none text-ink">{db.settings.schoolName}</p>
               <p className="mt-0.5 max-w-[220px] truncate text-[10px] font-semibold uppercase tracking-[0.18em] text-soft">{db.settings.motto || "School portal"}</p>
@@ -116,7 +95,7 @@ export function LoginPage() {
 
           <p className="text-[10.5px] font-bold uppercase tracking-[0.2em] text-gold-600">Sign in</p>
           <h2 className="font-display mt-1 text-[28px] font-extrabold tracking-tight text-ink">Who's signing in today?</h2>
-          <p className="mt-1 text-[13px] text-soft">Your role and relationships load automatically after authentication.</p>
+          <p className="mt-1 text-[13px] text-soft">Your school workspace loads automatically after authentication.</p>
 
           {mode !== "live" && !connected && (
             <div className="mt-5">

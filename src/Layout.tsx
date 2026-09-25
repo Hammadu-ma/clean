@@ -9,7 +9,7 @@ import {
 import { homePathFor, useApp, useLazyGroups } from "./store";
 import { useAdminPendingFeePayments } from "./lib/api";
 import { hasPermission, totalUnreadMessages, unreadNotifications } from "./rbac";
-import { Chip, RoleBadge, UserAvatar } from "./ui";
+import { Chip, RoleBadge, SchoolLogo, UserAvatar } from "./ui";
 import type { Role } from "./types";
 
 interface NavItem {
@@ -228,9 +228,7 @@ export function AppShell() {
     <div className="flex h-full w-[240px] flex-col bg-pine-950 text-pine-100"
       style={{ backgroundImage: "repeating-linear-gradient(0deg, rgba(255,255,255,0.018) 0 2px, transparent 2px 4px)" }}>
       <button onClick={() => nav(homePathFor(currentUser.role))} className="flex cursor-pointer items-center gap-3 px-5 pb-4 pt-5 text-left">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-pine-800 ring-1 ring-pine-700">
-          <GraduationCap className="h-5 w-5 text-gold-400" />
-        </span>
+        <SchoolLogo settings={db.settings} size={40} />
         <span>
           <span className="font-display block max-w-[150px] truncate text-[15px] font-extrabold leading-none tracking-tight text-white">{db.settings.schoolName || "School"}</span>
           <span className="mt-1 block max-w-[150px] truncate text-[9.5px] font-semibold uppercase tracking-[0.18em] text-pine-300">{db.settings.motto || "School portal"}</span>

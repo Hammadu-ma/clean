@@ -628,7 +628,7 @@ export async function hydrateCore(yearId?: string): Promise<{ db: DB; mode: DbMo
   // session would only produce 401s.
   if (!(await apiSession())) {
     const empty = buildSeed();
-    empty.students = []; empty.users = []; empty.teachers = []; empty.enrollments = [];
+    empty.students = []; empty.users = []; empty.teachers = [];
     empty.structures = []; empty.assessmentMarks = {}; empty.submissions = []; empty.grading = [];
     empty.attendance = []; empty.fees = []; empty.paymentRequests = []; empty.homework = [];
     empty.timetable = []; empty.announcements = []; empty.conversations = []; empty.messages = [];
@@ -1837,6 +1837,6 @@ export async function loadProfileForSession(userId: string): Promise<User | null
     role: data.role, roleId: data.role_def_id, status: data.status,
     email: data.email, phone: data.phone, teacherId: data.teacher_id, studentId: data.student_id,
     childrenIds: data.role === "guardian" ? (gs ?? []).map((g: any) => g.student_id) : undefined,
-    createdAt: data.created_at,
+    createdAt: data.created_at ?? new Date().toISOString(),
   } as User;
 }

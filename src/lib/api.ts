@@ -110,6 +110,34 @@ export async function changeUserPassword(userId: string, password: string): Prom
   return callWrite("change_user_password", { p_id: userId, p_password: password });
 }
 
+export async function createUserAccount(args: {
+  username: string;
+  password: string;
+  fullName: string;
+  role: string;
+  roleDefId: string;
+  teacherId?: string | null;
+  studentId?: string | null;
+  email?: string | null;
+  phone?: string | null;
+}): Promise<string> {
+  return callWrite<string>("create_user_account", {
+    p_username: args.username,
+    p_password: args.password,
+    p_full_name: args.fullName,
+    p_role: args.role,
+    p_role_def_id: args.roleDefId,
+    p_teacher_id: args.teacherId ?? null,
+    p_student_id: args.studentId ?? null,
+    p_email: args.email ?? null,
+    p_phone: args.phone ?? null,
+  });
+}
+
+export async function updateUserAccount(payload: Record<string, unknown>): Promise<{ userId: string }> {
+  return callWrite<{ userId: string }>("update_user_account", { p_payload: payload });
+}
+
 /* ========================================================================
    Bootstrap — one request, role-shaped, year-scoped.
    Replaces get_app_bootstrap()'s full-database dump.
@@ -255,23 +283,12 @@ export function useStudents(filters: StudentFilters = {}) {
   };
 }
 
-
-export interface UserFilters {
-  role?: "admin" | "teacher" | "student" | "guardian";
-  status?: string;
-  search?: string;
-  classId?: string;
-  sectionId?: string;
-  page?: number;
-  pageSize?: number;
-}
-
 export interface UserRow {
   id: string;
   full_name: string;
   username: string;
   role: string;
-  role_def_id: string | null;
+  role_def_id: string;
   status: string;
   email: string | null;
   phone: string | null;
@@ -285,7 +302,16 @@ export interface UserRow {
   total_count: number;
 }
 
-/** Server-paged account directory. The client never needs every profile in memory. */
+export interface UserFilters {
+  role?: string;
+  status?: string;
+  search?: string;
+  classId?: string;
+  sectionId?: string;
+  page?: number;
+  pageSize?: number;
+}
+
 export function useUsers(filters: UserFilters = {}) {
   const { yearId } = useAcademicYear();
   const pageSize = filters.pageSize ?? 50;
@@ -295,17 +321,16 @@ export function useUsers(filters: UserFilters = {}) {
     enabled: Boolean(yearId),
     staleTime: STALE.list,
     placeholderData: keepPreviousData,
-    queryFn: () =>
-      rpc<UserRow[]>("list_users", {
-        p_year_id: yearId,
-        p_role: filters.role ?? null,
-        p_status: filters.status ?? null,
-        p_search: filters.search?.trim() || null,
-        p_class_id: filters.classId ?? null,
-        p_section_id: filters.sectionId ?? null,
-        p_limit: pageSize,
-        p_offset: page * pageSize,
-      }),
+    queryFn: () => rpc<UserRow[]>("list_users", {
+      p_year_id: yearId,
+      p_role: filters.role ?? null,
+      p_status: filters.status ?? null,
+      p_search: filters.search?.trim() || null,
+      p_class_id: filters.classId ?? null,
+      p_section_id: filters.sectionId ?? null,
+      p_limit: pageSize,
+      p_offset: page * pageSize,
+    }),
   });
   const rows = query.data ?? [];
   const total = rows[0]?.total_count ?? 0;
@@ -340,6 +365,22 @@ export function useMarksheet(structureId: string | null) {
   });
 }
 
+export async function saveRegister(args: {
+  yearId: string;
+  classId: string;
+  sectionId: string;
+  day: string;
+  marks: Record<string, string>;
+}) {
+  return write("save_register", {
+    p_year_id: args.yearId,
+    p_class_id: args.classId,
+    p_section_id: args.sectionId,
+    p_day: args.day,
+    p_marks: args.marks,
+  });
+}
+
 export function useRegister(classId: string | null, sectionId: string | null, day: string) {
   const { yearId } = useAcademicYear();
   return useQuery({
@@ -354,6 +395,41 @@ export function useRegister(classId: string | null, sectionId: string | null, da
         p_day: day,
       }),
   });
+}
+
+export interface AttendanceSummaryPageFilters {
+  classId?: string;
+  sectionId?: string;
+  from?: string;
+  to?: string;
+  search?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export function useAttendanceSummaryPage(filters: AttendanceSummaryPageFilters = {}) {
+  const { yearId } = useAcademicYear();
+  const pageSize = filters.pageSize ?? 50;
+  const page = filters.page ?? 0;
+  const query = useQuery({
+    queryKey: ["attendance-summary-page", yearId ?? "", { ...filters, page, pageSize }] as const,
+    enabled: Boolean(yearId),
+    staleTime: STALE.list,
+    placeholderData: keepPreviousData,
+    queryFn: () => rpc<AttendanceSummaryRow[]>("get_attendance_summary_page", {
+      p_year_id: yearId,
+      p_class_id: filters.classId ?? null,
+      p_section_id: filters.sectionId ?? null,
+      p_from: filters.from ?? null,
+      p_to: filters.to ?? null,
+      p_search: filters.search?.trim() || null,
+      p_limit: pageSize,
+      p_offset: page * pageSize,
+    }),
+  });
+  const rows = query.data ?? [];
+  const total = rows[0]?.total_count ?? 0;
+  return { ...query, rows, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
 }
 
 export interface AttendanceSummaryRow {

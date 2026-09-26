@@ -27,6 +27,7 @@ import {
   Stat, Tabs, TextArea, TextInput, tdCls, thCls, useConfirm,
 } from "../ui";
 import { AccessDenied } from "./Auth";
+import { useRegister, saveRegister } from "../lib/api";
 
 // DAYS was a fixed 5-day week; the timetable now reads db.settings.workingDays
 // instead (a configurable subset of WEEKDAYS, imported below) so schools can
@@ -1612,8 +1613,7 @@ function TimetableCellModal({ day, period, classId, sectionId, existing, availab
    Teacher/admin: mark a daily register. Student/guardian: view stats & history.
    ========================================================================= */
 export function AttendancePage() {
-  const { db, currentUser, update, toast } = useApp();
-  const groupsLoaded = useLazyGroups("attendance");
+  const { db, currentUser, yearId, toast } = useApp();
   const role = currentUser?.role ?? "admin";
 
   if (role === "student" || role === "guardian") {
@@ -1635,37 +1635,61 @@ export function AttendancePage() {
     ? (cls?.sections ?? [])
     : (cls?.sections ?? []).filter((s) => pairs.some((p) => p.classId === classId && p.sectionId === s.id));
   const [sectionId, setSectionId] = useState(sectionOptionsForClass[0]?.id ?? "");
+  const [date, setDate] = useState(todayISO());
+  const [savingAll, setSavingAll] = useState(false);
+  const [marks, setMarks] = useState<Record<string, AttendanceStatus>>({});
+
   useEffect(() => {
-    const opts = isAdmin ? (getClass(db, classId)?.sections ?? []) : (getClass(db, classId)?.sections ?? []).filter((s) => pairs.some((p) => p.classId === classId && p.sectionId === s.id));
+    const opts = isAdmin
+      ? (getClass(db, classId)?.sections ?? [])
+      : (getClass(db, classId)?.sections ?? []).filter((s) => pairs.some((p) => p.classId === classId && p.sectionId === s.id));
     if (!opts.some((s) => s.id === sectionId)) setSectionId(opts[0]?.id ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classId]);
-  const [date, setDate] = useState(todayISO());
 
-  const roster = studentsOf(db, classId, sectionId);
-  const register = db.attendance.find((r) => r.date === date && r.classId === classId && r.sectionId === sectionId);
+  const registerQuery = useRegister(classId || null, sectionId || null, date);
+  const registerRows = Array.isArray((registerQuery.data as any)?.rows) ? ((registerQuery.data as any).rows as Array<{student_id:string;full_name:string;roll_number:number|null;status:string}>) : [];
+  const registerMap = useMemo(() => new Map(registerRows.map((r) => [r.student_id, r.status as AttendanceStatus])), [registerRows]);
 
-  const setMark = (studentId: string, status: AttendanceStatus) => {
-    if (!canManage) return;
-    update((d) => {
-      let r = d.attendance.find((x) => x.date === date && x.classId === classId && x.sectionId === sectionId);
-      if (!r) { r = { date, classId, sectionId, marks: {} }; d.attendance.push(r); }
-      r.marks[studentId] = status;
-    });
+  useEffect(() => {
+    const next: Record<string, AttendanceStatus> = {};
+    for (const row of registerRows) if (["present","absent","late"].includes(row.status)) next[row.student_id] = row.status as AttendanceStatus;
+    setMarks(next);
+  }, [registerQuery.dataUpdatedAt, classId, sectionId, date]);
+
+  const setMark = async (studentId: string, status: AttendanceStatus) => {
+    if (!canManage || !yearId || !classId || !sectionId) return;
+    const next = { ...marks, [studentId]: status };
+    setMarks(next);
+    try {
+      await saveRegister({ yearId, classId, sectionId, day: date, marks: next });
+      await registerQuery.refetch();
+    } catch (e) {
+      setMarks(marks);
+      toast(e instanceof Error ? e.message : "Could not save attendance.", "warn");
+    }
   };
-  const markAllPresent = () => {
-    if (!canManage) return;
-    update((d) => {
-      let r = d.attendance.find((x) => x.date === date && x.classId === classId && x.sectionId === sectionId);
-      if (!r) { r = { date, classId, sectionId, marks: {} }; d.attendance.push(r); }
-      roster.forEach((s) => { if (!r!.marks[s.id]) r!.marks[s.id] = "present"; });
-    });
-    toast("Unmarked students set to present.");
+
+  const markAllPresent = async () => {
+    if (!canManage || !yearId || !classId || !sectionId) return;
+    const next = { ...marks };
+    registerRows.forEach((r) => { if (!next[r.student_id]) next[r.student_id] = "present"; });
+    setMarks(next);
+    setSavingAll(true);
+    try {
+      await saveRegister({ yearId, classId, sectionId, day: date, marks: next });
+      await registerQuery.refetch();
+      toast("Unmarked students set to present.");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not save attendance.", "warn");
+    } finally {
+      setSavingAll(false);
+    }
   };
 
   const counts = { present: 0, absent: 0, late: 0, unmarked: 0 };
-  roster.forEach((s) => {
-    const m = register?.marks[s.id];
+  registerRows.forEach((r) => {
+    const m = marks[r.student_id] ?? registerMap.get(r.student_id);
     if (m === "present") counts.present++;
     else if (m === "absent") counts.absent++;
     else if (m === "late") counts.late++;
@@ -1684,54 +1708,53 @@ export function AttendancePage() {
         <Field label="Date" className="w-40"><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} max={todayISO()} /></Field>
       </PageHead>
 
-      {!groupsLoaded ? (
-        <>
-          <div className="anim-rise mb-4"><SkeletonCards n={4} /></div>
-          <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
-        </>
+      {registerQuery.isPending ? (
+        <><div className="anim-rise mb-4"><SkeletonCards n={4} /></div><SkeletonPanel rows={8} /></>
+      ) : registerQuery.isError ? (
+        <Panel><EmptyState icon={<CalendarCheck2 className="h-5 w-5" />} title="Attendance could not be loaded" body="Please retry this class, section or date." action={<Btn onClick={() => void registerQuery.refetch()}>Retry</Btn>} /></Panel>
       ) : (
-      <>
-      <div className="anim-rise mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Present" value={counts.present} tone="pine" icon={<UserCheck className="h-4.5 w-4.5" />} />
-        <Stat label="Absent" value={counts.absent} tone="rust" icon={<UserX className="h-4.5 w-4.5" />} />
-        <Stat label="Late" value={counts.late} tone="gold" icon={<ClockIcon className="h-4.5 w-4.5" />} />
-        <Stat label="Unmarked" value={counts.unmarked} tone="steel" icon={<CalendarCheck2 className="h-4.5 w-4.5" />} />
-      </div>
+        <>
+          <div className="anim-rise mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Stat label="Present" value={counts.present} tone="pine" icon={<UserCheck className="h-4.5 w-4.5" />} />
+            <Stat label="Absent" value={counts.absent} tone="rust" icon={<UserX className="h-4.5 w-4.5" />} />
+            <Stat label="Late" value={counts.late} tone="gold" icon={<ClockIcon className="h-4.5 w-4.5" />} />
+            <Stat label="Unmarked" value={counts.unmarked} tone="steel" icon={<CalendarCheck2 className="h-4.5 w-4.5" />} />
+          </div>
 
-      <Panel className="anim-rise overflow-hidden">
-        <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-3">
-          <p className="text-[12.5px] font-bold text-ink">{sectionLabel(db, classId, sectionId)} · {fmtDate(date)}</p>
-          {canManage && <Btn size="sm" variant="soft" onClick={markAllPresent}><CheckCircle2 className="h-3.5 w-3.5" /> Mark rest present</Btn>}
-        </div>
-        <div className="attendance-table-wrap">
-          <table className="attendance-table">
-            <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-12 whitespace-nowrap`}>#</th><th className={`${thCls()} min-w-[260px] whitespace-nowrap`}>Student</th><th className={`${thCls()} min-w-[260px] whitespace-nowrap text-center`}>Status</th></tr></thead>
-            <tbody className="divide-y divide-mist/70">
-            {roster.map((s, i) => {
-              const m = register?.marks[s.id];
-              return (
-                <tr key={s.id} className="transition-colors hover:bg-pine-50/40">
-                  <td className={`${tdCls()} tnum text-soft`}>{i + 1}</td>
-                  <td className={`${tdCls()} whitespace-nowrap`}><span className="flex items-center gap-2.5 whitespace-nowrap"><Avatar student={s} size={30} /><span className="whitespace-nowrap font-bold text-ink">{shortName(s)}</span></span></td>
-                  <td className={`${tdCls()} text-center`}>
-                    <span className="inline-flex gap-1">
-                      {(["present", "late", "absent"] as AttendanceStatus[]).map((st) => (
-                        <button key={st} disabled={!canManage} onClick={() => setMark(s.id, st)}
-                          className={`cursor-pointer rounded-md border px-2.5 py-1 text-[11px] font-bold capitalize transition-all disabled:cursor-not-allowed ${m === st ? (st === "present" ? "border-pine-700 bg-pine-700 text-white" : st === "late" ? "border-gold-500 bg-gold-500 text-white" : "border-rust-600 bg-rust-600 text-white") : "border-mist bg-card text-soft hover:border-pine-300"}`}>
-                          {st}
-                        </button>
-                      ))}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-            {roster.length === 0 && <tr><td colSpan={3}><EmptyState icon={<CalendarCheck2 className="h-5 w-5" />} title="No students in this section" body="Enroll students into this class/section first." /></td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
-      </>
+          <Panel className="anim-rise overflow-hidden">
+            <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-3">
+              <p className="whitespace-nowrap text-[12.5px] font-bold text-ink">{sectionLabel(db, classId, sectionId)} · {fmtDate(date)}</p>
+              {canManage && <Btn size="sm" variant="soft" disabled={savingAll || registerRows.length === 0} onClick={() => void markAllPresent()}><CheckCircle2 className="h-3.5 w-3.5" /> {savingAll ? "Saving…" : "Mark rest present"}</Btn>}
+            </div>
+            <div className="attendance-table-wrap">
+              <table className="attendance-table">
+                <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-12 whitespace-nowrap`}>#</th><th className={`${thCls()} min-w-[260px] whitespace-nowrap`}>Student</th><th className={`${thCls()} min-w-[260px] whitespace-nowrap text-center`}>Status</th></tr></thead>
+                <tbody className="divide-y divide-mist/70">
+                  {registerRows.map((s, i) => {
+                    const m = marks[s.student_id] ?? registerMap.get(s.student_id);
+                    return (
+                      <tr key={s.student_id} className="transition-colors hover:bg-pine-50/40">
+                        <td className={`${tdCls()} whitespace-nowrap tnum text-soft`}>{i + 1}</td>
+                        <td className={`${tdCls()} whitespace-nowrap`}><span className="flex items-center gap-2.5 whitespace-nowrap"><UserAvatar name={s.full_name} role="student" size={30} /><span className="whitespace-nowrap font-bold text-ink">{s.full_name}</span></span></td>
+                        <td className={`${tdCls()} text-center`}>
+                          <span className="inline-flex min-w-max gap-1 whitespace-nowrap">
+                            {(["present", "late", "absent"] as AttendanceStatus[]).map((st) => (
+                              <button key={st} type="button" disabled={!canManage || registerQuery.isFetching} onClick={() => void setMark(s.student_id, st)}
+                                className={`shrink-0 cursor-pointer whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] font-bold capitalize transition-all disabled:cursor-not-allowed ${m === st ? (st === "present" ? "border-pine-700 bg-pine-700 text-white" : st === "late" ? "border-gold-500 bg-gold-500 text-white" : "border-rust-600 bg-rust-600 text-white") : "border-mist bg-card text-soft hover:border-pine-300"}`}>
+                                {st}
+                              </button>
+                            ))}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {registerRows.length === 0 && <tr><td colSpan={3}><EmptyState icon={<CalendarCheck2 className="h-5 w-5" />} title="No students in this section" body="Enroll students into this class/section first." /></td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+        </>
       )}
     </div>
   );

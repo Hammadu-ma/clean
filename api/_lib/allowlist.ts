@@ -52,6 +52,7 @@ const OFFSET: ArgSpec = { type: "number", optional: true, min: 0, max: 100_000 }
 export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
   /* ---------- session & reference ---------- */
   get_bootstrap: { read: true, args: { p_year_id: ID } },
+  get_bootstrap_v3: { read: true, args: { p_year_id: ID } },
   get_reference: { read: true, args: { p_year_id: ID } },
   my_scope: { read: true, args: { p_year_id: ID } },
   my_permissions: { read: true, args: {} },
@@ -70,6 +71,10 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_offset: OFFSET,
     },
   },
+  get_student_detail: {
+    read: true,
+    args: { p_student_id: { type: "string", maxLength: 128 }, p_year_id: ID },
+  },
   list_users: {
     read: true,
     args: {
@@ -82,10 +87,6 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_limit: LIMIT,
       p_offset: OFFSET,
     },
-  },
-  get_student_detail: {
-    read: true,
-    args: { p_student_id: { type: "string", maxLength: 128 }, p_year_id: ID },
   },
 
   /* ---------- academics ---------- */
@@ -104,6 +105,30 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_to: { type: "date", optional: true },
     },
   },
+  get_attendance_summary_page: {
+    read: true,
+    args: {
+      p_year_id: ID,
+      p_class_id: ID,
+      p_section_id: ID,
+      p_from: { type: "date", optional: true },
+      p_to: { type: "date", optional: true },
+      p_search: SEARCH,
+      p_limit: LIMIT,
+      p_offset: OFFSET,
+    },
+  },
+  list_assessment_structures: { read: true, args: { p_year_id: ID } },
+  get_marksheet_page: {
+    read: true,
+    args: {
+      p_structure_id: { type: "string", maxLength: 128 },
+      p_section_id: ID,
+      p_search: SEARCH,
+      p_limit: LIMIT,
+      p_offset: OFFSET,
+    },
+  },
 
   /* ---------- fees ---------- */
   list_fees: {
@@ -116,6 +141,23 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_search: SEARCH,
       p_limit: LIMIT,
       p_offset: OFFSET,
+    },
+  },
+  list_fee_student_summary: {
+    read: true,
+    args: {
+      p_year_id: ID, p_class_id: ID, p_section_id: ID, p_search: SEARCH,
+      p_limit: LIMIT, p_offset: OFFSET,
+    },
+  },
+  list_fee_payment_requests: {
+    read: true,
+    args: {
+      p_year_id: ID,
+      p_status: { type: "string", optional: true, maxLength: 20 },
+      p_search: SEARCH,
+      p_receipt_only: { type: "boolean", optional: true },
+      p_limit: LIMIT, p_offset: OFFSET,
     },
   },
 

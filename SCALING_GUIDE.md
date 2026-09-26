@@ -122,48 +122,21 @@ and grade band, then re-enroll every student one at a time.
 
 ---
 
-## Current frontend status
+## Current production wiring status
 
-I did **not** rewrite `people.tsx` (1,542 lines), `academics.tsx` (2,520) or
-`communication.tsx` (816). They still read the in-memory `DB` from
-`store.tsx`, and they still work — nothing I added breaks them, and
-`get_app_bootstrap()` is left in place, marked deprecated, for exactly that
-reason.
+The application now uses server-side, year-scoped queries for the highest-value list screens:
 
-But they are where the remaining slowness lives, so migrating them is the
-work that actually delivers the speed. In dependency order:
+- **Students / People:** paged search/filter through `useStudents`.
+- **Users:** paged search/filter through `useUsers`.
+- **Attendance daily register:** the selected class/section/date is loaded through `useRegister`; writes go through `save_register`.
+- **Attendance summary:** paged through `get_attendance_summary_page`.
 
-**1. Mount the year provider** (in `App.tsx`, inside `AppProvider`):
+The repository also contains the paged APIs for fees, messages and marks. Those screens still retain compatibility paths in the current release where their editing/reporting workflows depend on the legacy in-memory model. They should be migrated before claiming a 5,000+ student stress-test ceiling.
 
-```tsx
-<AcademicYearProvider>
-  <HashRouter>…</HashRouter>
-</AcademicYearProvider>
-```
+The login bootstrap has a safe role/year-scoped `get_bootstrap()` implementation available, but the legacy compatibility hydrate path remains for screens that still depend on the old `DB` object. Do not increase the size of that legacy snapshot or use it as a new feature API.
 
-Add a year picker to `Layout.tsx` bound to `useAcademicYear()`. Show a clear
-banner when `isHistorical` or `isReadOnly` is true — people will otherwise
-enter this year's marks into last year.
+For a genuinely large deployment, the final migration step is to remove those remaining legacy feature-group reads and route every large list through its bounded hook/RPC. This should be done incrementally to avoid rewriting the large page components in one pass.
 
-**2. Switch the boot call.** In `store.tsx`, replace `hydrateCore()`'s
-`get_app_bootstrap` call with `useBootstrap()` from `src/lib/api.ts`. Use
-`peekSession()` from `session.ts` to set `sessionChecked` optimistically on
-the first render instead of blocking on `getSession()`.
-
-**3. Convert the list pages, one at a time.** `StudentsPage` is the highest
-value and the easiest: replace the in-memory filter with `useStudents({ classId, sectionId, search, page })`
-and render `rows` with `total` for the pager. Debounce the search input by
-~250ms. Add `onMouseEnter={() => prefetch.student(id)}` to each row.
-
-Then `FeesPage` → `useFees`, `AttendancePage` → `useRegister` /
-`useAttendanceSummary`, `MarkEntryPage` → `useMarksheet`, `MessagesPage` →
-`useMessages` (infinite scroll, keyset — scrolling back two years costs the
-same as the first screen).
-
-**4. Delete `get_app_snapshot()` from the boot path** once nothing calls it.
-Keep the function for the rare recovery resync; never call it on login.
-
----
 
 ## One thing I'd push back on
 

@@ -31,13 +31,13 @@ export function Btn({
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: keyof typeof btnVariants; size?: keyof typeof btnSizes; busy?: boolean }) {
   return (
     <button
-      className={`relative inline-flex items-center justify-center rounded-lg font-semibold tracking-tight transition-all duration-150 disabled:opacity-45 disabled:pointer-events-none cursor-pointer whitespace-nowrap ${btnVariants[variant]} ${btnSizes[size]} ${className}`}
+      className={`relative inline-flex min-h-9 items-center justify-center rounded-lg font-semibold leading-none tracking-tight transition-all duration-150 disabled:opacity-45 disabled:pointer-events-none cursor-pointer whitespace-nowrap ${btnVariants[variant]} ${btnSizes[size]} ${className}`}
       disabled={disabled || busy}
       aria-busy={busy}
       {...props}
     >
       {busy && <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent opacity-80" />}
-      <span className={busy ? "opacity-80" : ""}>{children}</span>
+      <span className={`inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap leading-none ${busy ? "opacity-80" : ""}`}>{children}</span>
     </button>
   );
 }

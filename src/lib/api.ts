@@ -78,12 +78,32 @@ export async function updateMyProfile(args: {
   newPassword?: string;
   fullName?: string;
 }): Promise<{ username: string; fullName: string; passwordChanged: boolean }> {
-  return callWrite("update_my_profile", {
-    p_username: args.username,
-    p_current_password: args.currentPassword || null,
-    p_new_password: args.newPassword || null,
-    p_full_name: args.fullName || null,
+  const token = csrfToken();
+  const res = await fetch("/api/auth/update-profile", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { "x-csrf-token": token } : {}),
+    },
+    body: JSON.stringify({
+      username: args.username,
+      currentPassword: args.currentPassword || null,
+      newPassword: args.newPassword || null,
+      fullName: args.fullName || null,
+    }),
   });
+
+  const payload = await res.json().catch(() => null);
+  if (!res.ok || !payload?.ok) {
+    const err = payload?.error ?? {};
+    throw new ApiError(
+      err.code ?? "server_error",
+      err.message ?? "Could not update your profile. Please try again.",
+      res.status
+    );
+  }
+  return payload.data as { username: string; fullName: string; passwordChanged: boolean };
 }
 
 export async function changeUserPassword(userId: string, password: string): Promise<{ userId: string; changed: boolean }> {

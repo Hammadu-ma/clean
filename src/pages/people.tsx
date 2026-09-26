@@ -1661,19 +1661,21 @@ export function ProfilePage() {
         </Panel>
 
         <Panel className="anim-rise p-5 md:col-span-3">
-          <h2 className="font-display text-[15px] font-bold">Account settings</h2>
-          <p className="mt-0.5 text-[11.5px] text-soft">Update your username and password. Passwords are changed directly in the authentication system and are never stored in your profile.</p>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <Field label="Username" required><TextInput value={username} onChange={(e) => setUsername(e.target.value)} className="font-mono" autoComplete="username" /></Field>
-            <Field label="Full name"><TextInput value={fullName} onChange={(e) => setFullName(e.target.value)} autoComplete="name" /></Field>
-            <Field label="Current password"><TextInput type="password" value={pw.current} onChange={(e) => setPw((p) => ({ ...p, current: e.target.value }))} className="font-mono" autoComplete="current-password" /></Field>
-            <Field label="New password"><TextInput type="password" value={pw.next} onChange={(e) => setPw((p) => ({ ...p, next: e.target.value }))} className="font-mono" autoComplete="new-password" /></Field>
-            <Field label="Confirm new password" className="sm:col-span-2"><TextInput type="password" value={pw.confirm} onChange={(e) => setPw((p) => ({ ...p, confirm: e.target.value }))} className="font-mono" autoComplete="new-password" /></Field>
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Btn onClick={saveProfile} disabled={saving}><Lock className="h-4 w-4" /> {saving ? "Saving…" : "Save account settings"}</Btn>
-            <Btn variant="outline" onClick={() => { logout(); nav("/login", { replace: true }); }}><X className="h-4 w-4" /> Sign out</Btn>
-          </div>
+          <form onSubmit={(e) => { e.preventDefault(); void saveProfile(); }}>
+            <h2 className="font-display text-[15px] font-bold">Account settings</h2>
+            <p className="mt-0.5 text-[11.5px] text-soft">Update your username and password. Passwords are changed directly in the authentication system and are never stored in your profile.</p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <Field label="Username" required><TextInput value={username} onChange={(e) => setUsername(e.target.value)} className="font-mono" autoComplete="username" /></Field>
+              <Field label="Full name"><TextInput value={fullName} onChange={(e) => setFullName(e.target.value)} autoComplete="name" /></Field>
+              <Field label="Current password"><TextInput type="password" value={pw.current} onChange={(e) => setPw((p) => ({ ...p, current: e.target.value }))} className="font-mono" autoComplete="current-password" /></Field>
+              <Field label="New password"><TextInput type="password" value={pw.next} onChange={(e) => setPw((p) => ({ ...p, next: e.target.value }))} className="font-mono" autoComplete="new-password" /></Field>
+              <Field label="Confirm new password" className="sm:col-span-2"><TextInput type="password" value={pw.confirm} onChange={(e) => setPw((p) => ({ ...p, confirm: e.target.value }))} className="font-mono" autoComplete="new-password" /></Field>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Btn type="submit" disabled={saving}><Lock className="h-4 w-4" /> {saving ? "Saving…" : "Save account settings"}</Btn>
+              <Btn type="button" variant="outline" onClick={() => { logout(); nav("/login", { replace: true }); }}><X className="h-4 w-4" /> Sign out</Btn>
+            </div>
+          </form>
 
           {u.role === "teacher" && (
             <div className="mt-6 border-t border-mist pt-4">

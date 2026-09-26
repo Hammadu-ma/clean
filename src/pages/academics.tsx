@@ -1703,9 +1703,10 @@ export function AttendancePage() {
           <p className="text-[12.5px] font-bold text-ink">{sectionLabel(db, classId, sectionId)} · {fmtDate(date)}</p>
           {canManage && <Btn size="sm" variant="soft" onClick={markAllPresent}><CheckCircle2 className="h-3.5 w-3.5" /> Mark rest present</Btn>}
         </div>
-        <table className="w-full">
-          <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-10`}>#</th><th className={thCls()}>Student</th><th className={`${thCls()} text-center`}>Status</th></tr></thead>
-          <tbody className="divide-y divide-mist/70">
+        <div className="attendance-table-wrap">
+          <table className="attendance-table">
+            <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-12 whitespace-nowrap`}>#</th><th className={`${thCls()} min-w-[260px] whitespace-nowrap`}>Student</th><th className={`${thCls()} min-w-[260px] whitespace-nowrap text-center`}>Status</th></tr></thead>
+            <tbody className="divide-y divide-mist/70">
             {roster.map((s, i) => {
               const m = register?.marks[s.id];
               return (
@@ -1726,8 +1727,9 @@ export function AttendancePage() {
               );
             })}
             {roster.length === 0 && <tr><td colSpan={3}><EmptyState icon={<CalendarCheck2 className="h-5 w-5" />} title="No students in this section" body="Enroll students into this class/section first." /></td></tr>}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
       </Panel>
       </>
       )}
@@ -1771,15 +1773,17 @@ function AttendanceViewer() {
       </div>
 
       <Panel className="anim-rise overflow-hidden">
-        <table className="w-full">
-          <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Date</th><th className={`${thCls()} text-center`}>Status</th></tr></thead>
-          <tbody className="divide-y divide-mist/70">
+        <div className="attendance-table-wrap">
+          <table className="attendance-table">
+            <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} min-w-[240px] whitespace-nowrap`}>Date</th><th className={`${thCls()} min-w-[240px] whitespace-nowrap text-center`}>Status</th></tr></thead>
+            <tbody className="divide-y divide-mist/70">
             {history.map((r) => (
               <tr key={r.date}><td className={tdCls()}>{fmtDate(r.date)}</td><td className={`${tdCls()} text-center`}><Chip tone={r.marks[student.id] === "present" ? "pine" : r.marks[student.id] === "late" ? "gold" : "rust"}>{r.marks[student.id]}</Chip></td></tr>
             ))}
             {history.length === 0 && <tr><td colSpan={2}><EmptyState icon={<CalendarCheck2 className="h-5 w-5" />} title="No attendance recorded yet" body="Records will appear here once the register is taken." /></td></tr>}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
       </Panel>
     </div>
   );

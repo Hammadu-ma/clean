@@ -99,6 +99,17 @@ li {
   background: transparent;
 }
 
+/* ---------- Button alignment ----------
+   Keep action controls visually solid: icons never shrink, labels stay on
+   one line, and the shared Btn primitive owns the icon/label spacing. */
+button {
+  white-space: nowrap;
+}
+button svg {
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
 @keyframes rise {
   from {
     opacity: 0;
@@ -294,6 +305,69 @@ li {
 
   .audit-table .audit-detail-cell {
     min-width: 420px;
+  }
+}
+
+/* ---------- Attendance table readability ----------
+   The register intentionally stays wider than the phone viewport. The
+   wrapper owns horizontal scrolling; cells never wrap into vertical text. */
+.attendance-table-wrap {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: auto;
+}
+
+.attendance-table {
+  display: table;
+  width: max-content !important;
+  min-width: 820px !important;
+  table-layout: auto !important;
+}
+
+.attendance-table th,
+.attendance-table td,
+.attendance-table th *,
+.attendance-table td * {
+  white-space: nowrap !important;
+  overflow-wrap: normal !important;
+  word-break: keep-all !important;
+  vertical-align: middle;
+}
+
+.attendance-table th:first-child,
+.attendance-table td:first-child {
+  width: 56px;
+  min-width: 56px;
+  text-align: center;
+}
+
+.attendance-table th:nth-child(2),
+.attendance-table td:nth-child(2) {
+  min-width: 320px;
+}
+
+.attendance-table th:nth-child(3),
+.attendance-table td:nth-child(3) {
+  min-width: 300px;
+}
+
+.attendance-table .whitespace-nowrap {
+  white-space: nowrap !important;
+}
+
+@media (max-width: 640px) {
+  .attendance-table-wrap {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .attendance-table {
+    min-width: 820px !important;
   }
 }
 

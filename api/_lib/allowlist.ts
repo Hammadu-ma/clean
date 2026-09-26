@@ -138,6 +138,11 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
     rateLimit: 10,
     args: {},
   },
+  clear_audit_log_v2: {
+    read: false,
+    rateLimit: 10,
+    args: {},
+  },
   delete_audit_entry: {
     read: false,
     rateLimit: 30,

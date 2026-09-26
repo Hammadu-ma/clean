@@ -31,7 +31,7 @@ const SCHOOL_ID = "school-1";
  * Super Admin authorization; the client only uses this after a successful RPC. */
 export async function clearAuditLog(): Promise<{ error: string | null }> {
   if (!supabase) return { error: "Supabase is not configured." };
-  const { error } = await supabase.rpc("clear_audit_log");
+  const { error } = await supabase.rpc("clear_audit_log_v2");
   return { error: error?.message ?? null };
 }
 

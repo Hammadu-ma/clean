@@ -545,21 +545,77 @@ function applyCoreRows(seed: DB, rows: CoreRows, selectedYearId?: string): { db:
  *  separate requests. `null` means "couldn't use it, fall back". */
 async function hydrateCoreViaBootstrap(seed: DB, yearId?: string): Promise<{ db: DB; remote: boolean } | null> {
   try {
-    const [{ data, error }, documents] = await Promise.all([
-      sb()!.rpc("get_app_bootstrap", { p_year_id: yearId ?? null }) as unknown as Promise<{ data: any; error: any }>,
-      sel<any>("student_documents", yearId),
-    ]);
-    if (error || !data || !Array.isArray(data.schools)) return null;
-    return applyCoreRows(seed, {
-      schools: data.schools, years: data.academic_years, terms: data.terms,
-      classes: data.classes, sections: data.sections, subjects: data.subjects,
-      teachers: data.teachers, assignments: data.teacher_assignments,
-      students: data.students, enrollments: data.enrollments, documents: documents ?? [],
-      roleDefs: data.role_defs, rolePerms: data.role_permissions,
-      profiles: data.profiles, guardianStudents: data.guardian_students,
-    }, yearId);
+    const { data, error } = await sb()!.rpc("get_bootstrap_v3", { p_year_id: yearId ?? null }) as unknown as { data: any; error: any };
+    if (error || !data || !data.reference || !data.scope) return null;
+
+    const db = applyCoreRows(seed, {
+      schools: data.reference.school ? [data.reference.school] : [],
+      years: data.reference.years ?? [],
+      terms: data.reference.terms ?? [],
+      classes: data.reference.classes ?? [],
+      sections: data.reference.sections ?? [],
+      subjects: data.reference.subjects ?? [],
+      teachers: data.teachers ?? [],
+      assignments: data.teacher_assignments ?? [],
+      students: undefined,
+      enrollments: undefined,
+      documents: [],
+      roleDefs: data.reference.roleDefs ?? data.reference.role_defs ?? [],
+      rolePerms: data.role_permissions ?? [],
+      profiles: data.profile ? [data.profile] : [],
+      guardianStudents: [],
+    }, yearId).db;
+
+    // The bounded bootstrap deliberately omits the school-wide people tables.
+    // Reconstruct only the signed-in person (and their own child/student slice)
+    // so session/RBAC helpers keep their existing DB-shaped contracts without
+    // downloading every user and student at login.
+    const scopeRole = data.scope?.role;
+    const ownProfile = data.profile;
+    if (ownProfile) {
+      const me: User = {
+        id: ownProfile.id,
+        name: ownProfile.full_name ?? "",
+        username: ownProfile.username ?? "",
+        password: "",
+        role: ownProfile.role,
+        roleId: ownProfile.role_def_id,
+        status: ownProfile.status,
+        email: ownProfile.email ?? undefined,
+        phone: ownProfile.phone ?? undefined,
+        teacherId: ownProfile.teacher_id ?? undefined,
+        studentId: ownProfile.student_id ?? undefined,
+        createdAt: ownProfile.created_at ?? new Date().toISOString(),
+        childrenIds: Array.isArray(data.scope?.childIds) ? data.scope.childIds : undefined,
+      };
+      db.users = [me];
+    } else {
+      db.users = [];
+    }
+
+    const mapScopedStudent = (s: any, enrollment: any) => ({
+      id: s.id, regId: s.reg_no,
+      firstName: s.first_name ?? "", middleName: s.middle_name ?? "", lastName: s.last_name ?? "",
+      gender: s.gender ?? "", dob: s.dob ?? "", phone: s.phone, email: s.email, address: s.address,
+      photo: s.photo_path || undefined,
+      guardian: { father: s.guardian_name ?? "", mother: s.mother_name, relation: s.guardian_relation ?? "Father", phone: s.guardian_phone, address: s.guardian_address },
+      admission: { number: s.admission_no ?? "", date: s.admission_date, previousSchool: s.previous_school, type: s.admission_type ?? "New Admission" },
+      enrollment: enrollment ? { yearId: enrollment.year_id, classId: enrollment.class_id, sectionId: enrollment.section_id, rollNumber: enrollment.roll_number, status: enrollment.status, enrolledOn: enrollment.enrolled_on } : undefined,
+      history: enrollment ? [{ yearId: enrollment.year_id, classId: enrollment.class_id, sectionId: enrollment.section_id, rollNumber: enrollment.roll_number, status: enrollment.status, enrolledOn: enrollment.enrolled_on }] : [],
+      documents: [],
+    } as Student);
+
+    if (scopeRole === "student" && data.current_student?.id) {
+      db.students = [mapScopedStudent(data.current_student, data.current_student.enrollment)];
+    } else if (scopeRole === "guardian" && Array.isArray(data.guardian_children)) {
+      db.students = data.guardian_children.map((s: any) => mapScopedStudent(s, s.enrollment)).filter(Boolean);
+    } else {
+      db.students = [];
+    }
+
+    return { db, remote: true };
   } catch (e) {
-    console.warn("[backend] get_app_bootstrap RPC unavailable, falling back to per-table fetch:", e);
+    console.warn("[backend] get_bootstrap_v3 RPC unavailable, falling back to per-table fetch:", e);
     return null;
   }
 }
@@ -638,7 +694,11 @@ export async function hydrateCore(yearId?: string): Promise<{ db: DB; mode: DbMo
   }
 
   const boot = await hydrateCoreViaBootstrap(seed, yearId);
-  const { db, remote } = boot ?? await hydrateCoreViaTables(seed, yearId);
+  if (!boot) {
+    console.error("[backend] Bounded bootstrap failed; refusing the legacy whole-school hydrate on the authenticated boot path.");
+    return { db: seed, mode: "off", schemaMissing: false, transientError: true };
+  }
+  const { db, remote } = boot;
 
   // In live mode, lazy-loaded fields start genuinely empty rather than the
   // local seed placeholder content, so a page can tell "not fetched yet"

@@ -71,6 +71,8 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_offset: OFFSET,
     },
   },
+  teacher_section_counts: { read: true, args: { p_year_id: ID } },
+  get_student_results: { read: true, args: { p_student_id: ID, p_year_id: ID, p_published_only: { type: "boolean", optional: true } } },
   get_student_detail: {
     read: true,
     args: { p_student_id: { type: "string", maxLength: 128 }, p_year_id: ID },
@@ -150,6 +152,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_limit: LIMIT, p_offset: OFFSET,
     },
   },
+  get_fee_ledger: { read: true, args: { p_year_id: ID, p_student_id: ID } },
   list_fee_payment_requests: {
     read: true,
     args: {
@@ -164,6 +167,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
   /* ---------- communication ---------- */
   list_conversations: { read: true, args: { p_year_id: ID, p_limit: LIMIT, p_offset: OFFSET } },
   get_message_report_context: { read: true, rateLimit: 60, args: { p_report_id: { type: "string", maxLength: 128 } } },
+  list_message_reports: { read: true, rateLimit: 60, args: { p_status: { type: "string", optional: true, maxLength: 20 }, p_limit: LIMIT, p_offset: OFFSET } },
   list_messages: {
     read: true,
     args: {
@@ -276,6 +280,7 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_payment_id: { type: "string", optional: true, maxLength: 128 },
     },
   },
+  bulk_create_fee_items: { write: true, args: { p_year_id: ID, p_class_id: ID, p_section_id: ID, p_label: { type: "string", maxLength: 200 }, p_amount: { type: "number", min: 0 }, p_due_date: { type: "string", maxLength: 32 } } },
   create_fee_item: {
     read: false,
     rateLimit: 60,

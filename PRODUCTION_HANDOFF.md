@@ -11,19 +11,18 @@ Set these for the Production environment before the first production deployment:
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `SESSION_SECRET` (use a newly generated random value; do not reuse a development secret)
 - `ALLOWED_ORIGIN` (optional when the browser and API are same-origin; recommended for an explicit production domain)
-- `SCHOOL_AUTH_EMAIL_DOMAIN` (keep the domain used by the school's username-to-email mapping)
 
 Do not place any Supabase service-role key in `src/`, public assets, or Vite `VITE_*` variables.
 
 ## Supabase
 
-Apply every migration in `supabase/migrations/` in filename order. The newest release migrations are `0076_production_hardening.sql` and `0077_production_rpc_execute_lockdown.sql`.
+Apply every migration in `supabase/migrations/` in filename order. The newest release migrations are `0076_production_hardening.sql` through `0081_final_production_cleanup.sql`.
 
 Recommended Auth settings before handover:
 
 - Enable leaked-password protection in Supabase Auth.
 - Require a strong password policy appropriate for staff/student accounts.
-- Verify email settings match the school's login model; this app normally maps usernames to the configured school Auth domain.
+- Verify the school's chosen Auth email/username policy and password requirements in Supabase Auth.
 
 ## Security checks
 
@@ -65,4 +64,4 @@ The source has been statically checked for TypeScript/TSX parse errors and broke
 
 ## Important data note
 
-The live Supabase project still contains development/test records and must not be presented to the client as a clean operational database until those records are intentionally removed. This source package does not include a destructive automatic reset migration; reset the live data once, deliberately, and keep production backups before doing so.
+The live Supabase project has been reset to a clean client baseline: one school (`Abajifar school`), one active academic year (`2026/2027`), no demo students/teachers/classes/subjects/transactions, and only the retained Super Admin account. Add the school's real users and academic records during onboarding.

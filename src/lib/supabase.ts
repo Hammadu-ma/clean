@@ -89,8 +89,8 @@ function emit(event: string, userId: string | null) {
 
 const READ_FUNCTIONS = new Set([
   "get_bootstrap", "get_bootstrap_v3", "get_reference", "my_scope", "list_students", "get_student_detail",
-  "get_marksheet", "get_marksheet_page", "list_assessment_structures", "get_register", "get_attendance_summary", "get_attendance_summary_page", "list_fees", "list_fee_student_summary", "list_fee_payment_requests", "list_users",
-  "list_conversations", "list_messages", "get_message_report_context", "list_notifications", "list_audit",
+  "get_marksheet", "get_marksheet_page", "get_student_results", "list_assessment_structures", "teacher_section_counts", "get_register", "get_attendance_summary", "get_attendance_summary_page", "list_fees", "list_fee_student_summary", "get_fee_ledger", "list_fee_payment_requests", "list_users",
+  "list_conversations", "list_messages", "list_message_reports", "get_message_report_context", "list_notifications", "list_audit",
   // Legacy whole-database reads. Listed so they are coalesced like any other
   // read — several components booting at once must not each trigger one.
   "get_app_bootstrap", "get_app_snapshot", "get_app_group",

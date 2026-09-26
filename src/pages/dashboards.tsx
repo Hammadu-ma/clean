@@ -9,6 +9,7 @@ import {
   studentOf, studentResults, teacherPairs, teacherStudentIds, teachersOfStudent, timeAgo, todayISO, useApp, useLazyGroups,
 } from "../store";
 import { visibleAnnouncements } from "../rbac";
+import { useStudents, useTeacherSectionCounts, useBootstrap } from "../lib/api";
 import { Avatar, Btn, Chip, Panel, Ring, RoleBadge, Skel, SkeletonCards, SkeletonPanel, Stat } from "../ui";
 import type { Student } from "../types";
 
@@ -78,10 +79,12 @@ export function AdminDashboard() {
   const { db, currentUser, yearId } = useApp();
   const groupsLoaded = useLazyGroups(["attendance", "academics", "timetable"]);
   const nav = useNavigate();
-  const enrolled = db.students.filter((s) => s.enrollment?.yearId === yearId);
-  const sections = db.classes.reduce((s, c) => s + c.sections.length, 0);
-  const structures = db.structures.filter((s) => s.yearId === yearId).length;
-  const activeUsers = db.users.filter((u) => u.status === "active").length;
+  const bootstrap = useBootstrap();
+  const recentStudentsQuery = useStudents({ status: "active", sort: "admission" as any, page: 0, pageSize: 5 });
+  const enrolledCount = Number(bootstrap.data?.summary?.students ?? 0);
+  const sections = Number(bootstrap.data?.summary?.sections ?? db.classes.reduce((s, c) => s + c.sections.length, 0));
+  const structures = groupsLoaded ? db.structures.filter((s) => s.yearId === yearId).length : 0;
+  const activeUsers = Number(bootstrap.data?.summary?.staff ?? 0);
   const dow = (new Date().getDay() + 6) % 7;
   const todayLessons = db.timetable.filter((t) => t.day === dow).sort((a, b) => a.period - b.period);
   const takenToday = db.attendance.filter((r) => r.date === todayISO()).length;
@@ -98,8 +101,8 @@ export function AdminDashboard() {
         </>}
       >
         <div className="mt-4 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
-          <Stat label="Enrolled students" value={enrolled.length} sub={`${sections} sections`} icon={<Users className="h-4.5 w-4.5" />} onClick={() => nav("/admin/students")} />
-          <Stat label="Staff & accounts" value={db.users.length} sub={`${activeUsers} active`} icon={<GraduationCap className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/admin/users")} />
+          <Stat label="Enrolled students" value={enrolledCount} sub={`${sections} sections`} icon={<Users className="h-4.5 w-4.5" />} onClick={() => nav("/admin/students")} />
+          <Stat label="Staff & accounts" value={activeUsers} sub="active staff & accounts" icon={<GraduationCap className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/admin/users")} />
           {groupsLoaded ? (
             <>
               <Stat label="Assessment structures" value={structures} sub="mark entry ready" icon={<Table2 className="h-4.5 w-4.5" />} tone="steel" onClick={() => nav("/admin/marks")} />
@@ -156,7 +159,11 @@ export function AdminDashboard() {
               <Btn variant="gold" size="sm" onClick={() => nav("/admin/students")}>Manage students <ArrowRight className="h-3.5 w-3.5" /></Btn>
             </div>
             <ul className="divide-y divide-mist/70">
-              {[...enrolled].sort((a, b) => b.admission.date.localeCompare(a.admission.date)).slice(0, 5).map((s) => (
+              {recentStudentsQuery.rows.map((s) => ({
+                id: s.student_id, regId: s.reg_no, firstName: s.first_name, middleName: s.middle_name ?? "", lastName: s.last_name, gender: s.gender as any, dob: s.dob, status: s.status,
+                guardian: { father: "", relation: "Guardian" }, admission: { number: "", date: s.admission_date ?? "" },
+                enrollment: { yearId, classId: s.class_id, sectionId: s.section_id, rollNumber: s.roll_number ?? undefined, status: s.status }, history: [], documents: [], photo: s.photo_path ?? undefined,
+              } as Student)).map((s) => (
                 <li key={s.id}>
                   <button onClick={() => nav(`/admin/students/${s.id}`)} className="flex w-full cursor-pointer items-center gap-3 px-5 py-2.5 text-left transition-colors hover:bg-pine-50/60">
                     <Avatar student={s} size={34} />
@@ -204,6 +211,9 @@ export function TeacherDashboard() {
   const nav = useNavigate();
   const pairs = teacherPairs(db, currentUser);
   const myStudents = teacherStudentIds(db, currentUser);
+  const teacherStudentCountQuery = useStudents({ page: 0, pageSize: 1 });
+  const teacherSectionCountsQuery = useTeacherSectionCounts();
+  const teacherSectionCounts = new Map((teacherSectionCountsQuery.data ?? []).map((x) => [`${x.class_id}|${x.section_id}`, Number(x.count)]));
   const mySubjects = [...new Set(pairs.flatMap((p) => p.subjectIds))];
   const dow = (new Date().getDay() + 6) % 7;
   const myLessons = db.timetable.filter((t) => t.day === dow && pairs.some((p) => p.classId === t.classId && p.sectionId === t.sectionId));
@@ -220,11 +230,11 @@ export function TeacherDashboard() {
         </>}
       >
         <p className="mt-2 max-w-xl text-[12.5px] text-pine-200">
-          Your access follows your subject assignments — {pairs.length} class sections and {myStudents.size} students are visible to you. Everything else is out of scope.
+          Your access follows your subject assignments — {pairs.length} class sections and {teacherStudentCountQuery.total} students are visible to you. Everything else is out of scope.
         </p>
         <div className="mt-4 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
           <Stat label="My class sections" value={pairs.length} icon={<Layers className="h-4.5 w-4.5" />} onClick={() => nav("/teacher/classes")} />
-          <Stat label="My students" value={myStudents.size} icon={<Users className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/teacher/students")} />
+          <Stat label="My students" value={teacherStudentCountQuery.total} icon={<Users className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/teacher/students")} />
           {groupsLoaded ? (
             <>
               <Stat label="Lessons today" value={myLessons.length} icon={<Clock className="h-4.5 w-4.5" />} tone="steel" onClick={() => nav("/teacher/classes")} />
@@ -282,7 +292,7 @@ export function TeacherDashboard() {
             </div>
             <div className="grid gap-2 p-4 sm:grid-cols-2">
               {pairs.map((p) => {
-                const count = db.students.filter((s) => s.enrollment?.classId === p.classId && s.enrollment?.sectionId === p.sectionId).length;
+                const count = teacherSectionCounts.get(`${p.classId}|${p.sectionId}`) ?? 0;
                 return (
                   <button key={p.classId + p.sectionId} onClick={() => nav("/teacher/students")} className="group cursor-pointer rounded-lg border border-mist bg-paper/60 px-3.5 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-pine-400 hover:bg-pine-50">
                     <p className="font-display text-[14px] font-extrabold text-ink">{sectionShort(db, p.classId, p.sectionId)}</p>

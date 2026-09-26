@@ -10,6 +10,8 @@ import { pushAudit } from "../rbac";
 import { Btn, Chip, Field, Modal, Panel, Select, TextArea, TextInput, UsernameConflictModal } from "../ui";
 import { getDownloadDataUrl, isStorageConfigured, uploadFile, useSignedUrl } from "../lib/storage";
 import { hasPermission } from "../rbac";
+import { saveStudent, createUserAccount, useUsers } from "../lib/api";
+import { deleteUserAccount } from "../lib/backend";
 
 const readAsDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -28,7 +30,7 @@ interface WizardProps {
 }
 
 export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
-  const { db, currentUser, yearId, update, toast, reconnect } = useApp();
+  const { db, currentUser, yearId, update, toast, reconnect, mode } = useApp();
   const isEdit = !!student;
   // Registering a student and issuing them a login are gated separately: the
   // server enforces `students.create` on the insert and `users.manage` on
@@ -44,7 +46,7 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
   const activeYear = getYear(db, yearId) ?? db.years.find((y) => y.active);
   const yrPrefix = activeYear ? activeYear.name.slice(0, 4) : "2026";
 
-  const nextNum = db.students.length + 1;
+  const nextNum = 1; // server generates/accepts the final ID; this is only a collision-resistant UI placeholder
   const [f, setF] = useState({
     regId: student?.regId ?? `ST-${yrPrefix}-${String(nextNum).padStart(3, "0")}`,
     firstName: student?.firstName ?? "",
@@ -69,6 +71,11 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
     makeLogin: false,
     username: "",
     password: "stud123",
+  });
+  const usernameProbe = useUsers({
+    enabled: mode === "live" && !isEdit && f.makeLogin && Boolean(f.username.trim()),
+    search: f.username.trim().toLowerCase() || undefined,
+    page: 0, pageSize: 5,
   });
   // `photoKey` is what actually gets saved (an R2 object key, or — offline/
   // demo mode only — a raw data: URL). `photo` is always something an <img>
@@ -150,6 +157,47 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
   // first (used when the admin chooses "replace" on a username conflict).
   const finalizeSave = async (loginUsername?: string, loginPassword?: string, replaceId?: string) => {
     const id = studentId;
+    const payload = {
+      id,
+      reg_no: f.regId.trim(),
+      admission_no: f.admNo.trim(),
+      first_name: f.firstName.trim(), middle_name: f.middleName.trim(), last_name: f.lastName.trim(),
+      gender: f.gender, dob: f.dob || null,
+      phone: f.phone.trim() || null, email: f.email.trim() || null, address: f.address.trim() || null,
+      guardian_name: f.gFather.trim(), guardian_relation: f.gRelation,
+      guardian_phone: f.gPhone.trim() || null, guardian_address: f.gAddress.trim() || f.address.trim() || null,
+      mother_name: f.gMother.trim() || null,
+      admission_date: f.admDate || null, previous_school: f.prevSchool.trim() || null,
+      admission_type: f.admType, photo_path: photoKey || null,
+      class_id: f.classId, section_id: f.sectionId,
+    };
+
+    if (mode === "live") {
+      try {
+        await saveStudent(payload, yearId);
+        if (!isEdit && loginUsername && loginPassword) {
+          if (replaceId) {
+            const replaceResult = await deleteUserAccount(replaceId);
+            if (replaceResult.error) throw new Error(replaceResult.error);
+          }
+          await createUserAccount({
+            username: loginUsername,
+            password: loginPassword,
+            fullName: `${f.firstName.trim()} ${f.lastName.trim()}`,
+            role: "student", roleDefId: "student", studentId: id,
+            email: f.email.trim() || null, phone: f.phone.trim() || null,
+          });
+        }
+        toast(isEdit ? "Student record updated." : `${f.firstName.trim()} ${f.lastName.trim()} registered${loginUsername ? " — login created" : ""}.`);
+        await reconnect();
+        onSaved?.(id);
+        onClose();
+      } catch (e) {
+        toast(e instanceof Error ? e.message : "Could not save this student.", "warn");
+      }
+      return;
+    }
+
     const errors = await update((d) => {
       const record: Student = {
         id,
@@ -165,40 +213,19 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
           : [{ yearId, classId: f.classId, sectionId: f.sectionId, status: "active", enrolledOn: f.admDate }],
         documents: docs,
       };
-      if (isEdit) {
-        const idx = d.students.findIndex((x) => x.id === id);
-        if (idx >= 0) d.students[idx] = record;
-        pushAudit(d, currentUser, "student.edit", `${record.firstName} ${record.lastName}`, "Record updated via wizard");
-      } else {
-        d.students.push(record);
-        pushAudit(d, currentUser, "student.register", `${record.firstName} ${record.lastName}`, `Admitted to ${sectionLabel(db, f.classId, f.sectionId)}`);
-        if (loginUsername && loginPassword) {
-          if (replaceId) {
-            const ridx = d.users.findIndex((u) => u.id === replaceId);
-            if (ridx >= 0) {
-              d.users.splice(ridx, 1);
-              pushAudit(d, currentUser, "user.replace", record.firstName + " " + record.lastName, `Replaced login @${loginUsername}`);
-            }
-          }
-          d.users.push({
-            id: uid(), name: `${record.firstName} ${record.lastName}`, username: loginUsername, password: loginPassword,
-            role: "student", roleId: "student", status: "active", studentId: id, email: record.email, createdAt: todayISO(),
-          });
-        }
+      const idx = d.students.findIndex((x) => x.id === id);
+      if (idx >= 0) d.students[idx] = record; else d.students.push(record);
+      pushAudit(d, currentUser, isEdit ? "student.edit" : "student.register", `${record.firstName} ${record.lastName}`, isEdit ? "Record updated via wizard" : `Admitted to ${sectionLabel(db, f.classId, f.sectionId)}`);
+      if (!isEdit && loginUsername && loginPassword) {
+        if (replaceId) d.users = d.users.filter((u) => u.id !== replaceId);
+        d.users.push({ id: uid(), name: `${record.firstName} ${record.lastName}`, username: loginUsername, password: loginPassword, role: "student", roleId: "student", status: "active", studentId: id, email: record.email, createdAt: todayISO() });
       }
     });
-
-    if (errors.length) {
-      // The student record may still have landed even if the login didn't (or vice versa) — say exactly what failed rather than a blanket success.
-      toast(describeSyncErrors(errors), "warn");
-    } else {
-      toast(isEdit ? "Student record updated." : `${f.firstName.trim()} ${f.lastName.trim()} registered${loginUsername ? " — login created" : ""}.`);
-    }
-    if (!isEdit && loginUsername && errors.length === 0) await reconnect(); // pull the real Supabase-assigned account id in place of the local placeholder
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast(isEdit ? "Student record updated." : `${f.firstName.trim()} ${f.lastName.trim()} registered${loginUsername ? " — login created" : ""}.`);
     onSaved?.(id);
     onClose();
-  };
-
+  }
   const save = async () => {
     if (!f.firstName.trim() || !f.lastName.trim() || !f.dob) { toast("Names and date of birth are required.", "warn"); return; }
     if (!f.classId || !f.sectionId) { toast("Pick a grade and section.", "warn"); return; }
@@ -207,7 +234,12 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
     const loginUsername = f.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
 
     if (!isEdit && f.makeLogin) {
-      const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername);
+      const existingRow = usernameProbe.rows.find((u) => u.username.toLowerCase() === loginUsername);
+      const existing = existingRow ? ({
+        id: existingRow.id, name: existingRow.full_name, username: existingRow.username, password: "", role: existingRow.role as UserAccount["role"],
+        roleId: existingRow.role_def_id, status: existingRow.status as UserAccount["status"], email: existingRow.email ?? undefined, phone: existingRow.phone ?? undefined,
+        teacherId: existingRow.teacher_id ?? undefined, studentId: existingRow.student_id ?? undefined, childrenIds: existingRow.children_ids ?? undefined, createdAt: existingRow.created_at,
+      } as UserAccount) : undefined;
       if (existing) { setConflict(existing); return; }
       setSaving(true);
       try {

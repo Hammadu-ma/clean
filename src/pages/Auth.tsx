@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, ArrowLeft, Loader2, Database } from "lucide-react";
 import { homePathFor, useApp } from "../store";
+import { useBootstrap } from "../lib/api";
 import { Btn, RoleBadge, SchoolLogo } from "../ui";
 
 // Lazy: pulls in ~160KB of raw migration SQL text (see lib/migrations.ts),
@@ -13,6 +14,7 @@ const SetupConsole = lazy(() => import("./SetupConsole"));
 export function LoginPage() {
   const { db, login, toast, mode } = useApp();
   const nav = useNavigate();
+  const bootstrap = useBootstrap();
   const [connected, setConnected] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -79,7 +81,7 @@ export function LoginPage() {
             Sign in to continue to your school workspace. Your available pages and actions are loaded securely from your account.
           </p>
         </div>
-        <p className="relative text-[11px] text-pine-400">AY {db.years.find((y) => y.active)?.name} · {db.students.length} students · {db.teachers.length} teachers</p>
+        <p className="relative text-[11px] text-pine-400">AY {db.years.find((y) => y.active)?.name} · {Number(bootstrap.data?.summary?.students ?? 0)} students · {db.teachers.length} teachers</p>
       </div>
 
       {/* form panel */}

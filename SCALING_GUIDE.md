@@ -124,40 +124,30 @@ and grade band, then re-enroll every student one at a time.
 
 ## Current production wiring status
 
-The application now uses server-side, year-scoped queries for the highest-value list screens:
+The application now uses bounded server-side, year-scoped queries for the growing operational paths:
 
 - **Students / People:** paged search/filter through `useStudents`.
 - **Users:** paged search/filter through `useUsers`.
-- **Attendance daily register:** the selected class/section/date is loaded through `useRegister`; writes go through `save_register`.
-- **Attendance summary:** paged through `get_attendance_summary_page`.
+- **Attendance:** the selected register is loaded by class/section/date; summaries are paged.
+- **Mark Entry:** assessment structures and mark rosters are server-paged; mark writes are targeted RPCs.
+- **Fees:** student summaries, payment requests, individual ledgers and bulk fee creation use bounded server APIs.
+- **Messages:** conversations, contacts and message history use bounded server APIs; message reporting/moderation is server-backed.
+- **Reports:** student rosters are paged and report-card results are loaded for one student at a time.
+- **Login bootstrap:** the authenticated boot path is role/year-scoped and no longer falls back to a whole-school snapshot.
 
-The repository also contains the paged APIs for fees, messages and marks. Those screens still retain compatibility paths in the current release where their editing/reporting workflows depend on the legacy in-memory model. They should be migrated before claiming a 5,000+ student stress-test ceiling.
+The legacy in-memory `DB` remains as a compatibility layer for small reference/configuration surfaces and existing page behavior, but large growing lists above no longer depend on downloading the whole school into the browser.
 
-The login bootstrap has a safe role/year-scoped `get_bootstrap()` implementation available, but the legacy compatibility hydrate path remains for screens that still depend on the old `DB` object. Do not increase the size of that legacy snapshot or use it as a new feature API.
+## Remaining deployment caveat
 
-For a genuinely large deployment, the final migration step is to remove those remaining legacy feature-group reads and route every large list through its bounded hook/RPC. This should be done incrementally to avoid rewriting the large page components in one pass.
+The code has been checked for TypeScript/TSX parse/transpile errors and relative-import integrity. A full `npm run typecheck` and `npm run build` could not be executed in this environment because dependency installation could not complete from the npm registry. Run those two commands in the deployment environment before publishing.
+
+The PostgreSQL design still contains some Supabase advisor findings around multiple permissive policies and SECURITY DEFINER functions. Those are not automatically unsafe in this application because the server functions perform explicit permission checks, but they should be reviewed during a formal security review.
 
 
-## One thing I'd push back on
+## Write-path note
 
-"Handle thousands of records at very high speed" is achievable and most of it
-is above — but the current write path will limit you before the read path
-does. `sync()` in `backend.ts` diffs two full `DB` snapshots on every
-`update()` and applies the delta. That's fine at 300 students and untenable at
-5,000: you're diffing megabytes of JavaScript objects to save one changed
-mark.
+The largest student/mark/fee/message workflows now use targeted server writes rather than diffing a whole school snapshot. The compatibility `update()` path still exists for smaller configuration/reference workflows so existing UI behavior is preserved.
 
-`save_student_marks()` in `0002` is already the right pattern — a targeted RPC
-that writes exactly what changed. The remaining writes should follow it rather
-than going through snapshot diffing. I'd treat that as the next piece of work
-after the list pages, and it's a bigger change than anything here, so I've
-left it rather than half-doing it.
+## Deployment secret note
 
-## A note on your anon key
-
-`src/lib/supabase.ts` hardcodes a project URL and anon key as fallbacks. That
-is genuinely fine — the anon key is publishable by design and RLS is what
-protects the data. But it also means anyone with the bundle points at *your*
-project. Before you go live, set `VITE_SUPABASE_URL` and
-`VITE_SUPABASE_ANON_KEY` in the deployment environment and drop the hardcoded
-defaults, so a fork doesn't quietly write into your database.
+The browser does not contain the Supabase service-role key. Keep `SUPABASE_SERVICE_ROLE_KEY` and `SESSION_SECRET` server-only in the Vercel environment.

@@ -27,7 +27,7 @@ import {
   Stat, Tabs, TextArea, TextInput, tdCls, thCls, useConfirm,
 } from "../ui";
 import { AccessDenied } from "./Auth";
-import { useRegister, saveRegister } from "../lib/api";
+import { useRegister, saveRegister, useAssessmentStructures, useMarksheetPage, saveStudentMarks, setSubmissionStatus, useStudentResults, useStudents, useFeeStudentSummary, useFeePaymentRequests, createFeeItem, deleteFeeItem, recordFeePayment, reviewFeePaymentRequest, bulkCreateFeeItems, useFeeLedger } from "../lib/api";
 
 // DAYS was a fixed 5-day week; the timetable now reads db.settings.workingDays
 // instead (a configurable subset of WEEKDAYS, imported below) so schools can
@@ -100,18 +100,20 @@ function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Stud
 
 /* ================= mark entry (admin full / teacher scoped) ================= */
 export function MarkEntryPage() {
-  const { db, currentUser, yearId, update, toast, refreshGroup } = useApp();
+  const { db, currentUser, yearId, toast } = useApp();
   const location = useLocation();
-  const groupsLoaded = useLazyGroups("academics");
+  const assessmentQuery = useAssessmentStructures();
   const role = currentUser?.role ?? "admin";
   const isAdmin = role === "admin";
   const pairs = teacherPairs(db, currentUser);
+  const [marksPage, setMarksPage] = useState(0);
+  const [marksSearch, setMarksSearch] = useState("");
+  const canViewMarks = hasPermission(db, currentUser, "exams.view");
 
-  if (!hasPermission(db, currentUser, "exams.view")) {
-    return <AccessDenied required="exams.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
-  }
-
-  const allStructures = db.structures.filter((st) => st.yearId === yearId);
+  const allStructures: AssessmentStructure[] = useMemo(() => (assessmentQuery.rows ?? []).map((st) => ({
+    id: st.id, yearId: st.year_id, classId: st.class_id, subjectId: st.subject_id, period: st.period,
+    items: (st.items ?? []).map((i) => ({ id: i.id, name: i.name, max: Number(i.max), weight: Number(i.weight) })),
+  })), [assessmentQuery.rows]);
 
   const allowedStructures = allStructures.filter((st) => {
     if (isAdmin) return true;
@@ -155,6 +157,41 @@ export function MarkEntryPage() {
 
   // With class + subject + period all chosen, exactly one structure should match.
   const structure = filteredStructures.length === 1 ? filteredStructures[0] : null;
+  const marksQuery = useMarksheetPage(structure?.id ?? null, filterSectionId || undefined, marksSearch, marksPage, 100);
+  const submissionRaw = marksQuery.data?.submission ?? {};
+  const submission: Submission | undefined = (submissionRaw as any).id ? {
+    id: (submissionRaw as any).id, structureId: structure?.id ?? "", status: ((submissionRaw as any).status ?? marksQuery.data?.status ?? "draft") as Submission["status"],
+    submittedBy: (submissionRaw as any).submitted_by ?? undefined, submittedAt: (submissionRaw as any).submitted_at ?? undefined,
+    approvedBy: (submissionRaw as any).approved_by ?? undefined, approvedAt: (submissionRaw as any).approved_at ?? undefined,
+    publishedBy: (submissionRaw as any).published_by ?? undefined, publishedAt: (submissionRaw as any).published_at ?? undefined,
+    returnedBy: (submissionRaw as any).returned_by ?? undefined, returnedAt: (submissionRaw as any).returned_at ?? undefined,
+    returnReason: (submissionRaw as any).return_reason ?? undefined,
+    reopenReason: (submissionRaw as any).reopen_reason ?? undefined,
+    reopenRequestStatus: (submissionRaw as any).reopen_request_status ?? "none",
+    reopenRequestedBy: (submissionRaw as any).reopen_requested_by ?? undefined,
+    reopenRequestedAt: (submissionRaw as any).reopen_requested_at ?? undefined,
+    reopenRequestReason: (submissionRaw as any).reopen_request_reason ?? undefined,
+    reopenDecidedBy: (submissionRaw as any).reopen_decided_by ?? undefined,
+    reopenDecidedAt: (submissionRaw as any).reopen_decided_at ?? undefined,
+    reopenDecisionNote: (submissionRaw as any).reopen_decision_note ?? undefined,
+  } : undefined;
+  const status = (marksQuery.data?.status ?? "draft") as Submission["status"];
+  const roster: Student[] = useMemo(() => (marksQuery.rows ?? []).map((r) => {
+    const [firstName, ...rest] = String(r.full_name ?? "").trim().split(/\s+/);
+    return {
+      id: r.student_id, regId: r.reg_no, firstName: firstName ?? "", middleName: "", lastName: rest.join(" "), gender: "Male", dob: "", status: "active",
+      guardian: { father: "", relation: "Guardian" }, admission: { number: "", date: "", type: "" },
+      enrollment: { yearId: structure?.yearId ?? yearId, classId: structure?.classId ?? "", sectionId: filterSectionId || "", rollNumber: r.roll_number ?? undefined, status: "active" }, history: [], documents: [],
+    };
+  }), [marksQuery.rows, structure, yearId, filterSectionId]);
+  const viewDb = useMemo(() => ({
+    ...db,
+    students: roster,
+    assessmentMarks: structure ? { ...db.assessmentMarks, [structure.id]: Object.fromEntries((marksQuery.rows ?? []).map((r) => [r.student_id, r.marks])) } : db.assessmentMarks,
+  }), [db, roster, structure, marksQuery.rows]);
+  const ranks = useMemo(() => Object.fromEntries((marksQuery.rows ?? []).map((r) => [r.student_id, r.rank ?? undefined])), [marksQuery.rows]);
+
+  useEffect(() => { setMarksPage(0); }, [structure?.id, filterSectionId, marksSearch]);
 
   const availableSections = useMemo(() => {
     if (!filterClassId) return [];
@@ -162,20 +199,6 @@ export function MarkEntryPage() {
     return cls?.sections || [];
   }, [db, filterClassId]);
 
-  const roster: Student[] = useMemo(() => {
-    if (!structure) return [];
-    let all = db.students.filter((s) => s.enrollment?.classId === structure.classId);
-    if (filterSectionId) all = all.filter((s) => s.enrollment?.sectionId === filterSectionId);
-    if (isAdmin) return all;
-    const allowed = teacherStudentIds(db, currentUser);
-    return all.filter((s) => allowed.has(s.id));
-  }, [db, structure, filterSectionId, isAdmin, currentUser]);
-
-
-  const ranks = structure ? structureRanks(db, structure) : {};
-
-  const submission = structure ? submissionFor(db, structure.id) : undefined;
-  const status = structure ? submissionStatus(db, structure.id) : "draft";
   const canApprove = hasPermission(db, currentUser, "results.manage");
   const showGrade = getYear(db, structure?.yearId)?.showGrade !== false;
   const canPublish = hasPermission(db, currentUser, "results.publish");
@@ -204,17 +227,12 @@ export function MarkEntryPage() {
   const [reopenReviewNote, setReopenReviewNote] = useState("");
 
   const canEditStructure = canManageStructures && (isAdmin || status === "draft");
+
+  if (!canViewMarks) {
+    return <AccessDenied required="exams.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
   const canRequestReopen = !isAdmin && role === "teacher" && ["submitted", "approved", "published"].includes(status);
   const hasPendingReopenRequest = submission?.reopenRequestStatus === "pending";
-
-  const ensureSubmission = (d: { submissions: Submission[] }, structureId: string): Submission => {
-    let s = d.submissions.find((x) => x.structureId === structureId);
-    if (!s) {
-      s = { id: uid(), structureId, status: "draft" };
-      d.submissions.push(s);
-    }
-    return s;
-  };
 
   const doRequestReopen = async () => {
     if (!structure || !reopenRequestReason.trim() || workflowBusy) {
@@ -228,7 +246,7 @@ export function MarkEntryPage() {
       toast(error, "warn");
       return;
     }
-    await refreshGroup("academics");
+    await marksQuery.refetch();
     setReopenRequestReason("");
     setReopenRequestOpen(false);
     toast("Reopen request sent to administrators.");
@@ -246,7 +264,7 @@ export function MarkEntryPage() {
       toast(error, "warn");
       return;
     }
-    await refreshGroup("academics");
+    await marksQuery.refetch();
     setReopenReviewNote("");
     setReopenReviewOpen(false);
     toast(reopenReviewDecision === "approved" ? "Request approved — the teacher can edit marks again." : "Reopen request rejected.");
@@ -255,112 +273,79 @@ export function MarkEntryPage() {
   const doSubmit = async () => {
     if (!structure || !currentUser || workflowBusy) return;
     setWorkflowBusy("submit");
-    const errors = await update((d) => {
-      const s = ensureSubmission(d, structure.id);
-      s.status = "submitted";
-      s.submittedBy = currentUser.id;
-      s.submittedAt = new Date().toISOString();
-      s.returnReason = undefined;
-      pushAudit(d, currentUser, "marks.submit", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name} · ${structure.period}`, "Submitted for review");
-      const approvers = d.users.filter((u) => u.status === "active" && u.id !== currentUser.id && d.roles.find((r) => r.id === u.roleId)?.permissions.includes("results.manage"));
-      pushNotifications(d, approvers.map((u) => u.id), "result", "Marks awaiting review", `${currentUser.name} submitted ${getSubject(db, structure.subjectId)?.name} — ${getClass(db, structure.classId)?.name}.`);
-    });
-    setWorkflowBusy(null);
-    setConfirmSubmit(false);
-    if (errors.length) toast(describeSyncErrors(errors), "warn");
-    else toast("Submitted for administrative review.");
+    try {
+      const result = await setSubmissionStatus(structure.id, "submitted");
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      await marksQuery.refetch();
+      setConfirmSubmit(false);
+      toast("Submitted for administrative review.");
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't submit marks.", "warn"); }
+    finally { setWorkflowBusy(null); }
   };
 
   const doApprove = async () => {
-    if (!structure || !currentUser || workflowBusy) return;
+    if (!structure || workflowBusy) return;
     setWorkflowBusy("approve");
-    const errors = await update((d) => {
-      const s = ensureSubmission(d, structure.id);
-      s.status = "approved";
-      s.approvedBy = currentUser.id;
-      s.approvedAt = new Date().toISOString();
-      pushAudit(d, currentUser, "marks.approve", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Approved");
-      if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks approved", `Your ${getSubject(db, structure.subjectId)?.name} marks were approved by ${currentUser.name}.`);
-    });
-    setWorkflowBusy(null);
-    if (errors.length) toast(describeSyncErrors(errors), "warn");
-    else toast("Marks approved.");
+    try {
+      const result = await setSubmissionStatus(structure.id, "approved");
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      await marksQuery.refetch();
+      toast("Marks approved.");
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't approve marks.", "warn"); }
+    finally { setWorkflowBusy(null); }
   };
 
   const doReturn = async () => {
-    if (!structure || !currentUser || !returnReason.trim() || workflowBusy) { if (!returnReason.trim()) toast("A reason is required to return marks.", "warn"); return; }
+    if (!structure || !returnReason.trim() || workflowBusy) { if (!returnReason.trim()) toast("A reason is required to return marks.", "warn"); return; }
     setWorkflowBusy("return");
-    const errors = await update((d) => {
-      const s = ensureSubmission(d, structure.id);
-      s.status = "returned";
-      s.returnedBy = currentUser.id;
-      s.returnedAt = new Date().toISOString();
-      s.returnReason = returnReason.trim();
-      pushAudit(d, currentUser, "marks.return", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, returnReason.trim());
-      if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks returned for correction", returnReason.trim());
-    });
-    setWorkflowBusy(null);
-    setReturnOpen(false);
-    setReturnReason("");
-    if (errors.length) toast(describeSyncErrors(errors), "warn");
-    else toast("Returned for correction.");
+    try {
+      const result = await setSubmissionStatus(structure.id, "returned", returnReason.trim());
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      await marksQuery.refetch();
+      setReturnOpen(false); setReturnReason("");
+      toast("Returned for correction.");
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't return marks.", "warn"); }
+    finally { setWorkflowBusy(null); }
   };
 
   const doPublish = async () => {
-    if (!structure || !currentUser || workflowBusy) return;
+    if (!structure || workflowBusy) return;
     setWorkflowBusy("publish");
-    const errors = await update((d) => {
-      const s = ensureSubmission(d, structure.id);
-      s.status = "published";
-      s.publishedBy = currentUser.id;
-      s.publishedAt = new Date().toISOString();
-      pushAudit(d, currentUser, "results.publish", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Published to students & families");
-      const classStudents = d.students.filter((st) => st.enrollment?.classId === structure.classId);
-      const recipients = d.users.filter((u) => u.status === "active" && (classStudents.some((st) => u.studentId === st.id) || (u.childrenIds ?? []).some((cid) => classStudents.some((st) => st.id === cid))));
-      pushNotifications(d, recipients.map((u) => u.id), "result", "Results published", `${getSubject(db, structure.subjectId)?.name} results for ${getClass(db, structure.classId)?.name} are now available.`);
-    });
-    setWorkflowBusy(null);
-    setConfirmPublish(false);
-    if (errors.length) toast(describeSyncErrors(errors), "warn");
-    else toast("Published — students and families can now view these results.");
+    try {
+      const result = await setSubmissionStatus(structure.id, "published");
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      await marksQuery.refetch();
+      setConfirmPublish(false);
+      toast("Published — students and families can now view these results.");
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't publish results.", "warn"); }
+    finally { setWorkflowBusy(null); }
   };
 
   const doReopen = async () => {
-    if (!structure || !currentUser || !reopenReasonInput.trim() || workflowBusy) { if (!reopenReasonInput.trim()) toast("A reason is required to reopen a marks workflow.", "warn"); return; }
+    if (!structure || !reopenReasonInput.trim() || workflowBusy) { if (!reopenReasonInput.trim()) toast("A reason is required to reopen a marks workflow.", "warn"); return; }
     setWorkflowBusy("reopen");
-    const errors = await update((d) => {
-      const s = ensureSubmission(d, structure.id);
-      s.status = "draft";
-      s.approvedBy = undefined; s.approvedAt = undefined; s.publishedBy = undefined; s.publishedAt = undefined;
-      s.reopenReason = reopenReasonInput.trim();
-      pushAudit(d, currentUser, "marks.reopen", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, reopenReasonInput.trim());
-    });
-    setWorkflowBusy(null);
-    setReopenOpen(false);
-    setReopenReasonInput("");
-    if (errors.length) toast(describeSyncErrors(errors), "warn");
-    else toast("Reopened — marks are editable again.");
+    try {
+      const result = await setSubmissionStatus(structure.id, "draft", reopenReasonInput.trim());
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      await marksQuery.refetch();
+      setReopenOpen(false); setReopenReasonInput("");
+      toast("Reopened — marks are editable again.");
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't reopen marks.", "warn"); }
+    finally { setWorkflowBusy(null); }
   };
 
   const setScore = async (studentId: string, item: AssessmentItem, raw: string) => {
     if (!structure || !canEdit) return;
-    const errors = await update((d) => {
-      const byStudent = (d.assessmentMarks[structure.id] = d.assessmentMarks[structure.id] ?? {});
-      const row = (byStudent[studentId] = byStudent[studentId] ?? {});
-      if (raw === "") {
-        delete row[item.id];
-        if (Object.keys(row).length === 0) delete byStudent[studentId];
-        return;
-      }
-      const v = Number(raw);
-      row[item.id] = isNaN(v) ? 0 : Math.max(0, Math.min(item.max, v));
-    });
-    if (errors.length) {
-      // Don't show a false "Saved" — the write may not have reached the server.
-      toast(describeSyncErrors(errors), "warn");
-    } else {
+    const current = (marksQuery.rows ?? []).find((r) => r.student_id === studentId)?.marks ?? {};
+    const next = { ...current };
+    if (raw === "") delete next[item.id];
+    else { const v = Number(raw); next[item.id] = isNaN(v) ? 0 : Math.max(0, Math.min(item.max, v)); }
+    try {
+      const result = await saveStudentMarks(structure.id, studentId, next);
+      if ((result as any)?.error) { toast((result as any).error, "warn"); await marksQuery.refetch(); return; }
       setSavedAt(new Date().toLocaleTimeString("en-GB"));
-    }
+      void marksQuery.refetch();
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't save mark.", "warn"); await marksQuery.refetch(); }
   };
 
   return (
@@ -418,6 +403,8 @@ export function MarkEntryPage() {
           </Select>
         </Field>
 
+        <Field label="Search student" className="w-48"><TextInput value={marksSearch} onChange={(e) => setMarksSearch(e.target.value)} placeholder="Name or reg. no…" /></Field>
+
         {(filterClassId || filterSectionId || filterSubjectId || filterPeriod) && (
           <Btn size="sm" variant="ghost" onClick={() => { setFilterClassId(""); setFilterSectionId(""); setFilterSubjectId(""); setFilterPeriod(""); }}>
             <RotateCcw className="h-3.5 w-3.5" /> Clear filters
@@ -425,7 +412,7 @@ export function MarkEntryPage() {
         )}
       </div>
 
-      {!groupsLoaded ? (
+      {assessmentQuery.isPending ? (
         <SkeletonPanel />
       ) : allowedStructures.length === 0 ? (
         <Panel className="anim-rise"><EmptyState icon={<Table2 className="h-5 w-5" />} title="No assessment structures in your scope" body={isAdmin ? "Create a structure: subject + period + assessments with max marks and weights." : "Structures appear here once the admin configures them for your subjects, or ask the office."} action={canManageStructures ? <Btn onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn> : undefined} /></Panel>
@@ -450,8 +437,8 @@ export function MarkEntryPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   {savedAt && status === "draft" && <Chip tone="pine" className="!border-pine-600 !bg-pine-800 !text-pine-100"><Check className="h-3 w-3" /> Saved {savedAt}</Chip>}
                   <SubmissionChip status={status} />
-                  {isAdmin && <Btn size="sm" variant="soft" onClick={() => exportMarkSheetCsv(db, structure, roster)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>}
-                  {isAdmin && <Btn size="sm" variant="soft" onClick={() => exportMarkSheetPdf(db, structure, roster)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>}
+                  {isAdmin && <Btn size="sm" variant="soft" onClick={() => exportMarkSheetCsv(viewDb, structure, roster)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>}
+                  {isAdmin && <Btn size="sm" variant="soft" onClick={() => exportMarkSheetPdf(viewDb, structure, roster)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>}
                   {canEditStructure && <Btn size="sm" variant="gold" onClick={() => setEditStruct(structure)}><Pencil className="h-3.5 w-3.5" /> Edit structure</Btn>}
                   {canManageStructures && !canEditStructure && !isAdmin && status !== "draft" && <Chip tone="steel"><ShieldCheck className="h-3 w-3" /> Structure locked</Chip>}
                 </div>
@@ -499,7 +486,7 @@ export function MarkEntryPage() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 text-[12px] font-extrabold text-ink"><RotateCcw className="h-4 w-4 text-gold-700" /> Teacher requested a reopen</div>
                       <p className="mt-1 text-[12px] text-soft">{submission.reopenRequestReason || "No reason provided."}</p>
-                      <p className="mt-1 text-[10.5px] font-semibold text-soft">Requested {submission.reopenRequestedAt ? fmtDate(submission.reopenRequestedAt) : "recently"} · {submission.reopenRequestedBy ? (db.users.find((u) => u.id === submission.reopenRequestedBy)?.name ?? "Assigned teacher") : "Assigned teacher"}</p>
+                      <p className="mt-1 text-[10.5px] font-semibold text-soft">Requested {submission.reopenRequestedAt ? fmtDate(submission.reopenRequestedAt) : "recently"} · {submission.reopenRequestedBy === currentUser?.id ? (currentUser?.name ?? "Assigned teacher") : "Assigned teacher"}</p>
                     </div>
                     <div className="flex shrink-0 gap-2">
                       <Btn size="sm" variant="dangerSoft" disabled={!!workflowBusy} onClick={() => { setReopenReviewDecision("rejected"); setReopenReviewOpen(true); }}>Reject</Btn>
@@ -529,8 +516,8 @@ export function MarkEntryPage() {
                   </thead>
                   <tbody className="divide-y divide-mist/70">
                     {roster.map((s, i) => {
-                      const calc = assessmentCalc(db, structure, s.id);
-                      const grade = calc?.complete ? gradeFor(calc.pct, db.grading) : null;
+                      const calc = assessmentCalc(viewDb, structure, s.id);
+                      const grade = calc?.complete ? gradeFor(calc.pct, viewDb.grading) : null;
                       return (
                         <tr key={s.id} className={`transition-colors ${calc?.complete ? "hover:bg-pine-50/60" : calc ? "bg-gold-100/25" : "bg-paper/40"}`}>
                           <td className={`${tdCls()} tnum font-mono text-[11.5px] text-soft`}>{i + 1}</td>
@@ -565,6 +552,15 @@ export function MarkEntryPage() {
                   </tbody>
                 </table>
               </div>
+              {marksQuery.pageCount > 1 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-mist px-4 py-3 sm:px-5">
+                  <span className="text-[11.5px] text-soft">Showing {marksQuery.page * marksQuery.pageSize + (roster.length ? 1 : 0)}–{marksQuery.page * marksQuery.pageSize + roster.length} of {marksQuery.total} students</span>
+                  <div className="flex gap-2">
+                    <Btn size="sm" variant="ghost" disabled={marksPage === 0 || marksQuery.isFetching} onClick={() => setMarksPage((p) => Math.max(0, p - 1))}>Previous</Btn>
+                    <Btn size="sm" variant="soft" disabled={marksPage >= marksQuery.pageCount - 1 || marksQuery.isFetching} onClick={() => setMarksPage((p) => Math.min(marksQuery.pageCount - 1, p + 1))}>Next</Btn>
+                  </div>
+                </div>
+              )}
             </Panel>
         </>
       )}
@@ -748,15 +744,14 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
 /* ================= academic years & terms (admin/superadmin, gated by academics.manage_years) ================= */
 export function GradeConfigurationPage() {
   const { db, currentUser, update, toast, yearId, setYear } = useApp();
-  const loaded = useLazyGroups("academics");
+  const loaded = true;
   const canManage = hasPermission(db, currentUser, "academics.manage_years");
   const selectedYear = getYear(db, yearId);
   const [rows, setRows] = useState<DB["grading"]>([]);
 
   useEffect(() => {
-    if (!loaded) return;
     setRows((db.grading ?? []).map((g) => ({ ...g })));
-  }, [loaded, yearId, db.grading]);
+  }, [yearId, db.grading]);
 
   if (!canManage) return <AccessDenied required="academics.manage_years" reason="Only authorized academic administrators can configure grading." />;
 
@@ -971,7 +966,7 @@ export function AcademicYearsPage() {
 }
 
 function YearModal({ existing, onClose }: { existing: AcademicYear | null; onClose: () => void }) {
-  const { db, currentUser, update, toast } = useApp();
+  const { toast } = useApp();
   const [name, setName] = useState(existing?.name ?? "");
   const [start, setStart] = useState(existing?.start ?? todayISO());
   const [end, setEnd] = useState(existing?.end ?? todayISO());
@@ -1016,7 +1011,7 @@ function YearModal({ existing, onClose }: { existing: AcademicYear | null; onClo
 }
 
 function TermModal({ yearId, existing, onClose }: { yearId: string; existing: Term | null; onClose: () => void }) {
-  const { db, currentUser, update, toast } = useApp();
+  const { toast } = useApp();
   const [name, setName] = useState(existing?.name ?? "");
   const [seq, setSeq] = useState(existing?.seq ?? (db.terms.filter((t) => t.yearId === yearId).length + 1));
 
@@ -1958,68 +1953,98 @@ function AssignmentModal({ existing, onClose }: { existing?: Assignment; onClose
    ========================================================================= */
 export function ReportsPage() {
   const { db, currentUser } = useApp();
-  const groupsLoaded = useLazyGroups("academics");
   const role = currentUser?.role ?? "admin";
   const isAdmin = role === "admin";
-
-  if (role === "student" || role === "guardian") {
-    return <ReportCardViewer />;
-  }
-
-  if (!hasPermission(db, currentUser, "results.view")) {
-    return <AccessDenied required="results.view" reason="You don't have permission to view results." />;
-  }
-
   const [classId, setClassId] = useState(db.classes[0]?.id ?? "");
   const cls = getClass(db, classId);
   const [sectionId, setSectionId] = useState("");
   const [q, setQ] = useState("");
+  const [page, setPage] = useState(0);
   const [openStudent, setOpenStudent] = useState<Student | null>(null);
+  const rosterQuery = useStudents({ classId: classId || undefined, sectionId: sectionId || undefined, search: q, page, pageSize: 50 });
 
-  const roster = studentsOf(db, classId, sectionId || undefined).filter((s) => !q || fullName(s).toLowerCase().includes(q.toLowerCase()));
+  if (role === "student" || role === "guardian") return <ReportCardViewer />;
+  if (!hasPermission(db, currentUser, "results.view")) {
+    return <AccessDenied required="results.view" reason="You don't have permission to view results." />;
+  }
 
+  const roster = rosterQuery.rows.map(studentRowToStudent);
   return (
     <div className="mx-auto max-w-5xl">
       <PageHead kicker="Results" title="Reports" sub="Class averages across every published assessment structure.">
-        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); }}>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
-        <Field label="Section" className="w-32"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)}><option value="">All</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
-        <Field label="Search" className="w-48"><TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Student name…" /></Field>
+        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); setPage(0); }}>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Section" className="w-32"><Select value={sectionId} onChange={(e) => { setSectionId(e.target.value); setPage(0); }}><option value="">All</option>{cls?.sections.map((sec) => <option key={sec.id} value={sec.id}>{sec.name}</option>)}</Select></Field>
+        <Field label="Search" className="w-48"><TextInput value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="Student name…" /></Field>
       </PageHead>
 
-      {!groupsLoaded ? (
-        <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
-      ) : (
-      <Panel className="anim-rise overflow-x-auto">
-        <table className="reports-table w-full min-w-[760px]">
-          <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-10 whitespace-nowrap`}>#</th><th className={`${thCls()} min-w-[240px] whitespace-nowrap`}>Student</th><th className={`${thCls()} min-w-[140px] whitespace-nowrap`}>Section</th><th className={`${thCls()} min-w-[130px] whitespace-nowrap text-center`}>Average</th><th className={`${thCls()} w-[100px] whitespace-nowrap`}></th></tr></thead>
-          <tbody className="divide-y divide-mist/70">
-            {roster.map((s, i) => {
-              const avg = studentAverage(db, s);
-              return (
-                <tr key={s.id} className="transition-colors hover:bg-pine-50/50">
-                  <td className={`${tdCls()} tnum text-soft`}>{i + 1}</td>
-                  <td className={tdCls()}><span className="flex items-center gap-2.5"><Avatar student={s} size={30} /><span className="font-bold text-ink">{shortName(s)}</span></span></td>
-                  <td className={`${tdCls()} whitespace-nowrap`}>{s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "—"}</td>
-                  <td className={`${tdCls()} whitespace-nowrap text-center font-mono font-bold`}>{avg != null ? `${avg}%` : "—"}</td>
-                  <td className={`${tdCls()} whitespace-nowrap text-right`}><Btn size="sm" variant="ghost" onClick={() => setOpenStudent(s)}><Eye className="h-3.5 w-3.5" /> View</Btn></td>
-                </tr>
-              );
-            })}
-            {roster.length === 0 && <tr><td colSpan={5}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
-          </tbody>
-        </table>
+      <Panel className="anim-rise overflow-hidden">
+        {rosterQuery.isPending && !roster.length ? <SkeletonPanel rows={6} /> : <>
+          <div className="overflow-x-auto">
+            <table className="reports-table w-full min-w-[760px]">
+              <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-10 whitespace-nowrap`}>#</th><th className={`${thCls()} min-w-[240px] whitespace-nowrap`}>Student</th><th className={`${thCls()} min-w-[140px] whitespace-nowrap`}>Section</th><th className={`${thCls()} min-w-[130px] whitespace-nowrap text-center`}>Average</th><th className={`${thCls()} w-[100px] whitespace-nowrap`}></th></tr></thead>
+              <tbody className="divide-y divide-mist/70">
+                {roster.map((student, i) => (
+                  <ReportRosterRow key={student.id} student={student} db={db} onOpen={setOpenStudent} index={page * rosterQuery.pageSize + i} />
+                ))}
+                {roster.length === 0 && <tr><td colSpan={5}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-mist bg-paper/40 px-4 py-3">
+            <p className="text-[11px] font-semibold text-soft">{rosterQuery.total} student{rosterQuery.total === 1 ? "" : "s"}</p>
+            <div className="flex items-center gap-2">
+              <Btn size="sm" variant="ghost" disabled={page <= 0 || rosterQuery.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>Previous</Btn>
+              <span className="min-w-[86px] text-center font-mono text-[11px] text-soft">Page {page + 1} / {rosterQuery.pageCount}</span>
+              <Btn size="sm" variant="ghost" disabled={page + 1 >= rosterQuery.pageCount || rosterQuery.isFetching} onClick={() => setPage((p) => p + 1)}>Next</Btn>
+            </div>
+          </div>
+        </>}
       </Panel>
-      )}
 
       {openStudent && <ReportCardModal student={openStudent} onClose={() => setOpenStudent(null)} adminView={isAdmin} />}
     </div>
   );
 }
 
+function ReportRosterRow({ student, db, onOpen, index }: { student: Student; db: DB; onOpen: (student: Student) => void; index: number }) {
+  const resultsQuery = useStudentResults(student.id, false);
+  const all = resultsQuery.data?.results ?? [];
+  const complete = all.filter((r) => r.items.length > 0 && r.items.every((it) => r.marks[it.id] != null));
+  const average = complete.length ? complete.reduce((sum, r) => {
+    const total = r.items.reduce((t, it) => t + ((Number(r.marks[it.id]) || 0) / Math.max(1, Number(it.max))) * Number(it.weight), 0);
+    return sum + total;
+  }, 0) / complete.length : null;
+  return (
+    <tr className="transition-colors hover:bg-pine-50/50">
+      <td className={`${tdCls()} tnum text-soft`}>{index + 1}</td>
+      <td className={tdCls()}><span className="flex items-center gap-2.5"><Avatar student={student} size={30} /><span className="font-bold text-ink">{shortName(student)}</span></span></td>
+      <td className={`${tdCls()} whitespace-nowrap`}>{student.enrollment ? sectionShort(db, student.enrollment.classId, student.enrollment.sectionId) : "—"}</td>
+      <td className={`${tdCls()} whitespace-nowrap text-center font-mono font-bold`}>{resultsQuery.isPending ? "…" : average != null ? `${fmt1(average)}%` : "—"}</td>
+      <td className={`${tdCls()} whitespace-nowrap text-right`}><Btn size="sm" variant="ghost" onClick={() => onOpen(student)}><Eye className="h-3.5 w-3.5" /> View</Btn></td>
+    </tr>
+  );
+}
+
+function studentRowToStudent(r: import("../lib/api").StudentRow): Student {
+  return {
+    id: r.student_id,
+    regId: r.reg_no,
+    firstName: r.first_name,
+    middleName: r.middle_name ?? "",
+    lastName: r.last_name,
+    gender: r.gender === "Female" ? "Female" : "Male",
+    dob: r.dob ?? "",
+    status: (r.status as Student["status"]) || "active",
+    guardian: { father: "", relation: "Guardian", phone: r.guardian_phone ?? undefined },
+    admission: { number: "", date: r.admission_date ?? "", type: "" },
+    enrollment: { yearId: "", classId: r.class_id, sectionId: r.section_id, rollNumber: r.roll_number ?? undefined, status: "active" } as Student["enrollment"],
+    history: [], documents: [],
+  };
+}
+
 /** Student/guardian: only ever see PUBLISHED results. */
 function ReportCardViewer() {
   const { db, currentUser } = useApp();
-  const groupsLoaded = useLazyGroups("academics");
   const role = currentUser?.role;
   const kids = role === "guardian" ? childrenOf(db, currentUser) : (studentOf(db, currentUser) ? [studentOf(db, currentUser)!] : []);
   const [selId, setSelId] = useState(kids[0]?.id ?? "");
@@ -2033,7 +2058,7 @@ function ReportCardViewer() {
           <Field label="Child" className="w-48"><Select value={selId} onChange={(e) => setSelId(e.target.value)}>{kids.map((k) => <option key={k.id} value={k.id}>{shortName(k)}</option>)}</Select></Field>
         )}
       </PageHead>
-      {!groupsLoaded ? <SkeletonPanel rows={3} /> : <ReportCardBody student={student} publishedOnly />}
+      <ReportCardBody student={student} publishedOnly />
     </div>
   );
 }
@@ -2049,29 +2074,44 @@ function ReportCardModal({ student, onClose, adminView }: { student: Student; on
   );
 }
 
-function exportReportCardCsv(db: DB, student: Student, results: ReturnType<typeof studentResults>) {
+type ReportResult = {
+  st: AssessmentStructure;
+  subject: { id: string; name: string; code: string; color: string | null };
+  calc: { raw: Record<string, number>; total: number; pct: number; complete: boolean };
+};
+
+function normalizeReportResults(rows: import("../lib/api").StudentResultRow[]): ReportResult[] {
+  return rows.map((r) => {
+    const items = r.items.map((it) => ({ id: it.id, name: it.name, max: Number(it.max), weight: Number(it.weight) }));
+    const raw = Object.fromEntries(Object.entries(r.marks ?? {}).map(([k, v]) => [k, Number(v)]));
+    const complete = items.length > 0 && items.every((it) => raw[it.id] != null);
+    const total = items.reduce((sum, it) => sum + ((Number(raw[it.id]) || 0) / Math.max(1, it.max)) * it.weight, 0);
+    return {
+      st: { id: r.structure.id, yearId: r.structure.year_id, classId: r.structure.class_id, subjectId: r.structure.subject_id, period: r.structure.period, items },
+      subject: r.subject,
+      calc: { raw, total, pct: total, complete },
+    };
+  });
+}
+
+function exportReportCardCsv(db: DB, student: Student, results: ReportResult[]) {
   const showGrade = getYear(db, db.years.find((y) => y.active)?.id)?.showGrade !== false;
   const rows: (string | number)[][] = [["Subject", "Period", "Assessment", "Max", "Weight %", "Score"]];
   results.forEach((r) => {
-    r.st.items.forEach((it) => {
-      rows.push([r.subject?.name ?? "", r.st.period, it.name, it.max, it.weight, r.calc.raw[it.id] ?? ""]);
-    });
+    r.st.items.forEach((it) => rows.push([r.subject?.name ?? "", r.st.period, it.name, it.max, it.weight, r.calc.raw[it.id] ?? ""]));
     rows.push([r.subject?.name ?? "", r.st.period, "TOTAL", "", "", r.calc.complete ? fmt1(r.calc.total) : ""]);
   });
   if (showGrade) rows.push(["", "", "Grade column enabled", "", "", ""]);
   downloadCsv(`Report-${student.regId}.csv`, rows);
 }
 
-function exportReportCardPdf(db: DB, student: Student, results: ReturnType<typeof studentResults>) {
+function exportReportCardPdf(db: DB, student: Student, results: ReportResult[]) {
   const showGrade = getYear(db, db.years.find((y) => y.active)?.id)?.showGrade !== false;
   const doc = newThemedDoc("portrait");
   let y = drawThemedHeader(doc, db.settings.schoolName, "Report Card", `${fullName(student)} · Reg. ${student.regId}`);
   y += 2;
   y = drawThemedTable(doc, y, [
-    { header: "Subject", width: 55 },
-    { header: "Period", width: 35, align: "center" },
-    { header: "Total", width: 25, align: "center" },
-    { header: "%", width: 20, align: "center" },
+    { header: "Subject", width: 55 }, { header: "Period", width: 35, align: "center" }, { header: "Total", width: 25, align: "center" }, { header: "%", width: 20, align: "center" },
     ...(showGrade ? [{ header: "Grade", width: 20, align: "center" as const }] : []),
   ], results.map((r) => {
     const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null;
@@ -2081,10 +2121,7 @@ function exportReportCardPdf(db: DB, student: Student, results: ReturnType<typeo
   results.forEach((r) => {
     y = drawThemedSectionLabel(doc, y, `${r.subject?.name ?? ""} — ${r.st.period}`);
     y = drawThemedTable(doc, y, [
-      { header: "Assessment", width: 65 },
-      { header: "Max", width: 25, align: "center" },
-      { header: "Weight %", width: 25, align: "center" },
-      { header: "Score", width: 25, align: "center" },
+      { header: "Assessment", width: 65 }, { header: "Max", width: 25, align: "center" }, { header: "Weight %", width: 25, align: "center" }, { header: "Score", width: 25, align: "center" },
     ], r.st.items.map((it) => [it.name, it.max, `${it.weight}%`, r.calc.raw[it.id] ?? "—"]));
     y += 6;
   });
@@ -2094,77 +2131,46 @@ function exportReportCardPdf(db: DB, student: Student, results: ReturnType<typeo
 function ReportCardBody({ student, publishedOnly }: { student: Student; publishedOnly?: boolean }) {
   const { db, currentUser } = useApp();
   const canExport = currentUser?.role === "admin";
-  const all = studentResults(db, student);
-  const results = publishedOnly ? all.filter((r) => submissionStatus(db, r.st.id) === "published") : all;
+  const resultsQuery = useStudentResults(student.id, publishedOnly);
+  const results = normalizeReportResults(resultsQuery.data?.results ?? []);
   const completeOnes = results.filter((r) => r.calc.complete);
   const showGrade = getYear(db, db.years.find((y) => y.active)?.id)?.showGrade !== false;
   const avg = completeOnes.length ? +(completeOnes.reduce((s, r) => s + r.calc.pct, 0) / completeOnes.length).toFixed(1) : null;
   const [tab, setTab] = useState<"summary" | "detailed">("summary");
 
+  if (resultsQuery.isPending) return <SkeletonPanel rows={5} />;
+  if (resultsQuery.error) return <EmptyState icon={<AlertTriangle className="h-5 w-5" />} title="Results unavailable" body={(resultsQuery.error as Error).message || "Could not load this report card."} />;
+
   return (
     <div className="anim-rise">
       <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-mist bg-paper/50 p-3">
         <Avatar student={student} size={40} />
-        <div>
-          <p className="font-display font-bold text-ink">{fullName(student)}</p>
-          <p className="text-[11.5px] text-soft">{student.enrollment ? sectionShort(db, student.enrollment.classId, student.enrollment.sectionId) : "—"} · Reg. {student.regId}</p>
-        </div>
+        <div><p className="font-display font-bold text-ink">{fullName(student)}</p><p className="text-[11.5px] text-soft">{student.enrollment ? sectionShort(db, student.enrollment.classId, student.enrollment.sectionId) : "—"} · Reg. {student.regId}</p></div>
         {avg != null && <span className="text-right"><span className="block font-mono text-[20px] font-extrabold text-pine-800">{avg}%</span><span className="block text-[10.5px] font-semibold text-soft">overall average</span></span>}
-        {canExport && <div className="ml-auto flex gap-2">
-          <Btn size="sm" variant="soft" onClick={() => exportReportCardCsv(db, student, results)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>
-          <Btn size="sm" variant="soft" onClick={() => exportReportCardPdf(db, student, results)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>
-        </div>}
+        {canExport && <div className="ml-auto flex gap-2"><Btn size="sm" variant="soft" onClick={() => exportReportCardCsv(db, student, results)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn><Btn size="sm" variant="soft" onClick={() => exportReportCardPdf(db, student, results)}><Printer className="h-3.5 w-3.5" /> PDF</Btn></div>}
       </div>
-
       <div className="mb-3"><Tabs tabs={[{ id: "summary", label: "Summary", icon: <FileBarChart2 className="h-3.5 w-3.5" /> }, { id: "detailed", label: "Detailed", icon: <Table2 className="h-3.5 w-3.5" /> }]} active={tab} onChange={(id) => setTab(id as any)} /></div>
-
       {tab === "summary" ? (
         <Panel className="overflow-x-auto">
           <table className="academic-results-table w-full min-w-[700px]">
             <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th>{showGrade && <th className={`${thCls()} text-center`}>Grade</th>}</tr></thead>
             <tbody className="divide-y divide-mist/70">
-              {results.map((r, i) => {
-                const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null;
-                return (
-                  <tr key={i}>
-                    <td className={tdCls()}><span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: r.subject?.color }} /> {r.subject?.name}</span></td>
-                    <td className={tdCls()}>{r.st.period}</td>
-                    <td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.complete ? fmt1(r.calc.total) : "—"}</td>
-                    <td className={`${tdCls()} text-center font-mono`}>{r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—"}</td>
-                    {showGrade && <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={r.calc.pct >= 80 ? "pine" : r.calc.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <Chip tone="gray">pending</Chip>}</td>}
-                  </tr>
-                );
-              })}
-              {results.length === 0 && <tr><td colSpan={showGrade ? 5 : 4}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></td></tr>}
+              {results.map((r) => { const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null; return <tr key={r.st.id}>
+                <td className={tdCls()}><span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: r.subject?.color ?? undefined }} /> {r.subject?.name}</span></td>
+                <td className={tdCls()}>{r.st.period}</td><td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.complete ? fmt1(r.calc.total) : "—"}</td><td className={`${tdCls()} text-center font-mono`}>{r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—"}</td>
+                {showGrade && <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={r.calc.pct >= 80 ? "pine" : r.calc.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <Chip tone="gray">pending</Chip>}</td>}
+              </tr>; })}
+              {results.length === 0 && <tr><td colSpan={showGrade ? 5 : 4}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title={publishedOnly ? "No published results yet" : "No results yet"} body={publishedOnly ? "Results appear here once the office publishes them." : "No assessment results have been entered for this student."} /></td></tr>}
             </tbody>
           </table>
         </Panel>
       ) : (
         <div className="space-y-4">
-          {results.map((r, i) => (
-            <Panel key={i} className="overflow-hidden">
-              <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-2.5">
-                <span className="flex items-center gap-2 text-[12.5px] font-bold text-ink"><span className="h-2.5 w-2.5 rounded-full" style={{ background: r.subject?.color }} /> {r.subject?.name} <span className="font-normal text-soft">· {r.st.period}</span></span>
-                <span className="font-mono text-[12.5px] font-bold text-pine-800">{r.calc.complete ? `${fmt1(r.calc.total)} (${fmt1(r.calc.pct)}%)` : "Incomplete"}</span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="academic-results-table w-full min-w-[520px]">
-                <thead className="border-b border-mist bg-paper/40"><tr><th className={thCls()}>Assessment</th><th className={`${thCls()} text-center`}>Max</th><th className={`${thCls()} text-center`}>Weight</th><th className={`${thCls()} text-center`}>Score</th></tr></thead>
-                <tbody className="divide-y divide-mist/70">
-                  {r.st.items.map((it) => (
-                    <tr key={it.id}>
-                      <td className={tdCls()}>{it.name}</td>
-                      <td className={`${tdCls()} text-center font-mono`}>{it.max}</td>
-                      <td className={`${tdCls()} text-center font-mono`}>{it.weight}%</td>
-                      <td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.raw[it.id] ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              </div>
-            </Panel>
-          ))}
-          {results.length === 0 && <Panel><EmptyState icon={<Table2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></Panel>}
+          {results.map((r) => <Panel key={r.st.id} className="overflow-hidden">
+            <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-2.5"><span className="flex items-center gap-2 text-[12.5px] font-bold text-ink"><span className="h-2.5 w-2.5 rounded-full" style={{ background: r.subject?.color ?? undefined }} /> {r.subject?.name} <span className="font-normal text-soft">· {r.st.period}</span></span><span className="font-mono text-[12.5px] font-bold text-pine-800">{r.calc.complete ? `${fmt1(r.calc.total)} (${fmt1(r.calc.pct)}%)` : "Incomplete"}</span></div>
+            <div className="overflow-x-auto"><table className="academic-results-table w-full min-w-[520px]"><thead className="border-b border-mist bg-paper/40"><tr><th className={thCls()}>Assessment</th><th className={`${thCls()} text-center`}>Max</th><th className={`${thCls()} text-center`}>Weight</th><th className={`${thCls()} text-center`}>Score</th></tr></thead><tbody className="divide-y divide-mist/70">{r.st.items.map((it) => <tr key={it.id}><td className={tdCls()}>{it.name}</td><td className={`${tdCls()} text-center font-mono`}>{it.max}</td><td className={`${tdCls()} text-center font-mono`}>{it.weight}%</td><td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.raw[it.id] ?? "—"}</td></tr>)}</tbody></table></div>
+          </Panel>)}
+          {results.length === 0 && <Panel><EmptyState icon={<Table2 className="h-5 w-5" />} title={publishedOnly ? "No published results yet" : "No results yet"} body={publishedOnly ? "Results appear here once the office publishes them." : "No assessment results have been entered for this student."} /></Panel>}
         </div>
       )}
     </div>
@@ -2174,18 +2180,47 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
 /* =========================================================================
    FEES (admin ledger + simple receipts)
    ========================================================================= */
-export function FeesPage() {
-  const { db, currentUser, update, toast } = useApp();
-  const groupsLoaded = useLazyGroups("fees");
-  if (!hasPermission(db, currentUser, "fees.view")) {
-    return <AccessDenied required="fees.view" reason="You don't have permission to view fee records." />;
-  }
-  const canManage = hasPermission(db, currentUser, "fees.manage");
+function feeStudentToStudent(r: { student_id: string; full_name: string; reg_no: string; class_id: string | null; section_id: string | null }): Student {
+  const parts = String(r.full_name ?? "").trim().split(/\s+/);
+  return {
+    id: r.student_id,
+    regId: r.reg_no,
+    firstName: parts[0] ?? "",
+    middleName: "",
+    lastName: parts.slice(1).join(" "),
+    gender: "Male",
+    dob: "",
+    status: "active",
+    guardian: { father: "", relation: "Guardian" },
+    admission: { number: "", date: "", type: "" },
+    enrollment: r.class_id ? { yearId: "", classId: r.class_id, sectionId: r.section_id ?? "", status: "active" } : undefined,
+    history: [], documents: [],
+  };
+}
 
+function feeRequestToPaymentRequest(r: any): PaymentRequest {
+  return {
+    id: r.id, studentId: r.student_id, feeItemId: r.fee_item_id, amount: Number(r.amount),
+    bankAccountId: r.bank_account_id, bankName: r.bank_name, reference: r.reference ?? undefined,
+    receiptPath: r.receipt_path ?? undefined, receiptName: r.receipt_name ?? undefined,
+    submittedBy: r.submitted_by, submittedByName: r.submitted_by_name ?? undefined, submittedAt: r.submitted_at,
+    status: r.status, reviewedBy: r.reviewed_by ?? undefined, reviewedByName: r.reviewed_by_name ?? undefined,
+    reviewedAt: r.reviewed_at ?? undefined, reviewNote: r.review_note ?? undefined,
+    studentName: r.student_name ?? r.student_id, feeLabel: r.fee_label ?? r.fee_item_id,
+  } as PaymentRequest & { studentName: string; feeLabel: string };
+}
+
+/* =========================================================================
+   FEES (server-paged admin ledger + targeted receipts/payment requests)
+   ========================================================================= */
+export function FeesPage() {
+  const { db, currentUser, toast, update, yearId } = useApp();
+  const canView = hasPermission(db, currentUser, "fees.view");
+  const canManage = hasPermission(db, currentUser, "fees.manage");
   const [classId, setClassId] = useState("");
-  const cls = getClass(db, classId);
   const [sectionId, setSectionId] = useState("");
   const [q, setQ] = useState("");
+  const [feePage, setFeePage] = useState(0);
   const [openStudent, setOpenStudent] = useState<Student | null>(null);
   const [reviewRequest, setReviewRequest] = useState<PaymentRequest | null>(null);
   const [bankOpen, setBankOpen] = useState(false);
@@ -2194,27 +2229,39 @@ export function FeesPage() {
   const [receiptQuery, setReceiptQuery] = useState("");
   const [receiptFeeFilter, setReceiptFeeFilter] = useState("all");
   const [receiptStatus, setReceiptStatus] = useState("all");
+  const [receiptPage, setReceiptPage] = useState(0);
   const [bankDraft, setBankDraft] = useState({ bankName: "", accountName: "", accountNumber: "", branch: "" });
 
-  const pendingRequests = db.paymentRequests.filter((r) => r.status === "pending");
-  const receiptFeeOptions = [...new Set(db.paymentRequests.filter((r) => r.receiptPath || r.receiptDataUrl).map((r) => db.fees.find((f) => f.id === r.feeItemId)?.label).filter(Boolean) as string[])].sort((a, b) => a.localeCompare(b));
-  const receiptRows = db.paymentRequests.filter((r) => {
-    if (!r.receiptPath && !r.receiptDataUrl) return false;
-    const item = db.fees.find((f) => f.id === r.feeItemId);
-    const student = db.students.find((s) => s.id === r.studentId);
-    const feeMatch = receiptFeeFilter === "all" || item?.label === receiptFeeFilter;
-    const statusMatch = receiptStatus === "all" || r.status === receiptStatus;
-    const q = receiptQuery.trim().toLowerCase();
-    const qMatch = !q || `${student ? fullName(student) : ""} ${item?.label ?? ""} ${r.bankName} ${r.reference ?? ""}`.toLowerCase().includes(q);
-    return feeMatch && statusMatch && qMatch;
-  }).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  const cls = getClass(db, classId);
+  const feeQuery = useFeeStudentSummary({ classId: classId || undefined, sectionId: sectionId || undefined, search: q || undefined, page: feePage, pageSize: 50 });
+  const pendingQuery = useFeePaymentRequests({ status: "pending", page: 0, pageSize: 50 });
+  const receiptQueryResult = useFeePaymentRequests({
+    status: receiptStatus === "all" ? undefined : receiptStatus,
+    search: receiptQuery || undefined,
+    receiptOnly: true,
+    page: receiptPage,
+    pageSize: 50,
+  });
+
+  useEffect(() => { setFeePage(0); }, [classId, sectionId, q]);
+  useEffect(() => { setReceiptPage(0); }, [receiptQuery, receiptStatus, receiptFeeFilter]);
+
+  if (!canView) {
+    return <AccessDenied required="fees.view" reason="You don't have permission to view fee records." />;
+  }
+
+  const pendingRequests = (pendingQuery.rows ?? []).map(feeRequestToPaymentRequest);
+  const receiptRows = (receiptQueryResult.rows ?? []).map(feeRequestToPaymentRequest);
+  const feeOptions = [...new Set((receiptQueryResult.rows ?? []).map((r) => r.fee_label).filter(Boolean))].sort((a: string, b: string) => a.localeCompare(b));
+  const filteredReceipts = receiptRows.filter((r: any) => receiptFeeFilter === "all" || r.feeLabel === receiptFeeFilter);
+  const totals = { billed: feeQuery.billed, paid: feeQuery.collected, outstanding: feeQuery.outstanding };
   const bankAccounts = db.settings.bankAccounts ?? [];
 
   const addBankAccount = () => {
     if (!bankDraft.bankName.trim() || !bankDraft.accountName.trim() || !bankDraft.accountNumber.trim()) {
       toast("Bank, account name, and account number are all required.", "warn"); return;
     }
-    update((d) => {
+    void update((d) => {
       d.settings.bankAccounts = [...(d.settings.bankAccounts ?? []), {
         id: uid(), bankName: bankDraft.bankName.trim(), accountName: bankDraft.accountName.trim(),
         accountNumber: bankDraft.accountNumber.trim(), branch: bankDraft.branch.trim() || undefined,
@@ -2224,22 +2271,9 @@ export function FeesPage() {
     setBankDraft({ bankName: "", accountName: "", accountNumber: "", branch: "" });
   };
   const removeBankAccount = (id: string) => {
-    update((d) => { d.settings.bankAccounts = (d.settings.bankAccounts ?? []).filter((a) => a.id !== id); });
+    void update((d) => { d.settings.bankAccounts = (d.settings.bankAccounts ?? []).filter((a) => a.id !== id); });
     toast("Bank account removed.");
   };
-
-  const roster = db.students.filter((s) => {
-    if (classId && s.enrollment?.classId !== classId) return false;
-    if (sectionId && s.enrollment?.sectionId !== sectionId) return false;
-    if (q && !fullName(s).toLowerCase().includes(q.toLowerCase())) return false;
-    return true;
-  });
-
-  const totals = roster.reduce((acc, s) => {
-    const f = feeStats(db, s.id);
-    acc.billed += f.billed; acc.paid += f.paid; acc.outstanding += f.outstanding;
-    return acc;
-  }, { billed: 0, paid: 0, outstanding: 0 });
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -2250,143 +2284,53 @@ export function FeesPage() {
         {canManage && <Btn variant="gold" onClick={() => setBulkOpen(true)}><Plus className="h-4 w-4" /> Bulk add fee item</Btn>}
       </PageHead>
 
-      {!groupsLoaded ? (
-        <>
-          <div className="anim-rise mb-4"><SkeletonCards n={3} /></div>
-          <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
-        </>
+      {feeQuery.isPending ? (
+        <><div className="anim-rise mb-4"><SkeletonCards n={3} /></div><SkeletonPanel rows={6} /></>
       ) : (
-      <>
-      <div className="anim-rise mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Stat label="Billed" value={`Br ${totals.billed.toLocaleString()}`} tone="steel" icon={<Banknote className="h-4.5 w-4.5" />} />
-        <Stat label="Collected" value={`Br ${totals.paid.toLocaleString()}`} tone="pine" icon={<Wallet className="h-4.5 w-4.5" />} />
-        <Stat label="Outstanding" value={`Br ${totals.outstanding.toLocaleString()}`} tone="rust" icon={<Receipt className="h-4.5 w-4.5" />} />
-      </div>
-
-      {canManage && pendingRequests.length > 0 && (
-        <Panel className="anim-rise mb-4 overflow-hidden border-gold-300">
-          <div className="flex items-center justify-between border-b border-mist px-4 py-3 sm:px-5">
-            <h3 className="font-display text-[14px] font-bold">Bank transfers awaiting review</h3>
-            <Chip tone="gold">{pendingRequests.length} pending</Chip>
+        <>
+          <div className="anim-rise mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Stat label="Billed" value={`Br ${totals.billed.toLocaleString()}`} tone="steel" icon={<Banknote className="h-4.5 w-4.5" />} />
+            <Stat label="Collected" value={`Br ${totals.paid.toLocaleString()}`} tone="pine" icon={<Wallet className="h-4.5 w-4.5" />} />
+            <Stat label="Outstanding" value={`Br ${totals.outstanding.toLocaleString()}`} tone="rust" icon={<Receipt className="h-4.5 w-4.5" />} />
           </div>
-          <ul className="divide-y divide-mist/70">
-            {pendingRequests.map((r) => {
-              const st = db.students.find((x) => x.id === r.studentId);
-              const item = db.fees.find((f) => f.id === r.feeItemId);
-              return (
-                <li key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
-                  <div className="min-w-[160px] flex-1">
-                    <p className="text-[13px] font-bold text-ink">{st ? fullName(st) : "Unknown student"} — {item?.label ?? "Fee"}</p>
-                    <p className="text-[11px] text-soft">Br {r.amount.toLocaleString()} · {r.bankName} · submitted by {r.submittedByName ?? "guardian"} · {fmtDate(r.submittedAt.slice(0, 10))}</p>
-                  </div>
-                  <Btn size="sm" variant="soft" onClick={() => setReviewRequest(r)}><Eye className="h-3.5 w-3.5" /> Review</Btn>
-                </li>
-              );
-            })}
-          </ul>
-        </Panel>
-      )}
 
-      {currentUser?.role === "admin" && (
-        <Panel className="anim-rise mb-4 overflow-hidden">
-          <div className="border-b border-mist px-4 py-3 sm:px-5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h3 className="font-display text-[14px] font-bold">Receipts</h3>
-                <p className="mt-0.5 text-[11px] text-soft">Uploaded receipts remain here after approval until an admin clears them.</p>
-              </div>
-              <Chip tone="gray">{receiptRows.length}</Chip>
-            </div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px_140px]">
-              <TextInput value={receiptQuery} onChange={(e) => setReceiptQuery(e.target.value)} placeholder="Search student, fee, bank or reference…" />
-              <Select value={receiptFeeFilter} onChange={(e) => setReceiptFeeFilter(e.target.value)}><option value="all">All fee names</option>{receiptFeeOptions.map((label) => <option key={label} value={label}>{label}</option>)}</Select>
-              <Select value={receiptStatus} onChange={(e) => setReceiptStatus(e.target.value)}><option value="all">All statuses</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></Select>
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px]">
-              <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Student</th><th className={thCls()}>Fee</th><th className={`${thCls()} text-center`}>Amount</th><th className={thCls()}>Status</th><th className={thCls()}>Submitted</th><th className={thCls()}></th></tr></thead>
-              <tbody className="divide-y divide-mist/70">
-                {receiptRows.map((r) => {
-                  const st = db.students.find((x) => x.id === r.studentId);
-                  const item = db.fees.find((f) => f.id === r.feeItemId);
-                  return <tr key={r.id} className="hover:bg-pine-50/40">
-                    <td className={`${tdCls()} whitespace-nowrap font-semibold text-ink`}>{st ? fullName(st) : r.studentId}</td>
-                    <td className={`${tdCls()} whitespace-nowrap`}>{item?.label ?? r.feeItemId}</td>
-                    <td className={`${tdCls()} whitespace-nowrap text-center font-mono font-bold`}>Br {r.amount.toLocaleString()}</td>
-                    <td className={tdCls()}><Chip tone={r.status === "approved" ? "pine" : r.status === "pending" ? "gold" : "rust"}>{r.status}</Chip></td>
-                    <td className={`${tdCls()} whitespace-nowrap text-soft`}>{fmtDate(r.submittedAt.slice(0, 10))}</td>
-                    <td className={`${tdCls()} text-right`}><Btn size="sm" variant="soft" onClick={() => setReceiptPreview(r)}><Eye className="h-3.5 w-3.5" /> Preview</Btn></td>
-                  </tr>;
-                })}
-                {receiptRows.length === 0 && <tr><td colSpan={6}><EmptyState icon={<Receipt className="h-5 w-5" />} title="No stored receipts" body="Uploaded receipts will stay here until an admin clears them." /></td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-      )}
-
-      <Panel className="anim-rise overflow-x-auto">
-        <table className="w-full min-w-[640px]">
-          <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Student</th><th className={thCls()}>Section</th><th className={`${thCls()} text-center`}>Billed</th><th className={`${thCls()} text-center`}>Paid</th><th className={`${thCls()} text-center`}>Outstanding</th><th className={thCls()}></th></tr></thead>
-          <tbody className="divide-y divide-mist/70">
-            {roster.map((s) => {
-              const f = feeStats(db, s.id);
-              return (
-                <tr key={s.id} className="transition-colors hover:bg-pine-50/50">
-                  <td className={tdCls()}><span className="flex items-center gap-2.5"><Avatar student={s} size={30} /><span className="font-bold text-ink">{shortName(s)}</span></span></td>
-                  <td className={tdCls()}>{s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "—"}</td>
-                  <td className={`${tdCls()} text-center font-mono`}>{f.billed.toLocaleString()}</td>
-                  <td className={`${tdCls()} text-center font-mono text-pine-700`}>{f.paid.toLocaleString()}</td>
-                  <td className={`${tdCls()} text-center font-mono ${f.outstanding > 0 ? "font-bold text-rust-600" : "text-soft"}`}>{f.outstanding.toLocaleString()}</td>
-                  <td className={`${tdCls()} text-right`}><Btn size="sm" variant="ghost" onClick={() => setOpenStudent(s)}><Eye className="h-3.5 w-3.5" /> Ledger</Btn></td>
-                </tr>
-              );
-            })}
-            {roster.length === 0 && <tr><td colSpan={6}><EmptyState icon={<Banknote className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
-          </tbody>
-        </table>
-      </Panel>
-
-      {canManage && (
-        <Panel className="anim-rise mt-4 overflow-hidden">
-          <button onClick={() => setBankOpen((v) => !v)} className="flex w-full cursor-pointer items-center justify-between px-4 py-3.5 text-left sm:px-5">
-            <h3 className="font-display text-[14px] font-bold">Bank accounts for guardian transfers</h3>
-            <Chip tone="gray">{bankAccounts.length}</Chip>
-          </button>
-          {bankOpen && (
-            <div className="border-t border-mist p-4 sm:p-5">
-              <p className="mb-3 text-[11.5px] text-soft">These are the accounts guardians see when they pay a fee by manual bank transfer.</p>
-              <div className="space-y-2">
-                {bankAccounts.map((a) => (
-                  <div key={a.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-mist bg-card p-2.5">
-                    <div className="min-w-[160px] flex-1">
-                      <p className="text-[12.5px] font-bold text-ink">{a.bankName} — {a.accountName}</p>
-                      <p className="font-mono text-[11.5px] text-soft">{a.accountNumber}{a.branch ? ` · ${a.branch}` : ""}</p>
-                    </div>
-                    <button onClick={() => removeBankAccount(a.id)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
-                  </div>
-                ))}
-                {bankAccounts.length === 0 && <p className="py-3 text-center text-[12px] text-soft">No accounts added yet.</p>}
-              </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <TextInput value={bankDraft.bankName} onChange={(e) => setBankDraft((p) => ({ ...p, bankName: e.target.value }))} placeholder="Bank name" />
-                <TextInput value={bankDraft.accountName} onChange={(e) => setBankDraft((p) => ({ ...p, accountName: e.target.value }))} placeholder="Account holder name" />
-                <TextInput value={bankDraft.accountNumber} onChange={(e) => setBankDraft((p) => ({ ...p, accountNumber: e.target.value }))} placeholder="Account number" />
-                <TextInput value={bankDraft.branch} onChange={(e) => setBankDraft((p) => ({ ...p, branch: e.target.value }))} placeholder="Branch (optional)" />
-              </div>
-              <div className="mt-2 flex justify-end"><Btn size="sm" onClick={addBankAccount}><Plus className="h-3.5 w-3.5" /> Add account</Btn></div>
-            </div>
+          {canManage && pendingRequests.length > 0 && (
+            <Panel className="anim-rise mb-4 overflow-hidden border-gold-300">
+              <div className="flex items-center justify-between border-b border-mist px-4 py-3 sm:px-5"><h3 className="font-display text-[14px] font-bold">Bank transfers awaiting review</h3><Chip tone="gold">{pendingQuery.total} pending</Chip></div>
+              <ul className="divide-y divide-mist/70">
+                {pendingRequests.map((r: any) => <li key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5"><div className="min-w-[160px] flex-1"><p className="text-[13px] font-bold text-ink">{r.studentName ?? r.studentId} — {r.feeLabel ?? "Fee"}</p><p className="text-[11px] text-soft">Br {r.amount.toLocaleString()} · {r.bankName} · submitted by {r.submittedByName ?? "guardian"} · {fmtDate(r.submittedAt.slice(0, 10))}</p></div><Btn size="sm" variant="soft" onClick={() => setReviewRequest(r)}><Eye className="h-3.5 w-3.5" /> Review</Btn></li>)}
+              </ul>
+            </Panel>
           )}
-        </Panel>
-      )}
-      </>
+
+          {currentUser?.role === "admin" && (
+            <Panel className="anim-rise mb-4 overflow-hidden">
+              <div className="border-b border-mist px-4 py-3 sm:px-5">
+                <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-display text-[14px] font-bold">Receipts</h3><p className="mt-0.5 text-[11px] text-soft">Uploaded receipts remain here after approval until an admin clears them.</p></div><Chip tone="gray">{receiptQueryResult.total}</Chip></div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px_140px]"><TextInput value={receiptQuery} onChange={(e) => setReceiptQuery(e.target.value)} placeholder="Search student, fee, bank or reference…" /><Select value={receiptFeeFilter} onChange={(e) => setReceiptFeeFilter(e.target.value)}><option value="all">All fee names</option>{feeOptions.map((label) => <option key={label} value={label}>{label}</option>)}</Select><Select value={receiptStatus} onChange={(e) => setReceiptStatus(e.target.value)}><option value="all">All statuses</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></Select></div>
+              </div>
+              <div className="overflow-x-auto"><table className="w-full min-w-[760px]"><thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Student</th><th className={thCls()}>Fee</th><th className={`${thCls()} text-center`}>Amount</th><th className={thCls()}>Status</th><th className={thCls()}>Submitted</th><th className={thCls()}></th></tr></thead><tbody className="divide-y divide-mist/70">
+                {filteredReceipts.map((r: any) => <tr key={r.id} className="hover:bg-pine-50/40"><td className={`${tdCls()} whitespace-nowrap font-semibold text-ink`}>{r.studentName ?? r.studentId}</td><td className={`${tdCls()} whitespace-nowrap`}>{r.feeLabel ?? r.feeItemId}</td><td className={`${tdCls()} whitespace-nowrap text-center font-mono font-bold`}>Br {r.amount.toLocaleString()}</td><td className={tdCls()}><Chip tone={r.status === "approved" ? "pine" : r.status === "pending" ? "gold" : "rust"}>{r.status}</Chip></td><td className={`${tdCls()} whitespace-nowrap text-soft`}>{fmtDate(r.submittedAt.slice(0, 10))}</td><td className={`${tdCls()} text-right`}><Btn size="sm" variant="soft" onClick={() => setReceiptPreview(r)}><Eye className="h-3.5 w-3.5" /> Preview</Btn></td></tr>)}
+                {filteredReceipts.length === 0 && <tr><td colSpan={6}><EmptyState icon={<Receipt className="h-5 w-5" />} title="No stored receipts" body="Uploaded receipts will stay here until an admin clears them." /></td></tr>}
+              </tbody></table></div>
+              {receiptQueryResult.pageCount > 1 && <div className="flex items-center justify-between border-t border-mist px-4 py-3"><span className="text-[11px] text-soft">Page {receiptPage + 1} of {receiptQueryResult.pageCount}</span><div className="flex gap-2"><Btn size="sm" variant="ghost" disabled={receiptPage === 0} onClick={() => setReceiptPage((p) => Math.max(0, p - 1))}>Previous</Btn><Btn size="sm" variant="soft" disabled={receiptPage >= receiptQueryResult.pageCount - 1} onClick={() => setReceiptPage((p) => p + 1)}>Next</Btn></div></div>}
+            </Panel>
+          )}
+
+          <Panel className="anim-rise overflow-x-auto"><table className="w-full min-w-[640px]"><thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Student</th><th className={thCls()}>Section</th><th className={`${thCls()} text-center`}>Billed</th><th className={`${thCls()} text-center`}>Paid</th><th className={`${thCls()} text-center`}>Outstanding</th><th className={thCls()}></th></tr></thead><tbody className="divide-y divide-mist/70">
+            {feeQuery.rows.map((r) => { const st = feeStudentToStudent(r); return <tr key={r.student_id} className="transition-colors hover:bg-pine-50/50"><td className={tdCls()}><span className="flex items-center gap-2.5"><Avatar student={st} size={30} /><span className="font-bold text-ink">{shortName(st)}</span></span></td><td className={tdCls()}>{r.class_id ? sectionShort(db, r.class_id, r.section_id ?? "") : "—"}</td><td className={`${tdCls()} text-center font-mono`}>{Number(r.billed).toLocaleString()}</td><td className={`${tdCls()} text-center font-mono text-pine-700`}>{Number(r.paid).toLocaleString()}</td><td className={`${tdCls()} text-center font-mono ${Number(r.outstanding) > 0 ? "font-bold text-rust-600" : "text-soft"}`}>{Number(r.outstanding).toLocaleString()}</td><td className={`${tdCls()} text-right`}><Btn size="sm" variant="ghost" onClick={() => { setOpenStudent(st); }}><Eye className="h-3.5 w-3.5" /> Ledger</Btn></td></tr>; })}
+            {feeQuery.rows.length === 0 && <tr><td colSpan={6}><EmptyState icon={<Banknote className="h-5 w-5" />} title="No students match" body="Try a different class, section, or search." /></td></tr>}
+          </tbody></table></Panel>
+          {feeQuery.pageCount > 1 && <div className="mt-2 flex items-center justify-between"><span className="text-[11.5px] text-soft">Page {feePage + 1} of {feeQuery.pageCount} · {feeQuery.total} students</span><div className="flex gap-2"><Btn size="sm" variant="ghost" disabled={feePage === 0 || feeQuery.isFetching} onClick={() => setFeePage((p) => Math.max(0, p - 1))}>Previous</Btn><Btn size="sm" variant="soft" disabled={feePage >= feeQuery.pageCount - 1 || feeQuery.isFetching} onClick={() => setFeePage((p) => p + 1)}>Next</Btn></div></div>}
+
+          {canManage && <Panel className="anim-rise mt-4 overflow-hidden"><button onClick={() => setBankOpen((v) => !v)} className="flex w-full cursor-pointer items-center justify-between px-4 py-3.5 text-left sm:px-5"><h3 className="font-display text-[14px] font-bold">Bank accounts for guardian transfers</h3><Chip tone="gray">{bankAccounts.length}</Chip></button>{bankOpen && <div className="border-t border-mist p-4 sm:p-5"><p className="mb-3 text-[11.5px] text-soft">These are the accounts guardians see when they pay a fee by manual bank transfer.</p><div className="space-y-2">{bankAccounts.map((a) => <div key={a.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-mist bg-card p-2.5"><div className="min-w-[160px] flex-1"><p className="text-[12.5px] font-bold text-ink">{a.bankName} — {a.accountName}</p><p className="font-mono text-[11.5px] text-soft">{a.accountNumber}{a.branch ? ` · ${a.branch}` : ""}</p></div><button onClick={() => removeBankAccount(a.id)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button></div>)}{bankAccounts.length === 0 && <p className="py-3 text-center text-[12px] text-soft">No accounts added yet.</p>}</div><div className="mt-3 grid gap-2 sm:grid-cols-2"><TextInput value={bankDraft.bankName} onChange={(e) => setBankDraft((p) => ({ ...p, bankName: e.target.value }))} placeholder="Bank name" /><TextInput value={bankDraft.accountName} onChange={(e) => setBankDraft((p) => ({ ...p, accountName: e.target.value }))} placeholder="Account holder name" /><TextInput value={bankDraft.accountNumber} onChange={(e) => setBankDraft((p) => ({ ...p, accountNumber: e.target.value }))} placeholder="Account number" /><TextInput value={bankDraft.branch} onChange={(e) => setBankDraft((p) => ({ ...p, branch: e.target.value }))} placeholder="Branch (optional)" /></div><div className="mt-2 flex justify-end"><Btn size="sm" onClick={addBankAccount}><Plus className="h-3.5 w-3.5" /> Add account</Btn></div></div>}</Panel>}
+        </>
       )}
 
-      {openStudent && <FeeLedgerModal student={openStudent} canManage={canManage} onClose={() => setOpenStudent(null)} />}
-      {reviewRequest && <ReviewPaymentRequestModal request={reviewRequest} onClose={() => setReviewRequest(null)} />}
-      {receiptPreview && <ReceiptPreviewModal request={receiptPreview} onClose={() => setReceiptPreview(null)} />}
-      {bulkOpen && <BulkFeeModal onClose={() => setBulkOpen(false)} />}
+      {openStudent && <FeeLedgerModal student={openStudent} canManage={canManage} onClose={() => { setOpenStudent(null); }} />}
+      {reviewRequest && <ReviewPaymentRequestModal request={reviewRequest} onClose={() => { setReviewRequest(null); void pendingQuery.refetch(); void feeQuery.refetch(); }} />}
+      {receiptPreview && <ReceiptPreviewModal request={receiptPreview} onClose={() => { setReceiptPreview(null); void receiptQueryResult.refetch(); }} />}
+      {bulkOpen && <BulkFeeModal onClose={() => { setBulkOpen(false); void feeQuery.refetch(); }} />}
     </div>
   );
 }
@@ -2398,85 +2342,58 @@ export function FeesPage() {
  *  before it's created — so it still covers "just these few" without a
  *  separate individual flow. */
 function BulkFeeModal({ onClose }: { onClose: () => void }) {
-  const { db, currentUser, update, toast } = useApp();
+  const { db, currentUser, toast, yearId } = useApp();
   const [label, setLabel] = useState("");
   const [amount, setAmount] = useState(0);
   const [due, setDue] = useState(todayISO());
   const [classId, setClassId] = useState("");
   const [sectionId, setSectionId] = useState("");
-  const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const cls = getClass(db, classId);
+  const sectionName = classId && sectionId ? cls?.sections.find((s) => s.id === sectionId)?.name : undefined;
 
-  const scoped = db.students.filter((s) => {
-    if (!s.enrollment) return false;
-    if (classId && s.enrollment.classId !== classId) return false;
-    if (sectionId && s.enrollment.sectionId !== sectionId) return false;
-    return true;
-  });
-  const targets = scoped.filter((s) => !excluded.has(s.id));
-
-  const toggle = (id: string) => setExcluded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-
-  const submit = () => {
+  const submit = async () => {
     if (!label.trim() || amount <= 0) { toast("Give the fee a label and a positive amount.", "warn"); return; }
-    if (targets.length === 0) { toast("No students in scope — pick a class or section with students in it.", "warn"); return; }
     setBusy(true);
-    update((d) => {
-      targets.forEach((s) => {
-        d.fees.push({ id: uid(), studentId: s.id, label: label.trim(), amount, paid: 0, due, payments: [] });
-      });
-      pushAudit(d, currentUser, "fee.bulk_create", `${label.trim()} · ${targets.length} student${targets.length !== 1 ? "s" : ""}`,
-        `Br ${amount} each${cls ? ` · ${cls.name}${sectionId ? ` ${db.classes.find((c) => c.id === classId)?.sections.find((sec) => sec.id === sectionId)?.name ?? ""}` : ""}` : ""}`);
-    });
-    toast(`Added "${label.trim()}" to ${targets.length} student${targets.length !== 1 ? "s" : ""}.`);
-    setBusy(false);
-    onClose();
+    try {
+      const result = await bulkCreateFeeItems({ yearId, classId: classId || null, sectionId: sectionId || null, label: label.trim(), amount, dueDate: due });
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      const count = Number((result as any)?.created ?? 0);
+      toast(`Added "${label.trim()}" to ${count} student${count !== 1 ? "s" : ""}.`);
+      onClose();
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't add fee items.", "warn"); }
+    finally { setBusy(false); }
   };
 
   return (
-    <Modal title="Bulk add fee item" kicker="Applies to every student in the scope you pick" onClose={onClose} wide
-      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit} busy={busy}><Save className="h-4 w-4" /> Add to {targets.length} student{targets.length !== 1 ? "s" : ""}</Btn></>}>
+    <Modal title="Bulk add fee item" kicker="The server applies this to every active enrollment in the scope you pick" onClose={onClose} wide
+      footer={<><Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn><Btn onClick={submit} busy={busy}><Save className="h-4 w-4" /> Add fee item</Btn></>}>
       <div className="grid gap-2 sm:grid-cols-3">
         <Field label="Label" required><TextInput value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Tuition — Term 2" /></Field>
         <Field label="Amount" required><input type="number" min={0} value={amount} onChange={(e) => setAmount(Number(e.target.value) || 0)} className="w-full rounded-lg border border-mist bg-card px-3 py-2 text-[13.5px]" /></Field>
         <Field label="Due date" required><TextInput type="date" value={due} onChange={(e) => setDue(e.target.value)} /></Field>
       </div>
-
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <Field label="Class"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); setExcluded(new Set()); }}><option value="">Whole school</option>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
-        <Field label="Section"><Select value={sectionId} onChange={(e) => { setSectionId(e.target.value); setExcluded(new Set()); }} disabled={!classId}><option value="">All sections</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+        <Field label="Class"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); }}><option value="">Whole school</option>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Section"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)} disabled={!classId}><option value="">All sections</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
       </div>
-
-      <div className="mt-3 rounded-lg border border-mist">
-        <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-3 py-2">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-soft">{scoped.length} student{scoped.length !== 1 ? "s" : ""} in scope</p>
-          {scoped.length > 0 && <button onClick={() => setExcluded(excluded.size ? new Set() : new Set(scoped.map((s) => s.id)))} className="cursor-pointer text-[11.5px] font-bold text-pine-700 hover:underline">{excluded.size ? "Select all" : "Deselect all"}</button>}
-        </div>
-        <div className="max-h-56 overflow-y-auto">
-          {scoped.map((s) => (
-            <label key={s.id} className="flex cursor-pointer items-center gap-2.5 border-b border-mist/60 px-3 py-2 text-[12.5px] last:border-0 hover:bg-paper/40">
-              <input type="checkbox" checked={!excluded.has(s.id)} onChange={() => toggle(s.id)} className="h-4 w-4 rounded border-mist accent-pine-700" />
-              <Avatar student={s} size={22} />
-              <span className="font-medium text-ink">{fullName(s)}</span>
-              <span className="ml-auto text-soft">{s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "—"}</span>
-            </label>
-          ))}
-          {scoped.length === 0 && <p className="px-3 py-6 text-center text-[12px] text-soft">No enrolled students match this scope.</p>}
-        </div>
+      <div className="mt-4 rounded-xl border border-pine-200 bg-pine-50/60 p-4 text-[12.5px] text-soft">
+        <p className="font-bold text-ink">Scope</p>
+        <p className="mt-1">{classId ? `${cls?.name ?? classId}${sectionName ? ` · Section ${sectionName}` : " · all sections"}` : "All active students in the selected academic year"}</p>
+        <p className="mt-1 text-[11.5px]">The database performs the bulk insert directly, so this action does not download the whole student list into the browser.</p>
       </div>
     </Modal>
   );
 }
 
 function ReceiptPreviewModal({ request, onClose }: { request: PaymentRequest; onClose: () => void }) {
-  const { db, toast, update } = useApp();
+  const { toast, update } = useApp();
   const confirm = useConfirm();
   const [url, setUrl] = useState<string | undefined>(request.receiptDataUrl);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const student = db.students.find((x) => x.id === request.studentId);
-  const item = db.fees.find((f) => f.id === request.feeItemId);
+  const studentName = (request as any).studentName ?? request.studentId;
+  const itemLabel = (request as any).feeLabel ?? request.feeItemId;
 
   useEffect(() => {
     if (!request.receiptPath || url) return;
@@ -2513,7 +2430,7 @@ function ReceiptPreviewModal({ request, onClose }: { request: PaymentRequest; on
   };
 
   return (
-    <Modal title={item?.label ?? "Fee receipt"} kicker={student ? fullName(student) : "Student"} onClose={onClose}
+    <Modal title={itemLabel} kicker={studentName} onClose={onClose}
       footer={<><Btn variant="ghost" onClick={onClose}>Close</Btn><Btn variant="dangerSoft" onClick={clear} busy={busy}><Trash2 className="h-4 w-4" /> Clear receipt</Btn></>}>
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-soft">
         <span>Br {request.amount.toLocaleString()}</span><span>{request.status}</span><span>{fmtDate(request.submittedAt.slice(0, 10))}</span>
@@ -2536,8 +2453,8 @@ function ReviewPaymentRequestModal({ request, onClose }: { request: PaymentReque
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const student = db.students.find((x) => x.id === request.studentId);
-  const item = db.fees.find((f) => f.id === request.feeItemId);
+  const studentName = (request as any).studentName ?? request.studentId;
+  const itemLabel = (request as any).feeLabel ?? request.feeItemId;
 
   useEffect(() => {
     if (request.receiptPath && !receiptUrl) {
@@ -2550,38 +2467,19 @@ function ReviewPaymentRequestModal({ request, onClose }: { request: PaymentReque
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request.receiptPath]);
 
-  const decide = (status: "approved" | "rejected") => {
-    if (!item) { toast("That fee item no longer exists.", "warn"); return; }
+  const decide = async (status: "approved" | "rejected") => {
     setBusy(true);
-    update((d) => {
-      const r = d.paymentRequests.find((x) => x.id === request.id);
-      if (!r || r.status !== "pending") return;
-      r.status = status;
-      r.reviewedBy = currentUser?.id;
-      r.reviewedByName = currentUser?.name;
-      r.reviewedAt = new Date().toISOString();
-      r.reviewNote = note.trim() || undefined;
-      if (status === "approved") {
-        const f = d.fees.find((x) => x.id === request.feeItemId);
-        if (f) {
-          f.paid = Math.min(f.amount, f.paid + request.amount);
-          f.payments = [...(f.payments ?? []), {
-            id: `pay-${request.id}`, amount: request.amount, method: "bank_transfer", reference: request.reference,
-            bank: request.bankName, date: todayISO(), recordedBy: currentUser?.name,
-          }];
-        }
-      }
-      pushAudit(d, currentUser, status === "approved" ? "fee.payment.approve" : "fee.payment.reject",
-        `${item.label} · ${student ? fullName(student) : request.studentId}`,
-        `Br ${request.amount} via ${request.bankName}${note.trim() ? ` — ${note.trim()}` : ""}`);
-    });
-    toast(status === "approved" ? "Payment approved and recorded." : "Request rejected.");
-    setBusy(false);
-    onClose();
+    try {
+      const result = await reviewFeePaymentRequest(request.id, status, note.trim() || undefined);
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      toast(status === "approved" ? "Payment approved and recorded." : "Request rejected.");
+      onClose();
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't review payment request.", "warn"); }
+    finally { setBusy(false); }
   };
 
   return (
-    <Modal title={`${student ? fullName(student) : "Guardian"} — ${item?.label ?? "Fee"}`} kicker="Review bank transfer receipt" onClose={onClose}
+    <Modal title={`${studentName} — ${itemLabel}`} kicker="Review bank transfer receipt" onClose={onClose}
       footer={<>
         <Btn variant="ghost" onClick={onClose}>Close</Btn>
         <Btn variant="soft" onClick={() => decide("rejected")} busy={busy}><UserX className="h-4 w-4" /> Reject</Btn>
@@ -2628,7 +2526,9 @@ const ETH_BANKS = ["Commercial Bank of Ethiopia", "Awash Bank", "Dashen Bank", "
 function methodLabel(m: PaymentMethod) { return PAYMENT_METHODS.find((x) => x.id === m)?.label ?? m; }
 
 function FeeLedgerModal({ student, canManage, onClose }: { student: Student; canManage: boolean; onClose: () => void }) {
-  const { db, update, toast, currentUser } = useApp();
+  const { db, toast, currentUser, yearId } = useApp();
+  const confirm = useConfirm();
+  const ledgerQuery = useFeeLedger(student.id);
   const [addOpen, setAddOpen] = useState(false);
   const [label, setLabel] = useState("");
   const [amount, setAmount] = useState(0);
@@ -2640,36 +2540,42 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
   const [payReference, setPayReference] = useState("");
   const [payBank, setPayBank] = useState(ETH_BANKS[0]);
 
-  const items = db.fees.filter((f) => f.studentId === student.id);
-  const stats = feeStats(db, student.id);
+  const items: FeeItem[] = (ledgerQuery.data?.items ?? []).map((f) => ({
+    id: f.id, studentId: f.student_id, label: f.label, amount: Number(f.amount), paid: Number(f.paid), due: f.due_date ?? "",
+    payments: (f.payments ?? []).map((p: any) => ({ id: String(p.id), amount: Number(p.amount), method: p.method as PaymentMethod, reference: p.reference ?? undefined, bank: p.bank ?? undefined, date: p.date ?? "", recordedBy: p.recordedBy ?? undefined })),
+  }));
+  const stats = useMemo(() => items.reduce((a, f) => ({ billed: a.billed + f.amount, paid: a.paid + f.paid, outstanding: a.outstanding + Math.max(0, f.amount - f.paid) }), { billed: 0, paid: 0, outstanding: 0 }), [items]);
 
-  const addItem = () => {
+  const addItem = async () => {
     if (!label.trim() || amount <= 0) { toast("Give the fee a label and a positive amount.", "warn"); return; }
-    update((d) => { d.fees.push({ id: uid(), studentId: student.id, label: label.trim(), amount, paid: 0, due, payments: [] }); pushAudit(d, currentUser, "fee.create", `${label.trim()} · ${fullName(student)}`); });
-    toast("Fee item added.");
-    setAddOpen(false); setLabel(""); setAmount(0);
+    try {
+      const result = await createFeeItem({ id: uid(), studentId: student.id, label: label.trim(), amount, dueDate: due, yearId });
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      await ledgerQuery.refetch();
+      toast("Fee item added.");
+      setAddOpen(false); setLabel(""); setAmount(0);
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't add fee item.", "warn"); }
   };
-  const removeItem = (f: FeeItem) => {
-    update((d) => { d.fees = d.fees.filter((x) => x.id !== f.id); pushAudit(d, currentUser, "fee.delete", `${f.label} · ${fullName(student)}`); });
-    toast("Fee item removed.");
+  const removeItem = async (f: FeeItem) => {
+    const ok = await confirm({ title: "Delete this fee item?", body: `${f.label} for ${fullName(student)} will be removed.`, confirmLabel: "Delete fee", variant: "danger" });
+    if (!ok) return;
+    try {
+      const result = await deleteFeeItem(f.id);
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      await ledgerQuery.refetch();
+      toast("Fee item removed.");
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't remove fee item.", "warn"); }
   };
-  const recordPayment = () => {
+  const recordPayment = async () => {
     if (!payItem || payAmount <= 0) { toast("Enter a positive payment amount.", "warn"); return; }
     if (payMethod !== "cash" && !payReference.trim()) { toast(`Enter the ${methodLabel(payMethod)} transaction reference.`, "warn"); return; }
-    update((d) => {
-      const f = d.fees.find((x) => x.id === payItem.id);
-      if (!f) return;
-      f.paid = Math.min(f.amount, f.paid + payAmount);
-      f.payments = [...(f.payments ?? []), {
-        id: uid(), amount: payAmount, method: payMethod,
-        reference: payMethod === "cash" ? undefined : payReference.trim(),
-        bank: payMethod === "bank_transfer" ? payBank : undefined,
-        date: todayISO(), recordedBy: currentUser?.name,
-      }];
-      pushAudit(d, currentUser, "fee.payment", `${payItem.label} · ${fullName(student)}`, `Br ${payAmount} via ${methodLabel(payMethod)}${payReference ? ` (${payReference.trim()})` : ""}`);
-    });
-    toast("Payment recorded.");
-    setPayItem(null); setPayAmount(0); setPayReference(""); setPayMethod("telebirr");
+    try {
+      const result = await recordFeePayment({ feeItemId: payItem.id, amount: payAmount, method: payMethod, reference: payMethod === "cash" ? null : payReference.trim(), bank: payMethod === "bank_transfer" ? payBank : null, paymentId: `pay-${uid()}` });
+      if ((result as any)?.error) { toast((result as any).error, "warn"); return; }
+      await ledgerQuery.refetch();
+      toast("Payment recorded.");
+      setPayItem(null); setPayAmount(0); setPayReference(""); setPayMethod("telebirr");
+    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't record payment.", "warn"); }
   };
 
   const printReceipt = async (f: FeeItem) => {

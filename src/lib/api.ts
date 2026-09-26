@@ -5,7 +5,7 @@ import {
   useQueryClient,
   keepPreviousData,
 } from "@tanstack/react-query";
-import { callRpc, callWrite } from "./http";
+import { ApiError, callRpc, callWrite, csrfToken } from "./http";
 import { useAcademicYear } from "./yearContext";
 
 /**
@@ -253,6 +253,63 @@ export function useStudents(filters: StudentFilters = {}) {
     pageSize,
     pageCount: Math.max(1, Math.ceil(total / pageSize)),
   };
+}
+
+
+export interface UserFilters {
+  role?: "admin" | "teacher" | "student" | "guardian";
+  status?: string;
+  search?: string;
+  classId?: string;
+  sectionId?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface UserRow {
+  id: string;
+  full_name: string;
+  username: string;
+  role: string;
+  role_def_id: string | null;
+  status: string;
+  email: string | null;
+  phone: string | null;
+  teacher_id: string | null;
+  student_id: string | null;
+  created_at: string;
+  children_ids: string[];
+  linked_name: string | null;
+  linked_class_id: string | null;
+  linked_section_id: string | null;
+  total_count: number;
+}
+
+/** Server-paged account directory. The client never needs every profile in memory. */
+export function useUsers(filters: UserFilters = {}) {
+  const { yearId } = useAcademicYear();
+  const pageSize = filters.pageSize ?? 50;
+  const page = filters.page ?? 0;
+  const query = useQuery({
+    queryKey: ["users", yearId ?? "", { ...filters, page, pageSize }] as const,
+    enabled: Boolean(yearId),
+    staleTime: STALE.list,
+    placeholderData: keepPreviousData,
+    queryFn: () =>
+      rpc<UserRow[]>("list_users", {
+        p_year_id: yearId,
+        p_role: filters.role ?? null,
+        p_status: filters.status ?? null,
+        p_search: filters.search?.trim() || null,
+        p_class_id: filters.classId ?? null,
+        p_section_id: filters.sectionId ?? null,
+        p_limit: pageSize,
+        p_offset: page * pageSize,
+      }),
+  });
+  const rows = query.data ?? [];
+  const total = rows[0]?.total_count ?? 0;
+  return { ...query, rows, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
 }
 
 export function useStudentDetail(studentId: string | null) {

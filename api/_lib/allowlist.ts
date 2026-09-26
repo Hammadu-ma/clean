@@ -70,6 +70,19 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
       p_offset: OFFSET,
     },
   },
+  list_users: {
+    read: true,
+    args: {
+      p_year_id: ID,
+      p_role: { type: "string", optional: true, maxLength: 20 },
+      p_status: { type: "string", optional: true, maxLength: 20 },
+      p_search: SEARCH,
+      p_class_id: ID,
+      p_section_id: ID,
+      p_limit: LIMIT,
+      p_offset: OFFSET,
+    },
+  },
   get_student_detail: {
     read: true,
     args: { p_student_id: { type: "string", maxLength: 128 }, p_year_id: ID },

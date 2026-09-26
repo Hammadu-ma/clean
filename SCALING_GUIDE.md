@@ -122,7 +122,7 @@ and grade band, then re-enroll every student one at a time.
 
 ---
 
-## Wiring it into the UI — this part is still yours
+## Current frontend status
 
 I did **not** rewrite `people.tsx` (1,542 lines), `academics.tsx` (2,520) or
 `communication.tsx` (816). They still read the in-memory `DB` from

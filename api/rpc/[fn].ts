@@ -1,53 +1,92 @@
 import { fail, failFromPostgres, json, methodGuard, readJson, clientIp } from "../_lib/http";
 import { csrfValid } from "../_lib/cookies";
 import { originAllowed } from "../_lib/env";
-import { authenticate } from "../_lib/supabase";
+import { adminClient, authenticate } from "../_lib/supabase";
 import { RPC_ALLOWLIST, isReadOnly, rateLimitFor, validateArgs } from "../_lib/allowlist";
 import { rateHeaders, rateLimit } from "../_lib/ratelimit";
+import { updateProfileDirect } from "../_lib/profile-update";
 
 export const config = { runtime: "edge" };
+
+const UUID_ZERO = "00000000-0000-0000-0000-000000000000";
+
+async function callerIsSuperAdmin(ctx: Awaited<ReturnType<typeof authenticate>>): Promise<boolean> {
+  if (!ctx) return false;
+
+  const { data: profile, error: profileError } = await ctx.db
+    .from("profiles")
+    .select("role_def_id,status")
+    .eq("id", ctx.userId)
+    .maybeSingle();
+  if (profileError || !profile || profile.status !== "active") return false;
+
+  const { data: roleDef, error: roleError } = await ctx.db
+    .from("role_defs")
+    .select("id,name")
+    .eq("id", profile.role_def_id)
+    .maybeSingle();
+  if (roleError || !roleDef) return false;
+
+  return roleDef.id === "superadmin" || roleDef.name === "Super Admin";
+}
+
+async function clearAuditLogDirect(ctx: NonNullable<Awaited<ReturnType<typeof authenticate>>>) {
+  if (!(await callerIsSuperAdmin(ctx))) {
+    return fail("forbidden", "Only the Super Admin can clear the audit log.");
+  }
+
+  const { error, count } = await adminClient()
+    .from("audit_log")
+    .delete({ count: "exact" })
+    .neq("id", UUID_ZERO);
+
+  if (error) {
+    console.error("[audit] direct clear failed:", error.message);
+    return fail("server_error", "Could not clear the audit log. Please try again.");
+  }
+
+  return json({ ok: true, data: { cleared: true, removed: Number(count ?? 0) } });
+}
+
+async function deleteAuditEntryDirect(
+  ctx: NonNullable<Awaited<ReturnType<typeof authenticate>>>,
+  id: string
+) {
+  if (!(await callerIsSuperAdmin(ctx))) {
+    return fail("forbidden", "Only the Super Admin can delete audit entries.");
+  }
+
+  const { data, error } = await adminClient()
+    .from("audit_log")
+    .delete()
+    .eq("id", id)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    console.error("[audit] direct delete failed:", error.message);
+    return fail("server_error", "Could not delete that audit entry. Please try again.");
+  }
+
+  return json({ ok: true, data: { id, deleted: Boolean(data?.id) } });
+}
+
 
 /**
  * POST /api/rpc/<function-name>
  *
  * The entire data surface of the application. Everything the browser can do
  * to the database happens through this one door, and the door checks, in
- * order:
- *
- *   1. origin        — the request came from our app, not someone else's page
- *   2. authenticated — a valid session cookie, verified by Supabase, not by us
- *   3. allowlisted   — the named function is one of the ones in allowlist.ts
- *   4. CSRF          — for anything that writes
- *   5. rate limit    — per user, per function
- *   6. validated     — arguments match the declared schema; extras are dropped
- *   7. RLS           — and then PostgreSQL decides what this user may see
- *
- * Step 7 is the one that actually protects the data. Steps 1–6 exist so that
- * a mistake in step 7 is not immediately fatal, and so that the surface an
- * attacker can probe is one endpoint with twenty-odd named operations rather
- * than a full PostgREST API over every table in the schema.
- *
- * WHY EVERYTHING IS POST, INCLUDING READS
- * Read arguments (a student id, a search term, a class) end up in URLs if
- * they're query parameters, and URLs end up in access logs, proxy logs,
- * browser history and Referer headers. In a system holding children's
- * records, keeping those in a request body is worth losing HTTP caching over
- * — and these responses are `no-store` anyway, so there was no cache to lose.
+ * order: origin, authentication, allowlist, CSRF, rate limit, argument shape,
+ * and finally PostgreSQL/RLS.
  */
 export default async function handler(req: Request): Promise<Response> {
   const bad = methodGuard(req, "POST");
   if (bad) return bad;
 
-  if (!originAllowed(req)) {
-    return fail("forbidden", "Request origin not allowed.");
-  }
+  if (!originAllowed(req)) return fail("forbidden", "Request origin not allowed.");
 
-  // .../api/rpc/list_students → "list_students"
   const fn = new URL(req.url).pathname.split("/").filter(Boolean).pop() ?? "";
-
-  // Checked before authentication so an unknown name costs nothing, and
-  // worded identically to a permission failure so the allowlist can't be
-  // mapped by probing.
   if (!Object.prototype.hasOwnProperty.call(RPC_ALLOWLIST, fn)) {
     return fail("not_found", "Unknown operation.");
   }
@@ -73,16 +112,32 @@ export default async function handler(req: Request): Promise<Response> {
   const validated = validateArgs(fn, body);
   if (!validated.ok) return fail("invalid_request", validated.error ?? "Invalid request.");
 
+  // Compatibility shims: older cached frontends may still call these original
+  // RPC names. Keep them working without sending the privileged operation
+  // through the fragile PostgREST function cache.
+  if (fn === "clear_audit_log" || fn === "clear_audit_log_v2") {
+    return clearAuditLogDirect(ctx);
+  }
+  if (fn === "delete_audit_entry") {
+    const id = String(validated.args?.p_id ?? "");
+    if (!id) return fail("invalid_request", "Audit entry id is required.");
+    return deleteAuditEntryDirect(ctx, id);
+  }
+  if (fn === "update_my_profile") {
+    return updateProfileDirect(ctx, {
+      username: validated.args?.p_username,
+      fullName: validated.args?.p_full_name,
+      currentPassword: validated.args?.p_current_password,
+      newPassword: validated.args?.p_new_password,
+    });
+  }
+
   const started = Date.now();
   try {
-    // Runs as the signed-in user. RLS applies exactly as it did when the
-    // browser held the token — the token just lives somewhere safer now.
     const { data, error } = await ctx.db.rpc(fn, validated.args ?? {});
-
     if (error) return failFromPostgres(error, `rpc ${fn}`);
 
     const ms = Date.now() - started;
-    // Slow-query visibility without logging any of the data itself.
     if (ms > 1000) console.warn(`[rpc] slow: ${fn} took ${ms}ms for user ${ctx.userId}`);
 
     return json({ ok: true, data: data ?? null }, 200, {

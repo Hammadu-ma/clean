@@ -1,8 +1,8 @@
-import { createClient } from "@supabase/supabase-js";
-import { env, originAllowed } from "../_lib/env";
-import { adminClient, authenticate } from "../_lib/supabase";
+import { originAllowed } from "../_lib/env";
+import { authenticate } from "../_lib/supabase";
+import { updateProfileDirect } from "../_lib/profile-update";
 import { csrfValid } from "../_lib/cookies";
-import { clientIp, fail, failFromPostgres, json, methodGuard, readJson } from "../_lib/http";
+import { clientIp, fail, methodGuard, readJson } from "../_lib/http";
 import { rateHeaders, rateLimit } from "../_lib/ratelimit";
 
 export const config = { runtime: "edge" };
@@ -17,13 +17,10 @@ type Body = {
 /**
  * POST /api/auth/update-profile
  *
- * Profile identity is still updated by the existing, permission-aware RPC.
- * Passwords deliberately do NOT go through SQL updates to auth.users anymore.
- * Instead we verify the current password through the normal Supabase Auth
- * sign-in path and then ask the Supabase Auth admin API to update only this
- * authenticated user's password. The service-role client is used only after
- * the current session and current password have both been verified, and the
- * credential never enters PostgreSQL SQL.
+ * Uses the shared profile-update implementation. It deliberately avoids the
+ * stale public PostgREST update_my_profile RPC for both identity and password
+ * changes. Password verification and mutation happen through Supabase Auth,
+ * while the profile row is updated under the caller's normal RLS context.
  */
 export default async function handler(req: Request): Promise<Response> {
   const bad = methodGuard(req, "POST");
@@ -62,58 +59,12 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   try {
-    // If a password is being changed, verify the existing credential through
-    // the ordinary Auth password flow before mutating either side of the
-    // account. The verifier client is intentionally separate from the current
-    // session client so a verification attempt cannot replace that session.
-    if (newPassword) {
-      const { data: authData, error: authError } = await ctx.db.auth.getUser(ctx.tokens.accessToken);
-      const email = authData.user?.email;
-      if (authError || !email) {
-        console.error("[profile] unable to resolve auth email for password verification:", authError?.code, authError?.message);
-        return fail("server_error", "Could not verify your account. Please try again.");
-      }
-
-      const verifier = createClient(env.supabaseUrl, env.anonKey, {
-        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-      });
-      const { data: verified, error: verifyError } = await verifier.auth.signInWithPassword({
-        email,
-        password: currentPassword,
-      });
-      if (verifyError || !verified.user || verified.user.id !== ctx.userId) {
-        return fail("invalid_request", "Current password is incorrect.");
-      }
-    }
-
-    // Reuse the existing identity-update business rules and uniqueness check,
-    // but never pass a new password into that SQL function.
-    const { data: profileData, error: profileError } = await ctx.db.rpc("update_my_profile", {
-      p_username: username,
-      p_current_password: null,
-      p_new_password: null,
-      p_full_name: fullName || null,
+    return updateProfileDirect(ctx, {
+      username,
+      fullName,
+      currentPassword,
+      newPassword,
     });
-    if (profileError) return failFromPostgres(profileError, "rpc update_my_profile");
-
-    if (newPassword) {
-      const { error: passwordError } = await adminClient().auth.admin.updateUserById(ctx.userId, {
-        password: newPassword,
-      });
-      if (passwordError) {
-        console.error("[profile] Supabase Auth password update failed:", passwordError.status, passwordError.code, passwordError.message);
-        return fail("server_error", "Your profile was updated, but the password could not be changed. Please try again.");
-      }
-    }
-
-    return json({
-      ok: true,
-      data: {
-        username: String(profileData?.username ?? username),
-        fullName: String(profileData?.fullName ?? fullName),
-        passwordChanged: Boolean(newPassword),
-      },
-    }, 200, rateHeaders(limit, 10));
   } catch (e) {
     console.error("[profile] update-profile threw:", e);
     return fail("server_error", "Something went wrong. Please try again.");

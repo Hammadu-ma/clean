@@ -600,7 +600,7 @@ function ContactPicker({ onClose, onPick }: { onClose: () => void; onPick: (u: U
   useEffect(() => { const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250); return () => window.clearTimeout(t); }, [q]);
   const query = useUsers({ search: debouncedQ || undefined, page: 0, pageSize: 50 });
   const users = useMemo(() => query.rows.filter((u) => u.id !== currentUser?.id).map((u: any) => ({
-    id: u.user_id, name: u.full_name ?? u.username ?? "Unknown user", username: u.username ?? "", password: "", role: u.role ?? "student", roleId: u.role_def_id ?? u.role ?? "student", status: u.status ?? "active", email: u.email ?? undefined, phone: u.phone ?? undefined, createdAt: "",
+    id: u.id, name: u.full_name ?? u.username ?? "Unknown user", username: u.username ?? "", password: "", role: u.role ?? "student", roleId: u.role_def_id ?? u.role ?? "student", status: u.status ?? "active", email: u.email ?? undefined, phone: u.phone ?? undefined, createdAt: "",
   } as User)), [query.rows, currentUser?.id]);
   return <Modal title="New message" kicker="Choose a connected person" onClose={onClose} wide footer={<Btn variant="ghost" onClick={onClose}>Close</Btn>}>
     <div className="relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" /><TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name or username…" className="pl-9" /></div>

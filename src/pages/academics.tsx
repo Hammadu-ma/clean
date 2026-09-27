@@ -24,7 +24,7 @@ import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable,
 import { clearFeeReceipt, getDownloadUrl } from "../lib/storage";
 import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Select, SkeletonCards, SkeletonPanel, SkeletonRows,
-  Stat, Tabs, TextArea, TextInput, tdCls, thCls, useConfirm,
+  Stat, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls, useConfirm,
 } from "../ui";
 import { AccessDenied } from "./Auth";
 import { useRegister, saveRegister, useAssessmentStructures, useMarksheetPage, saveStudentMarks, setSubmissionStatus, useStudentResults, useStudents, studentRowToStudent, useFeeStudentSummary, useFeePaymentRequests, createFeeItem, deleteFeeItem, recordFeePayment, reviewFeePaymentRequest, bulkCreateFeeItems, useFeeLedger } from "../lib/api";
@@ -109,6 +109,13 @@ export function MarkEntryPage() {
   const [marksPage, setMarksPage] = useState(0);
   const [marksSearch, setMarksSearch] = useState("");
   const canViewMarks = hasPermission(db, currentUser, "exams.view");
+  const confirm = useConfirm();
+  // Edits made in the grid but not yet pushed to the server. Keyed by
+  // student, then by assessment item — a `null` value means "explicitly
+  // cleared this cell", distinct from "never touched this cell".
+  const [pendingMarks, setPendingMarks] = useState<Record<string, Record<string, number | null>>>({});
+  const [savingMarks, setSavingMarks] = useState(false);
+  const dirtyStudentIds = Object.keys(pendingMarks).filter((sid) => Object.keys(pendingMarks[sid]).length > 0);
 
   const allStructures: AssessmentStructure[] = useMemo(() => (assessmentQuery.rows ?? []).map((st) => ({
     id: st.id, yearId: st.year_id, classId: st.class_id, subjectId: st.subject_id, period: st.period,
@@ -184,14 +191,43 @@ export function MarkEntryPage() {
       enrollment: { yearId: structure?.yearId ?? yearId, classId: structure?.classId ?? "", sectionId: filterSectionId || "", rollNumber: r.roll_number ?? undefined, status: "active" }, history: [], documents: [],
     };
   }), [marksQuery.rows, structure, yearId, filterSectionId]);
-  const viewDb = useMemo(() => ({
-    ...db,
-    students: roster,
-    assessmentMarks: structure ? { ...db.assessmentMarks, [structure.id]: Object.fromEntries((marksQuery.rows ?? []).map((r) => [r.student_id, r.marks])) } : db.assessmentMarks,
-  }), [db, roster, structure, marksQuery.rows]);
+  // Server marks, with any not-yet-saved edits from the grid layered on top —
+  // so totals/percentages/grades update live as you type, without a round
+  // trip per keystroke.
+  const viewDb = useMemo(() => {
+    const serverMarksForStructure = structure ? Object.fromEntries((marksQuery.rows ?? []).map((r) => [r.student_id, r.marks])) : {};
+    const mergedMarksForStructure: Record<string, Record<string, number>> = {};
+    for (const sid of new Set([...Object.keys(serverMarksForStructure), ...Object.keys(pendingMarks)])) {
+      const merged = { ...(serverMarksForStructure[sid] ?? {}) };
+      for (const [itemId, val] of Object.entries(pendingMarks[sid] ?? {})) {
+        if (val === null) delete merged[itemId]; else merged[itemId] = val;
+      }
+      mergedMarksForStructure[sid] = merged;
+    }
+    return {
+      ...db,
+      students: roster,
+      assessmentMarks: structure ? { ...db.assessmentMarks, [structure.id]: mergedMarksForStructure } : db.assessmentMarks,
+    };
+  }, [db, roster, structure, marksQuery.rows, pendingMarks]);
   const ranks = useMemo(() => Object.fromEntries((marksQuery.rows ?? []).map((r) => [r.student_id, r.rank ?? undefined])), [marksQuery.rows]);
 
   useEffect(() => { setMarksPage(0); }, [structure?.id, filterSectionId, marksSearch]);
+  // Pending edits belong to one specific structure (class+subject+period) —
+  // discard them the moment that identity changes, but not on section/search,
+  // which only filter which slice of the same structure's roster is shown.
+  useEffect(() => { setPendingMarks({}); }, [structure?.id]);
+
+  const confirmDiscardMarks = async () => {
+    if (dirtyStudentIds.length === 0) return true;
+    return confirm({
+      title: "Discard unsaved marks?",
+      body: `You have unsaved marks for ${dirtyStudentIds.length} student${dirtyStudentIds.length === 1 ? "" : "s"}. Switching now will discard them unless you save first.`,
+      confirmLabel: "Discard changes",
+      cancelLabel: "Keep editing",
+      variant: "danger",
+    });
+  };
 
   const availableSections = useMemo(() => {
     if (!filterClassId) return [];
@@ -334,18 +370,38 @@ export function MarkEntryPage() {
     finally { setWorkflowBusy(null); }
   };
 
-  const setScore = async (studentId: string, item: AssessmentItem, raw: string) => {
+  // Local-only — edits the grid and marks the student dirty. Nothing is
+  // sent to the server until "Save marks" is clicked.
+  const setScore = (studentId: string, item: AssessmentItem, raw: string) => {
     if (!structure || !canEdit) return;
-    const current = (marksQuery.rows ?? []).find((r) => r.student_id === studentId)?.marks ?? {};
-    const next = { ...current };
-    if (raw === "") delete next[item.id];
-    else { const v = Number(raw); next[item.id] = isNaN(v) ? 0 : Math.max(0, Math.min(item.max, v)); }
+    let value: number | null;
+    if (raw === "") value = null;
+    else { const v = Number(raw); value = isNaN(v) ? 0 : Math.max(0, Math.min(item.max, v)); }
+    setPendingMarks((prev) => ({ ...prev, [studentId]: { ...(prev[studentId] ?? {}), [item.id]: value } }));
+  };
+
+  const saveAllMarks = async () => {
+    if (!structure || !canEdit || dirtyStudentIds.length === 0 || savingMarks) return;
+    setSavingMarks(true);
     try {
-      const result = await saveStudentMarks(structure.id, studentId, next);
-      if ((result as any)?.error) { toast((result as any).error, "warn"); await marksQuery.refetch(); return; }
+      for (const studentId of dirtyStudentIds) {
+        const current = (marksQuery.rows ?? []).find((r) => r.student_id === studentId)?.marks ?? {};
+        const next = { ...current };
+        for (const [itemId, val] of Object.entries(pendingMarks[studentId] ?? {})) {
+          if (val === null) delete next[itemId]; else next[itemId] = val;
+        }
+        const result = await saveStudentMarks(structure.id, studentId, next);
+        if ((result as any)?.error) throw new Error((result as any).error);
+      }
+      setPendingMarks({});
       setSavedAt(new Date().toLocaleTimeString("en-GB"));
-      void marksQuery.refetch();
-    } catch (e) { toast(e instanceof Error ? e.message : "Couldn't save mark.", "warn"); await marksQuery.refetch(); }
+      await marksQuery.refetch();
+      toast(`Saved marks for ${dirtyStudentIds.length} student${dirtyStudentIds.length === 1 ? "" : "s"}.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn't save marks — try again.", "warn");
+    } finally {
+      setSavingMarks(false);
+    }
   };
 
   return (
@@ -360,7 +416,7 @@ export function MarkEntryPage() {
         </div>
 
         <Field label="Semester" className="w-36">
-          <Select value={filterPeriod} onChange={(e) => setFilterPeriod(e.target.value)}>
+          <Select value={filterPeriod} onChange={async (e) => { const v = e.target.value; if (await confirmDiscardMarks()) setFilterPeriod(v); }}>
             <option value="">All</option>
             {periodOptions.map((p) => <option key={p} value={p}>{p}</option>)}
           </Select>
@@ -369,7 +425,7 @@ export function MarkEntryPage() {
         <Field label="Grade" className="w-40">
           <Select
             value={filterClassId}
-            onChange={(e) => { setFilterClassId(e.target.value); setFilterSectionId(""); }}
+            onChange={async (e) => { const v = e.target.value; if (await confirmDiscardMarks()) { setFilterClassId(v); setFilterSectionId(""); } }}
           >
             <option value="">All grades</option>
             {classOptions.map((id) => {
@@ -393,7 +449,7 @@ export function MarkEntryPage() {
         <Field label="Subject" className="w-48">
           <Select
             value={filterSubjectId}
-            onChange={(e) => setFilterSubjectId(e.target.value)}
+            onChange={async (e) => { const v = e.target.value; if (await confirmDiscardMarks()) setFilterSubjectId(v); }}
           >
             <option value="">All subjects</option>
             {subjectOptions.map((id) => {
@@ -406,7 +462,7 @@ export function MarkEntryPage() {
         <Field label="Search student" className="w-48"><TextInput value={marksSearch} onChange={(e) => setMarksSearch(e.target.value)} placeholder="Name or reg. no…" /></Field>
 
         {(filterClassId || filterSectionId || filterSubjectId || filterPeriod) && (
-          <Btn size="sm" variant="ghost" onClick={() => { setFilterClassId(""); setFilterSectionId(""); setFilterSubjectId(""); setFilterPeriod(""); }}>
+          <Btn size="sm" variant="ghost" onClick={async () => { if (await confirmDiscardMarks()) { setFilterClassId(""); setFilterSectionId(""); setFilterSubjectId(""); setFilterPeriod(""); } }}>
             <RotateCcw className="h-3.5 w-3.5" /> Clear filters
           </Btn>
         )}
@@ -435,7 +491,19 @@ export function MarkEntryPage() {
                   <p className="text-[11px] text-pine-300">Weights: {structure.items.map((i) => `${i.name} ${i.weight}%`).join(" · ")} · Σ {fmt1(structureWeightSum(structure))}%</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {savedAt && status === "draft" && <Chip tone="pine" className="!border-pine-600 !bg-pine-800 !text-pine-100"><Check className="h-3 w-3" /> Saved {savedAt}</Chip>}
+                  {dirtyStudentIds.length > 0 ? (
+                    <Chip tone="gold"><ClockIcon className="h-3 w-3" /> {dirtyStudentIds.length} unsaved</Chip>
+                  ) : savedAt && status === "draft" ? (
+                    <Chip tone="pine" className="!border-pine-600 !bg-pine-800 !text-pine-100"><Check className="h-3 w-3" /> Saved {savedAt}</Chip>
+                  ) : null}
+                  {canEdit && (
+                    <Btn size="sm" variant="gold" busy={savingMarks} disabled={dirtyStudentIds.length === 0 || savingMarks} onClick={() => void saveAllMarks()}>
+                      <Check className="h-3.5 w-3.5" /> Save marks{dirtyStudentIds.length > 0 ? ` (${dirtyStudentIds.length})` : ""}
+                    </Btn>
+                  )}
+                  {canEdit && dirtyStudentIds.length > 0 && (
+                    <Btn size="sm" variant="ghost" disabled={savingMarks} onClick={() => setPendingMarks({})}>Discard</Btn>
+                  )}
                   <SubmissionChip status={status} />
                   {isAdmin && <Btn size="sm" variant="soft" onClick={() => exportMarkSheetCsv(viewDb, structure, roster)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>}
                   {isAdmin && <Btn size="sm" variant="soft" onClick={() => exportMarkSheetPdf(viewDb, structure, roster)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>}
@@ -447,7 +515,7 @@ export function MarkEntryPage() {
               <div className="flex flex-wrap items-center gap-2 border-b border-mist bg-paper/70 px-4 py-3 sm:px-5">
                 <div className="flex flex-wrap items-center gap-2">
                   {canEdit && canEnter && (
-                    <Btn size="sm" disabled={!!workflowBusy} onClick={() => setConfirmSubmit(true)}><Send className="h-3.5 w-3.5" /> Submit for review</Btn>
+                    <Btn size="sm" disabled={!!workflowBusy} onClick={() => { if (dirtyStudentIds.length > 0) { toast("Save your marks before submitting for review.", "warn"); return; } setConfirmSubmit(true); }}><Send className="h-3.5 w-3.5" /> Submit for review</Btn>
                   )}
 
                   {status === "submitted" && canApprove && (
@@ -1633,6 +1701,28 @@ export function AttendancePage() {
   const [date, setDate] = useState(todayISO());
   const [savingAll, setSavingAll] = useState(false);
   const [marks, setMarks] = useState<Record<string, AttendanceStatus>>({});
+  // The server's own copy — what "marks" looked like right after the last
+  // load/save. Diffing against it is how we know what's actually dirty and
+  // need never be re-derived from a network round trip.
+  const [savedMarks, setSavedMarks] = useState<Record<string, AttendanceStatus>>({});
+  const confirm = useConfirm();
+
+  const isDirty = Object.keys({ ...marks, ...savedMarks }).some((sid) => (marks[sid] ?? null) !== (savedMarks[sid] ?? null));
+
+  const confirmDiscardAttendance = async () => {
+    if (!isDirty) return true;
+    return confirm({
+      title: "Discard unsaved attendance?",
+      body: "You have unsaved attendance for this class, section or date. Switching now will discard those marks unless you save first.",
+      confirmLabel: "Discard changes",
+      cancelLabel: "Keep editing",
+      variant: "danger",
+    });
+  };
+
+  const changeClassId = async (id: string) => { if (await confirmDiscardAttendance()) setClassId(id); };
+  const changeSectionId = async (id: string) => { if (await confirmDiscardAttendance()) setSectionId(id); };
+  const changeDate = async (d: string) => { if (await confirmDiscardAttendance()) setDate(d); };
 
   useEffect(() => {
     const opts = isAdmin
@@ -1650,31 +1740,31 @@ export function AttendancePage() {
     const next: Record<string, AttendanceStatus> = {};
     for (const row of registerRows) if (["present","absent","late"].includes(row.status)) next[row.student_id] = row.status as AttendanceStatus;
     setMarks(next);
+    setSavedMarks(next);
   }, [registerQuery.dataUpdatedAt, classId, sectionId, date]);
 
-  const setMark = async (studentId: string, status: AttendanceStatus) => {
-    if (!canManage || !yearId || !classId || !sectionId) return;
-    const next = { ...marks, [studentId]: status };
-    setMarks(next);
-    try {
-      await saveRegister({ yearId, classId, sectionId, day: date, marks: next });
-      await registerQuery.refetch();
-    } catch (e) {
-      setMarks(marks);
-      toast(e instanceof Error ? e.message : "Could not save attendance.", "warn");
-    }
+  // Local-only — no network call. "Save attendance" below is what persists it.
+  const setMark = (studentId: string, status: AttendanceStatus) => {
+    if (!canManage) return;
+    setMarks((prev) => ({ ...prev, [studentId]: status }));
   };
 
-  const markAllPresent = async () => {
-    if (!canManage || !yearId || !classId || !sectionId) return;
-    const next = { ...marks };
-    registerRows.forEach((r) => { if (!next[r.student_id]) next[r.student_id] = "present"; });
-    setMarks(next);
+  const markAllPresent = () => {
+    if (!canManage) return;
+    setMarks((prev) => {
+      const next = { ...prev };
+      registerRows.forEach((r) => { if (!next[r.student_id]) next[r.student_id] = "present"; });
+      return next;
+    });
+  };
+
+  const saveAttendance = async () => {
+    if (!canManage || !yearId || !classId || !sectionId || !isDirty) return;
     setSavingAll(true);
     try {
-      await saveRegister({ yearId, classId, sectionId, day: date, marks: next });
+      await saveRegister({ yearId, classId, sectionId, day: date, marks });
       await registerQuery.refetch();
-      toast("Unmarked students set to present.");
+      toast("Attendance saved.");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not save attendance.", "warn");
     } finally {
@@ -1697,10 +1787,10 @@ export function AttendancePage() {
 
   return (
     <div className="mx-auto max-w-5xl">
-      <PageHead kicker="Attendance" title="Daily register" sub="Mark present, absent or late for each student. Unmarked students count as not yet recorded.">
-        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => setClassId(e.target.value)}>{classIds.map((id) => <option key={id} value={id}>{getClass(db, id)?.name}</option>)}</Select></Field>
-        <Field label="Section" className="w-28"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)}>{sectionOptionsForClass.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
-        <Field label="Date" className="w-40"><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} max={todayISO()} /></Field>
+      <PageHead kicker="Attendance" title="Daily register" sub="Mark present, absent or late for each student, then save. Unmarked students count as not yet recorded.">
+        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => void changeClassId(e.target.value)}>{classIds.map((id) => <option key={id} value={id}>{getClass(db, id)?.name}</option>)}</Select></Field>
+        <Field label="Section" className="w-28"><Select value={sectionId} onChange={(e) => void changeSectionId(e.target.value)}>{sectionOptionsForClass.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+        <Field label="Date" className="w-40"><TextInput type="date" value={date} onChange={(e) => void changeDate(e.target.value)} max={todayISO()} /></Field>
       </PageHead>
 
       {registerQuery.isPending ? (
@@ -1717,9 +1807,19 @@ export function AttendancePage() {
           </div>
 
           <Panel className="anim-rise overflow-hidden">
-            <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-3">
-              <p className="whitespace-nowrap text-[12.5px] font-bold text-ink">{sectionLabel(db, classId, sectionId)} · {fmtDate(date)}</p>
-              {canManage && <Btn size="sm" variant="soft" disabled={savingAll || registerRows.length === 0} onClick={() => void markAllPresent()}><CheckCircle2 className="h-3.5 w-3.5" /> {savingAll ? "Saving…" : "Mark rest present"}</Btn>}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-mist bg-paper/60 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="whitespace-nowrap text-[12.5px] font-bold text-ink">{sectionLabel(db, classId, sectionId)} · {fmtDate(date)}</p>
+                {isDirty && <Chip tone="gold"><ClockIcon className="h-3 w-3" /> Unsaved</Chip>}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {canManage && <Btn size="sm" variant="soft" disabled={savingAll || registerRows.length === 0} onClick={markAllPresent}><CheckCircle2 className="h-3.5 w-3.5" /> Mark rest present</Btn>}
+                {canManage && (
+                  <Btn size="sm" variant="gold" busy={savingAll} disabled={!isDirty || savingAll} onClick={() => void saveAttendance()}>
+                    <Check className="h-3.5 w-3.5" /> Save attendance
+                  </Btn>
+                )}
+              </div>
             </div>
             <div className="attendance-table-wrap">
               <table className="attendance-table">
@@ -1734,7 +1834,7 @@ export function AttendancePage() {
                         <td className={`${tdCls()} text-center`}>
                           <span className="inline-flex min-w-max gap-1 whitespace-nowrap">
                             {(["present", "late", "absent"] as AttendanceStatus[]).map((st) => (
-                              <button key={st} type="button" disabled={!canManage || registerQuery.isFetching} onClick={() => void setMark(s.student_id, st)}
+                              <button key={st} type="button" disabled={!canManage || savingAll} onClick={() => setMark(s.student_id, st)}
                                 className={`shrink-0 cursor-pointer whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] font-bold capitalize transition-all disabled:cursor-not-allowed ${m === st ? (st === "present" ? "border-pine-700 bg-pine-700 text-white" : st === "late" ? "border-gold-500 bg-gold-500 text-white" : "border-rust-600 bg-rust-600 text-white") : "border-mist bg-card text-soft hover:border-pine-300"}`}>
                                 {st}
                               </button>

@@ -966,7 +966,7 @@ export function AcademicYearsPage() {
 }
 
 function YearModal({ existing, onClose }: { existing: AcademicYear | null; onClose: () => void }) {
-  const { toast } = useApp();
+  const { toast, db, currentUser, update } = useApp();
   const [name, setName] = useState(existing?.name ?? "");
   const [start, setStart] = useState(existing?.start ?? todayISO());
   const [end, setEnd] = useState(existing?.end ?? todayISO());
@@ -1011,7 +1011,7 @@ function YearModal({ existing, onClose }: { existing: AcademicYear | null; onClo
 }
 
 function TermModal({ yearId, existing, onClose }: { yearId: string; existing: Term | null; onClose: () => void }) {
-  const { toast } = useApp();
+  const { toast, db, currentUser, update } = useApp();
   const [name, setName] = useState(existing?.name ?? "");
   const [seq, setSeq] = useState(existing?.seq ?? (db.terms.filter((t) => t.yearId === yearId).length + 1));
 

@@ -8,7 +8,7 @@ import type { DB, Enrollment, FeeItem, Role, Student, User, UserStatus } from ".
 import {
   assessmentCalc, attendanceStats, canSeeStudent, childrenOf, describeSyncErrors, feeStats, fmtDate, fullName, getClass, getSection,
   getSubject, gradeFor, guardianOfStudent, homePathFor, ordinal, pendingRequestFor, sectionLabel, sectionShort, shortName,
-  studentAverage, studentOf, studentResults, structureRanks, teacherPairs, teacherStudentIds, teachersOfStudent,
+  studentAverage, studentOf, studentResults, structureRanks, teacherPairs, teachersOfStudent,
   todayISO, uid, useApp, useLazyGroups,
 } from "../store";
 import {
@@ -18,7 +18,7 @@ import {
 import { getDownloadUrl, isStorageConfigured, uploadFile } from "../lib/storage";
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
-import { changeUserPassword, updateMyProfile } from "../lib/api";
+import { changeUserPassword, updateMyProfile, useStudents, studentRowToStudent, useStudentDetail, studentDetailToStudent } from "../lib/api";
 import { deleteStudentRecord, deleteUserAccount } from "../lib/backend";
 import { IDCardModal, RegistrationWizard } from "./registration";
 
@@ -31,6 +31,7 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
   const [q, setQ] = useState("");
   const [cls, setCls] = useState("");
   const [sec, setSec] = useState("");
+  const [page, setPage] = useState(0);
   const [regOpen, setRegOpen] = useState(false);
 
   const isAdmin = currentUser?.role === "admin";
@@ -68,20 +69,12 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
     return <AccessDenied required={viewPerm} reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
   }
 
-  // Authorization underneath the UI: the visible set is derived from relationships.
-  const allowedIds: Set<string> | null = useMemo(() => {
-    if (role === "admin") return null; // null = everything
-    if (role === "teacher") return teacherStudentIds(db, currentUser);
-    if (role === "guardian") return new Set((currentUser?.childrenIds ?? []));
-    return new Set<string>();
-  }, [db, currentUser, role]);
-
-  const base = db.students.filter((s) => s.enrollment && s.enrollment.yearId === yearId);
-  const rows = base
-    .filter((s) => allowedIds === null || allowedIds.has(s.id))
-    .filter((s) => (!cls || s.enrollment!.classId === cls) && (!sec || s.enrollment!.sectionId === sec))
-    .filter((s) => (q ? fullName(s).toLowerCase().includes(q.toLowerCase()) || s.regId.toLowerCase().includes(q.toLowerCase()) : true))
-    .sort((a, b) => a.regId.localeCompare(b.regId));
+  // Authorization underneath the UI: the server enforces the same boundary
+  // (0024_paged_queries.sql — an admin's call returns everyone, a teacher's
+  // returns their sections, a guardian's returns their children), so this
+  // page doesn't need to re-derive it client-side.
+  const studentsQuery = useStudents({ classId: cls || undefined, sectionId: sec || undefined, search: q, page, pageSize: 50 });
+  const rows = studentsQuery.rows.map((r) => studentRowToStudent(r, yearId));
 
   const profilePath = (id: string) =>
     role === "admin" ? `/admin/students/${id}` : role === "teacher" ? `/teacher/students/${id}` : `/guardian/children/${id}`;
@@ -90,7 +83,7 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
     ? role === "teacher"
       ? { kicker: "Teaching", title: "My students", sub: `Only students in your ${teacherPairs(db, currentUser).length} assigned class sections appear here — the rest of the school is out of scope.` }
       : { kicker: "Family", title: "My children", sub: "Your registered children, exactly as linked by the front office." }
-    : { kicker: "People", title: "Students", sub: `${base.length} enrolled in AY ${db.years.find((y) => y.id === yearId)?.name}. One record per student — reused by attendance, marks, fees and reports.` };
+    : { kicker: "People", title: "Students", sub: `${studentsQuery.total} enrolled in AY ${db.years.find((y) => y.id === yearId)?.name}. One record per student — reused by attendance, marks, fees and reports.` };
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -104,19 +97,21 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
         <div className="flex flex-wrap items-center gap-2 border-b border-mist px-4 py-3">
           <div className="relative min-w-[200px] flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft" />
-            <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or student ID…" className="!pl-9" />
+            <TextInput value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="Search name or student ID…" className="!pl-9" />
           </div>
-          <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); }} className="!w-40">
+          <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); setPage(0); }} className="!w-40">
             <option value="">All grades</option>
             {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </Select>
-          <Select value={sec} onChange={(e) => setSec(e.target.value)} className="!w-36" disabled={!cls}>
+          <Select value={sec} onChange={(e) => { setSec(e.target.value); setPage(0); }} className="!w-36" disabled={!cls}>
             <option value="">All sections</option>
             {getClass(db, cls)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
           </Select>
         </div>
 
-        {rows.length === 0 ? (
+        {studentsQuery.isPending && !rows.length ? (
+          <div className="p-3"><SkeletonPanel rows={6} /></div>
+        ) : rows.length === 0 ? (
           <EmptyState icon={<Users className="h-5 w-5" />} title="No students match" body={scoped ? "No students are linked to your account yet." : "Adjust the filters or register a new student."} />
         ) : (
           <div className="overflow-x-auto">
@@ -179,6 +174,16 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+        {rows.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-mist bg-paper/40 px-4 py-3">
+            <p className="text-[11px] font-semibold text-soft">{studentsQuery.total} student{studentsQuery.total === 1 ? "" : "s"}</p>
+            <div className="flex items-center gap-2">
+              <Btn size="sm" variant="ghost" disabled={page <= 0 || studentsQuery.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>Previous</Btn>
+              <span className="min-w-[86px] text-center font-mono text-[11px] text-soft">Page {page + 1} / {studentsQuery.pageCount}</span>
+              <Btn size="sm" variant="ghost" disabled={page + 1 >= studentsQuery.pageCount || studentsQuery.isFetching} onClick={() => setPage((p) => p + 1)}>Next</Btn>
+            </div>
           </div>
         )}
       </Panel>
@@ -328,7 +333,14 @@ export function StudentProfilePage() {
   const [idCardOpen, setIdCardOpen] = useState(false);
   const [payItem, setPayItem] = useState<FeeItem | null>(null);
 
-  const s = db.students.find((x) => x.id === id);
+  // get_student_detail() enforces the relationship boundary server-side
+  // (can_view_student() in 0024_paged_queries.sql — admin sees anyone,
+  // teacher only their sections, guardian only their children, student
+  // only themselves), so a failed/empty result here always means "not
+  // found or not permitted" and there's no separate client-side db.students
+  // check to duplicate that with.
+  const detailQuery = useStudentDetail(id ?? null);
+  const s = detailQuery.data ? studentDetailToStudent(detailQuery.data) : undefined;
 
   const openDocument = async (dc: Student["documents"][number]) => {
     if (dc.storagePath) {
@@ -344,10 +356,10 @@ export function StudentProfilePage() {
       toast("No preview available for this file.", "warn");
     }
   };
-  if (!s) return <AccessDenied required="A valid student id" reason="No student record matches that address." />;
 
-  // ENTITY-LEVEL authorization: role alone isn't enough — the relationship must hold.
-  if (!canSeeStudent(db, currentUser, s.id)) {
+  if (!id) return <AccessDenied required="A valid student id" reason="No student record matches that address." />;
+  if (detailQuery.isPending) return <div className="mx-auto max-w-6xl"><SkeletonPanel rows={8} /></div>;
+  if (!s) {
     const why =
       currentUser?.role === "teacher"
         ? "This student isn't in any class section you teach. Teacher access follows your subject assignments."
@@ -355,8 +367,10 @@ export function StudentProfilePage() {
           ? "This student isn't registered under your guardian account. Guardians can only open their own children."
           : currentUser?.role === "student"
             ? "Students can only open their own record."
-            : "You need to sign in to view this record.";
-    return <AccessDenied required="A relationship to this student" reason={why} />;
+            : currentUser
+              ? "No student record matches that address."
+              : "You need to sign in to view this record.";
+    return <AccessDenied required="A valid student id or a relationship to this student" reason={why} />;
   }
 
   const isAdmin = currentUser?.role === "admin";

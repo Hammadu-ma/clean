@@ -27,7 +27,7 @@ import {
   Stat, Tabs, TextArea, TextInput, tdCls, thCls, useConfirm,
 } from "../ui";
 import { AccessDenied } from "./Auth";
-import { useRegister, saveRegister, useAssessmentStructures, useMarksheetPage, saveStudentMarks, setSubmissionStatus, useStudentResults, useStudents, useFeeStudentSummary, useFeePaymentRequests, createFeeItem, deleteFeeItem, recordFeePayment, reviewFeePaymentRequest, bulkCreateFeeItems, useFeeLedger } from "../lib/api";
+import { useRegister, saveRegister, useAssessmentStructures, useMarksheetPage, saveStudentMarks, setSubmissionStatus, useStudentResults, useStudents, studentRowToStudent, useFeeStudentSummary, useFeePaymentRequests, createFeeItem, deleteFeeItem, recordFeePayment, reviewFeePaymentRequest, bulkCreateFeeItems, useFeeLedger } from "../lib/api";
 
 // DAYS was a fixed 5-day week; the timetable now reads db.settings.workingDays
 // instead (a configurable subset of WEEKDAYS, imported below) so schools can
@@ -1968,7 +1968,7 @@ export function ReportsPage() {
     return <AccessDenied required="results.view" reason="You don't have permission to view results." />;
   }
 
-  const roster = rosterQuery.rows.map(studentRowToStudent);
+  const roster = rosterQuery.rows.map((r) => studentRowToStudent(r));
   return (
     <div className="mx-auto max-w-5xl">
       <PageHead kicker="Results" title="Reports" sub="Class averages across every published assessment structure.">
@@ -2023,23 +2023,6 @@ function ReportRosterRow({ student, db, onOpen, index }: { student: Student; db:
       <td className={`${tdCls()} whitespace-nowrap text-right`}><Btn size="sm" variant="ghost" onClick={() => onOpen(student)}><Eye className="h-3.5 w-3.5" /> View</Btn></td>
     </tr>
   );
-}
-
-function studentRowToStudent(r: import("../lib/api").StudentRow): Student {
-  return {
-    id: r.student_id,
-    regId: r.reg_no,
-    firstName: r.first_name,
-    middleName: r.middle_name ?? "",
-    lastName: r.last_name,
-    gender: r.gender === "Female" ? "Female" : "Male",
-    dob: r.dob ?? "",
-    status: (r.status as Student["status"]) || "active",
-    guardian: { father: "", relation: "Guardian", phone: r.guardian_phone ?? undefined },
-    admission: { number: "", date: r.admission_date ?? "", type: "" },
-    enrollment: { yearId: "", classId: r.class_id, sectionId: r.section_id, rollNumber: r.roll_number ?? undefined, status: "active" } as Student["enrollment"],
-    history: [], documents: [],
-  };
 }
 
 /** Student/guardian: only ever see PUBLISHED results. */

@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query";
 import { ApiError, callRpc, callWrite, csrfToken } from "./http";
 import { useAcademicYear } from "./yearContext";
+import type { Student } from "../types";
 
 /**
  * The data layer that replaces "load the whole school into a JavaScript
@@ -367,6 +368,80 @@ export function useStudentDetail(studentId: string | null) {
         p_year_id: yearId,
       }),
   });
+}
+
+/** Maps a `list_students` row (a directory/search-result row) into the
+ *  Student shape the rest of the UI expects. Deliberately thin — this row
+ *  doesn't carry guardian name, documents, or full admission detail, only
+ *  what a directory listing needs. Use `studentDetailToStudent` for a full
+ *  single-student record. */
+export function studentRowToStudent(r: StudentRow, yearId?: string): Student {
+  return {
+    id: r.student_id,
+    regId: r.reg_no,
+    firstName: r.first_name,
+    middleName: r.middle_name ?? "",
+    lastName: r.last_name,
+    gender: r.gender === "Female" ? "Female" : "Male",
+    dob: r.dob ?? "",
+    status: (r.status as Student["status"]) || "active",
+    photo: r.photo_path ?? undefined,
+    guardian: { father: "", relation: "Guardian", phone: r.guardian_phone ?? undefined },
+    admission: { number: "", date: r.admission_date ?? "", type: "" },
+    enrollment: { yearId: yearId ?? "", classId: r.class_id, sectionId: r.section_id, rollNumber: r.roll_number ?? undefined, status: "active" } as Student["enrollment"],
+    history: [],
+    documents: [],
+  };
+}
+
+/** Maps a `get_student_detail` response (the raw students row plus its full
+ *  enrollment history, documents, and guardians) into the Student shape.
+ *  Enrollments come back ordered newest-year-first, so [0] is "current". */
+export function studentDetailToStudent(detail: Record<string, any>): Student | null {
+  const s = detail?.student;
+  if (!s?.id) return null;
+  const enrollments = Array.isArray(detail.enrollments) ? detail.enrollments : [];
+  const latest = enrollments[0];
+  const guardians = Array.isArray(detail.guardians) ? detail.guardians : [];
+  const primaryGuardian = guardians[0];
+  const documents = Array.isArray(detail.documents) ? detail.documents : [];
+
+  return {
+    id: s.id,
+    regId: s.reg_no ?? "",
+    firstName: s.first_name ?? "",
+    middleName: s.middle_name ?? "",
+    lastName: s.last_name ?? "",
+    gender: s.gender === "Female" ? "Female" : "Male",
+    dob: s.dob ?? "",
+    status: (s.status as Student["status"]) || "active",
+    photo: s.photo_path ?? undefined,
+    phone: s.phone ?? undefined,
+    email: s.email ?? undefined,
+    address: s.address ?? undefined,
+    guardian: {
+      father: s.guardian_name ?? primaryGuardian?.full_name ?? "",
+      mother: s.mother_name ?? undefined,
+      relation: s.guardian_relation ?? primaryGuardian?.relation ?? "Guardian",
+      phone: s.guardian_phone ?? primaryGuardian?.phone ?? undefined,
+      address: s.guardian_address ?? undefined,
+    },
+    admission: {
+      number: s.admission_no ?? "",
+      date: s.admission_date ?? "",
+      previousSchool: s.previous_school ?? undefined,
+      type: s.admission_type ?? "New Admission",
+    },
+    enrollment: latest
+      ? { yearId: latest.year_id, classId: latest.class_id, sectionId: latest.section_id, rollNumber: latest.roll_number ?? undefined, status: latest.status, enrolledOn: latest.enrolled_on }
+      : undefined,
+    history: enrollments.map((e: any) => ({
+      yearId: e.year_id, classId: e.class_id, sectionId: e.section_id, rollNumber: e.roll_number ?? undefined, status: e.status, enrolledOn: e.enrolled_on,
+    })),
+    documents: documents.map((d: any) => ({
+      id: d.id, name: d.name, kind: d.kind, size: d.size, date: d.doc_date, storagePath: d.storage_path,
+    })),
+  };
 }
 
 /* ========================================================================

@@ -13,8 +13,17 @@ import type { Announcement, Audience, Conversation, SchoolEvent, User } from "..
 import { useDevicePush } from "../lib/push";
 import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonPanel, SkeletonRows, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls, useConfirm } from "../ui";
 import { AccessDenied } from "./Auth";
-import { fileMessageReport, markConversationRead, sendMessage, useConversations, useMessages, useUsers } from "../lib/api";
-
+import
+fileMessageReport,
+markConversationRead,
+sendMessage,
+useConversations,
+useMessages,
+useUsers,
+useMessageReports,
+reviewMessageReport,
+setConversationStatus,
+} from "../lib/api";
 /* ================= shared bits ================= */
 const CAT_META: Record<string, { bg: string; dot: string }> = {
   Urgent: { bg: "bg-rust-100 text-rust-700 border-rust-200", dot: "bg-rust-500" },

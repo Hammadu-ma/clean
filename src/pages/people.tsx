@@ -2853,6 +2853,21 @@ function StudentPicker({
   );
 }
 
+/**
+ * Loads the school-wide user + student lists these admin pages work on (the
+ * bounded bootstrap only carries the signed-in person). Re-requests them after
+ * reconnect(), which resets every loaded group.
+ */
+function usePeopleGroup(): boolean {
+  const { ensureGroup } = useApp();
+  const loaded = useLazyGroups("people");
+  useEffect(() => {
+    if (!loaded) ensureGroup("people");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+  return loaded;
+}
+
 /* ================= families (admin) ================= */
 export function FamiliesPage() {
   const {
@@ -2862,6 +2877,7 @@ export function FamiliesPage() {
     toast,
     reconnect,
   } = useApp();
+  const peopleLoaded = usePeopleGroup();
 
   const [edit, setEdit] = useState<{
     id?: string;
@@ -3196,7 +3212,15 @@ export function FamiliesPage() {
           );
         })}
 
-        {guardians.length === 0 && (
+        {!peopleLoaded && guardians.length === 0 && (
+          <Panel className="md:col-span-2 xl:col-span-3">
+            <p className="px-5 py-10 text-center text-[12.5px] text-soft">
+              Loading families…
+            </p>
+          </Panel>
+        )}
+
+        {peopleLoaded && guardians.length === 0 && (
           <Panel className="md:col-span-2 xl:col-span-3">
             <EmptyState
               icon={
@@ -3387,6 +3411,7 @@ export function UsersPage() {
     toast,
     reconnect,
   } = useApp();
+  const peopleLoaded = usePeopleGroup();
 
   const confirm = useConfirm();
 
@@ -4017,7 +4042,18 @@ export function UsersPage() {
             </thead>
 
             <tbody className="divide-y divide-mist/70">
-              {rows.length === 0 && (
+              {!peopleLoaded && rows.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-4 py-10 text-center text-[12.5px] text-soft"
+                  >
+                    Loading users…
+                  </td>
+                </tr>
+              )}
+
+              {peopleLoaded && rows.length === 0 && (
                 <tr>
                   <td
                     colSpan={5}

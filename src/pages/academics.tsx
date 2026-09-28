@@ -129,7 +129,11 @@ export function MarkEntryPage() {
 
   const classOptions = [...new Set(allowedStructures.map((st) => st.classId))];
   const subjectOptions = [...new Set(allowedStructures.map((st) => st.subjectId))];
-  const periodOptions = [...new Set(allowedStructures.map((st) => st.period))];
+  // Order the semester filter by the academic year's own term sequence
+  // (anything not a term of this year, e.g. "Annual", goes last).
+  const termSeq = new Map(db.terms.filter((t) => t.yearId === yearId).map((t) => [t.name.trim().toLowerCase(), t.seq]));
+  const periodOptions = [...new Set(allowedStructures.map((st) => st.period))]
+    .sort((x, y) => (termSeq.get(x.trim().toLowerCase()) ?? 999) - (termSeq.get(y.trim().toLowerCase()) ?? 999));
 
   const requestedStructureId = new URLSearchParams(location.search).get("structure");
   const requestedStructure = requestedStructureId ? allowedStructures.find((st) => st.id === requestedStructureId) : undefined;
@@ -701,7 +705,15 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
   const { db, yearId, update, toast, currentUser } = useApp();
   const [classId, setClassId] = useState(existing?.classId ?? db.classes[0]?.id ?? "");
   const [subjectId, setSubjectId] = useState(existing?.subjectId ?? db.subjects[0]?.id ?? "");
-  const [period, setPeriod] = useState(existing?.period ?? "Semester 1");
+  // Periods come from the selected academic year's own terms (Academic years &
+  // terms), plus "Annual". A structure is linked to a term by name, so a
+  // hardcoded list here would silently save as "Annual" whenever the year's
+  // terms are named differently.
+  const structureYearId = existing?.yearId ?? yearId;
+  const yearTermNames = db.terms.filter((t) => t.yearId === structureYearId).sort((x, y) => x.seq - y.seq).map((t) => t.name);
+  const [period, setPeriod] = useState(existing?.period ?? yearTermNames[0] ?? "Annual");
+  const periodChoices = [...new Set([...yearTermNames, "Annual", ...(existing?.period ? [existing.period] : [])])];
+  const periodIsStale = !!existing && existing.period !== "Annual" && !yearTermNames.some((n) => n.trim().toLowerCase() === existing.period.trim().toLowerCase());
   const [items, setItems] = useState<AssessmentItem[]>(existing?.items.map((i) => ({ ...i })) ?? [
     { id: uid(), name: "Assessment 1", max: 20, weight: 20 },
     { id: uid(), name: "Final Exam", max: 40, weight: 40 },
@@ -717,6 +729,9 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
     if (!classId || !subjectId) { toast("Choose a class and subject.", "warn"); return; }
     if (items.length === 0) { toast("Add at least one assessment item.", "warn"); return; }
     if (items.some((i) => !i.name.trim())) { toast("Every item needs a name.", "warn"); return; }
+    if (period !== "Annual" && !yearTermNames.some((n) => n.trim().toLowerCase() === period.trim().toLowerCase())) {
+      toast("Choose one of this academic year's terms (or Annual) for the period.", "warn"); return;
+    }
     const errors = await update((d) => {
       if (existing) {
         const i = d.structures.findIndex((s) => s.id === existing.id);
@@ -752,8 +767,10 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
           <div className="rounded-xl border border-mist bg-paper/70 p-3.5">
             <p className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-soft">Period</p>
             <Select value={period} onChange={(e) => setPeriod(e.target.value)} className="mt-1.5">
-              <option>Semester 1</option><option>Semester 2</option><option>Annual</option>
+              {periodChoices.map((p) => <option key={p} value={p}>{p}{p !== "Annual" && !yearTermNames.includes(p) ? " (not in this year)" : ""}</option>)}
             </Select>
+            {periodIsStale && <p className="mt-1.5 text-[11px] text-gold-700">This structure's period isn't a term of this academic year. Pick one of the year's terms to link it properly.</p>}
+            {yearTermNames.length === 0 && <p className="mt-1.5 text-[11px] text-soft">This year has no terms yet — add them under Academic years &amp; terms.</p>}
           </div>
         </div>
 

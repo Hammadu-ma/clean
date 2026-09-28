@@ -14,6 +14,9 @@ type NotificationRow = {
   body?: string | null;
   is_read?: boolean | null;
   year_id?: string | null;
+  target_type?: string | null;
+  target_id?: string | null;
+  target_route?: string | null;
 };
 
 export default async function handler(req: Request): Promise<Response> {
@@ -53,7 +56,7 @@ export default async function handler(req: Request): Promise<Response> {
         while (!closed && !req.signal.aborted) {
           const { data, error } = await ctx.db
             .from("notifications")
-            .select("id,created_at,type,title,body,is_read,year_id")
+            .select("id,created_at,type,title,body,is_read,year_id,target_type,target_id,target_route")
             .eq("profile_id", ctx.userId)
             .order("created_at", { ascending: false })
             .limit(100);

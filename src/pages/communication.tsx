@@ -480,7 +480,14 @@ export function MessagesPage() {
       body: m.body,
       createdAt: m.created_at,
       readBy: m.read_by ?? [],
-      status: (Array.isArray(m.read_by) && currentUser?.id && m.read_by.includes(currentUser.id)) ? "read" : "sent",
+      // The database intentionally starts read_by with the sender's own id.
+      // Therefore the sender's own presence in read_by is NOT a read receipt.
+      // A sent message becomes read only after another participant appears.
+      status: (
+        m.sender_id === currentUser?.id &&
+        Array.isArray(m.read_by) &&
+        m.read_by.some((readerId: string) => readerId !== m.sender_id)
+      ) ? "read" : "sent",
     } as any)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }, [messagesQuery.data, currentUser?.id, id]);
 

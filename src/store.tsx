@@ -1068,26 +1068,12 @@ export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
           : null;
     if (!liveGroup) return;
 
-    if (liveGroup === "notifications" && "EventSource" in window) {
-      const source = new EventSource("/api/realtime-notifications", { withCredentials: true });
-      let fallback: number | null = null;
-      const startFallback = () => {
-        if (fallback !== null) return;
-        fallback = window.setInterval(() => refreshGroup("notifications"), 3000);
-      };
-      source.addEventListener("notification", () => {
-        void refreshGroup("notifications");
-      });
-      source.addEventListener("error", startFallback);
-      return () => {
-        source.close();
-        if (fallback !== null) window.clearInterval(fallback);
-      };
-    }
-
-    // get_app_snapshot is a deliberately bounded compatibility read (10/min).
-    // Messaging therefore polls at a safe interval instead of hammering the snapshot endpoint.
-    const interval = liveGroup === "messaging" ? 7000 : liveGroup === "announcements" ? 6000 : 7000;
+    // The browser no longer holds a Supabase credential, so a direct
+    // EventSource/SSE notification connection is not necessary here and was
+    // responsible for repeated /api/realtime-notifications connection resets.
+    // Keep one bounded same-origin poll instead. The Messages page itself has
+    // a faster, conversation-scoped React Query poll (see api.ts).
+    const interval = liveGroup === "messaging" ? 2500 : liveGroup === "notifications" ? 3000 : 6000;
     const timer = window.setInterval(() => refreshGroup(liveGroup), interval);
     return () => window.clearInterval(timer);
   }, [key, yearId, refreshGroup]);

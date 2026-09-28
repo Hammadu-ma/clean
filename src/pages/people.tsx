@@ -3678,6 +3678,27 @@ export function UsersPage() {
     setEdit(null);
   };
 
+  const toggleStatus = async (u: User) => {
+    if (u.id === currentUser?.id) {
+      toast("You can't disable your own account.", "warn");
+      return;
+    }
+
+    const next = u.status === "active" ? "disabled" : "active";
+
+    const errors = await update((d) => {
+      const target = d.users.find((x) => x.id === u.id);
+      if (target) target.status = next;
+    });
+
+    if (errors.length) {
+      toast(describeSyncErrors(errors), "warn");
+      return;
+    }
+
+    toast(`${u.name} is now ${next}.`);
+  };
+
   const removeUser = async (
     user: User
   ) => {

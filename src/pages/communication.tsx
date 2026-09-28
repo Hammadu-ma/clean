@@ -143,8 +143,7 @@ export function AnnouncementsPage() {
       else d.announcements.unshift(a);
       if (a.status === "published") {
         pushAudit(d, currentUser, "announcement.publish", a.title, audienceLabel(db, a.audience));
-        const targets = audienceUserIds(d, a.audience).filter((id) => id !== currentUser?.id);
-        pushNotifications(d, targets, "announcement", a.title, a.body.slice(0, 110));
+        // The audience is notified by the database (0044 trigger on announcements).
       } else {
         pushAudit(d, currentUser, a.status === "scheduled" ? "announcement.schedule" : "announcement.draft", a.title);
       }
@@ -868,14 +867,7 @@ export function EventsPage() {
       } else {
         d.events.push(event);
         pushAudit(d, currentUser, "event.create", event.title, audienceLabel(d, event.audience));
-        const targets = audienceUserIds(d, event.audience).filter((id) => id !== currentUser?.id);
-        const when = `${fmtShort(event.date)}${event.time ? ` at ${event.time}` : ""}`;
-        const where = event.location ? ` · ${event.location}` : "";
-        pushNotifications(d, targets, "event", "New school event", `${event.title} — ${when}${where}`, {
-          targetType: "event",
-          targetId: event.id,
-          targetRoute: "/events",
-        });
+        // The audience is notified by the database (0044 trigger on events).
       }
     });
     if (errors.length) {

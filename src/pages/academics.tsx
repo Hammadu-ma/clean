@@ -2945,9 +2945,7 @@ function HomeworkModal({ existing, teacherPairs: pairs, isAdmin, onClose }: {
       } else {
         d.homework.push({ id: uid(), yearId, classId, sectionId, subjectId, title: title.trim(), description: description.trim() || undefined, issued: todayISO(), due, submitted: [] });
         pushAudit(d, currentUser, "homework.create", title.trim());
-        const roster = studentsOf(d, classId, sectionId);
-        const recipients = d.users.filter((u) => u.status === "active" && (roster.some((s) => u.studentId === s.id) || (u.childrenIds ?? []).some((cid) => roster.some((s) => s.id === cid))));
-        pushNotifications(d, recipients.map((u) => u.id), "homework", "New homework", `${title.trim()} — due ${fmtDate(due)}.`);
+        // Students and guardians are notified by the database (0044 trigger on homework).
       }
     });
     toast(existing ? "Homework updated." : "Homework set.");

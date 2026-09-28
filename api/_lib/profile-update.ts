@@ -103,16 +103,18 @@ export async function updateProfileDirect(
     }
 
     /*
-     * IMPORTANT:
-     * Supabase supports `current_password` on updateUser. The previous code
-     * verified the password separately but omitted it from this actual Auth
-     * password-change request, which causes a 400 when the project has
-     * "Require current password when changing password" enabled.
+     * IMPORTANT: `ctx.db` cannot make this call. It's built in userClient()
+     * with persistSession: false and the caller's token attached only as a
+     * raw Authorization header for PostgREST — supabase-js's `auth.*`
+     * methods don't consult that header, they consult the client's own
+     * in-memory Auth session, and ctx.db was never given one (no
+     * setSession() call). `verifier`, above, *does* have one: signInWithPassword()
+     * just populated it. That's the client this call has to run on.
      *
-     * Use the authenticated caller's client here so the password remains
-     * attached to the current session/RLS context.
+     * Supabase also supports `current_password` on updateUser, for projects
+     * with "Require current password when changing password" enabled.
      */
-    const { error: passwordError } = await ctx.db.auth.updateUser({
+    const { error: passwordError } = await verifier.auth.updateUser({
       password: newPassword,
       current_password: currentPassword,
     });

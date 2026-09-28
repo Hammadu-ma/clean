@@ -62,7 +62,7 @@ const {
 } = academics;
 
 const communication = named(() => import("./pages/communication"));
-const { AnnouncementsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage } = communication;
+const { AnnouncementsPage, CommShell, EventsPage, MessagesPage, ModerationPage, NotificationsPage } = communication;
 
 const admin = named(() => import("./pages/admin"));
 const { AuditPage, RolesPage, SchoolSettingsPage } = admin;
@@ -138,11 +138,11 @@ export default function App() {
 
           <Route element={<AppShell />}>
             {/* shared across all authenticated roles — communication (relationship-checked inside) */}
-            <Route path="/announcements" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><AnnouncementsPage /></Guard>} />
-            <Route path="/messages" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><MessagesPage /></Guard>} />
-            <Route path="/messages/:id" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><MessagesPage /></Guard>} />
-            <Route path="/notifications" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><NotificationsPage /></Guard>} />
-            <Route path="/events" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><EventsPage /></Guard>} />
+            <Route path="/announcements" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><CommShell tab="announcements"><AnnouncementsPage /></CommShell></Guard>} />
+            <Route path="/messages" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><CommShell tab="messages"><MessagesPage /></CommShell></Guard>} />
+            <Route path="/messages/:id" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><CommShell tab="messages"><MessagesPage /></CommShell></Guard>} />
+            <Route path="/notifications" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><CommShell tab="notifications"><NotificationsPage /></CommShell></Guard>} />
+            <Route path="/events" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><CommShell tab="events"><EventsPage /></CommShell></Guard>} />
             <Route path="/moderation" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="communication.moderate permission"><ModerationPage /></Guard>} />
             <Route path="/profile" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><ProfilePage /></Guard>} />
 

@@ -220,7 +220,7 @@ export function useConfirm() {
   return ctx.confirm;
 }
 
-export function Tabs({ tabs, active, onChange }: { tabs: { id: string; label: string; icon?: ReactNode }[]; active: string; onChange: (id: string) => void }) {
+export function Tabs({ tabs, active, onChange }: { tabs: { id: string; label: ReactNode; icon?: ReactNode }[]; active: string; onChange: (id: string) => void }) {
   return (
     <div className="flex flex-wrap gap-1 rounded-lg border border-mist bg-paper p-1">
       {tabs.map((t) => (

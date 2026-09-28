@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle, ArrowLeft, Bell, CalendarDays, Check, CheckCheck, CheckCircle2, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye, Trash2, Wallet,
@@ -7,13 +7,50 @@ import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors,
 import { deleteMessageRecord, getMessageReportContext, markAnnouncementRead, startConversation } from "../lib/backend";
 import {
   canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canTargetAudience, effectiveAnnouncementStatus,
-  hasPermission, pushAudit, pushNotifications, unreadNotifications, userNotifications, visibleAnnouncements, audienceUserIds,
+  hasPermission, pushAudit, pushNotifications, totalUnreadMessages, unreadNotifications, userNotifications, visibleAnnouncements, audienceUserIds,
 } from "../rbac";
 import type { Announcement, Audience, Conversation, SchoolEvent, User } from "../types";
 import { useDevicePush } from "../lib/push";
 import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonPanel, SkeletonRows, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls, useConfirm } from "../ui";
 import { AccessDenied } from "./Auth";
 import { fileMessageReport, markConversationRead, sendMessage, useConversations, useMessages, useUsers, useMessageReports, reviewMessageReport, setConversationStatus, } from "../lib/api";
+/* ================= communication hub ================= */
+/** One home for Messages, Notifications, Announcements and Events. Each tab is
+ *  still its own route (so deep links, notification targets and the back
+ *  button keep working) — the shell just gives them a shared tab bar with
+ *  combined unread counts instead of four unrelated sidebar entries. */
+export type CommTab = "messages" | "notifications" | "announcements" | "events";
+const COMM_PATHS: Record<CommTab, string> = { messages: "/messages", notifications: "/notifications", announcements: "/announcements", events: "/events" };
+
+export function CommShell({ tab, children }: { tab: CommTab; children: ReactNode }) {
+  const { db, currentUser } = useApp();
+  const nav = useNavigate();
+  const unreadMsgs = totalUnreadMessages(db, currentUser);
+  const unreadNotifs = unreadNotifications(db, currentUser);
+  const tabs = [
+    { id: "messages", label: "Messages", icon: <Inbox className="h-3.5 w-3.5" />, count: unreadMsgs },
+    { id: "notifications", label: "Notifications", icon: <Bell className="h-3.5 w-3.5" />, count: unreadNotifs },
+    { id: "announcements", label: "Announcements", icon: <Megaphone className="h-3.5 w-3.5" />, count: 0 },
+    ...(hasPermission(db, currentUser, "events.view") ? [{ id: "events", label: "Events", icon: <CalendarDays className="h-3.5 w-3.5" />, count: 0 }] : []),
+  ];
+  return (
+    <div>
+      <div className="mx-auto mb-4 max-w-6xl">
+        <Tabs
+          tabs={tabs.map((t) => ({
+            id: t.id,
+            icon: t.icon,
+            label: (<span className="flex items-center gap-1.5">{t.label}{t.count > 0 && <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-gold-500 px-1 font-mono text-[9.5px] font-bold text-pine-950">{t.count > 99 ? "99+" : t.count}</span>}</span>),
+          }))}
+          active={tab}
+          onChange={(id) => { if (id !== tab) nav(COMM_PATHS[id as CommTab]); }}
+        />
+      </div>
+      {children}
+    </div>
+  );
+}
+
 /* ================= shared bits ================= */
 const CAT_META: Record<string, { bg: string; dot: string }> = {
   Urgent: { bg: "bg-rust-100 text-rust-700 border-rust-200", dot: "bg-rust-500" },

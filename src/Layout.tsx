@@ -18,17 +18,20 @@ interface NavItem {
   icon: ReactNode;
   /** Optional Level-1 permission gate — the item is hidden without it. */
   perm?: string;
+  /** Extra path prefixes that should keep this item highlighted. */
+  match?: string[];
 }
 interface NavGroup {
   group: string;
   items: NavItem[];
 }
 
+// Messages, Notifications, Announcements and Events live under one hub with
+// its own tab bar (see CommShell in pages/communication.tsx) — the sidebar
+// only needs a single entry that stays highlighted on any of them.
+const COMM_PATHS = ["/messages", "/notifications", "/announcements", "/events"];
 const COMM_ITEMS: NavItem[] = [
-  { to: "/announcements", label: "Announcements", icon: <Megaphone className="h-4 w-4" />, perm: "communication.view" },
-  { to: "/messages", label: "Messages", icon: <Inbox className="h-4 w-4" />, perm: "communication.view" },
-  { to: "/notifications", label: "Notifications", icon: <Bell className="h-4 w-4" />, perm: "communication.view" },
-  { to: "/events", label: "Events", icon: <CalendarDays className="h-4 w-4" />, perm: "events.view" },
+  { to: "/messages", label: "Inbox & updates", icon: <Inbox className="h-4 w-4" />, perm: "communication.view", match: COMM_PATHS },
 ];
 
 const NAV: Record<Role, NavGroup[]> = {
@@ -292,28 +295,31 @@ export function AppShell() {
               <p className="px-2 pb-1.5 text-[9.5px] font-bold uppercase tracking-[0.2em] text-pine-400/80">{g.group}</p>
               {items.map((it) => {
                 const badge =
-                  it.to === "/messages" && unreadMsgs > 0 ? unreadMsgs
-                  : it.to === "/notifications" && unreadNotifs > 0 ? unreadNotifs
+                  it.to === "/messages" && unreadMsgs + unreadNotifs > 0 ? unreadMsgs + unreadNotifs
                   : it.to === "/admin/fees" && pendingFeePayments > 0 ? pendingFeePayments
                   : 0;
                 return (
                   <NavLink
                     key={it.to}
                     to={it.to}
-                    className={({ isActive }) =>
-                      `group relative mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] font-semibold transition-all duration-150 ${
+                    className={({ isActive: routeActive }) => {
+                      const isActive = routeActive || (it.match?.some((m) => loc.pathname === m || loc.pathname.startsWith(`${m}/`)) ?? false);
+                      return `group relative mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] font-semibold transition-all duration-150 ${
                         isActive ? "bg-pine-800 text-white shadow-sm" : "text-pine-200/85 hover:bg-pine-900 hover:text-white"
-                      }`
-                    }
+                      }`;
+                    }}
                   >
-                    {({ isActive }) => (
+                    {({ isActive: routeActive }) => {
+                      const isActive = routeActive || (it.match?.some((m) => loc.pathname === m || loc.pathname.startsWith(`${m}/`)) ?? false);
+                      return (
                       <>
                         {isActive && <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r bg-gold-400" />}
                         <span className={isActive ? "text-gold-400" : "text-pine-400 group-hover:text-pine-200"}>{it.icon}</span>
                         <span className="flex-1">{it.label}</span>
                         {badge > 0 && <span className="live-dot rounded-full bg-gold-400 px-1.5 py-0.5 font-mono text-[9.5px] font-bold text-pine-950">{badge}</span>}
                       </>
-                    )}
+                      );
+                    }}
                   </NavLink>
                 );
               })}

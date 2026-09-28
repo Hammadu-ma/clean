@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { callRpc } from "./http";
 import { looksSignedIn } from "./session";
+import { supabase } from "./supabase";
 
 /**
  * The academic year is the axis the whole system turns on.
@@ -61,19 +62,33 @@ export function AcademicYearProvider({ children }: { children: ReactNode }) {
     }
   });
 
+  // `enabled` used to read looksSignedIn() directly, which only reflects the
+  // hint cookie's state AT THE MOMENT THIS PROVIDER LAST RENDERED. Signing in
+  // from the login screen (rather than arriving on an already-signed-in tab)
+  // sets that cookie *after* this provider's one and only render — nothing
+  // about the login flow gives it a reason to render again on its own — so
+  // `enabled` stayed frozen at `false` from that first render onward. The
+  // whole app is scoped to yearId, so a stuck-disabled years query showed up
+  // everywhere as "loaded, but nothing has any numbers": the dashboard, and
+  // anything else keyed on yearId, sat empty until a hard refresh, which
+  // gives this provider a fresh mount where looksSignedIn() is already true.
+  //
+  // Tracking sign-in as real state, updated the same way store.tsx does,
+  // fixes that: a SIGNED_IN event now re-renders this provider and flips
+  // `enabled` for real, without needing a reload.
+  const [signedIn, setSignedIn] = useState(looksSignedIn());
+  useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange((_evt, session) => {
+      setSignedIn(Boolean(session?.user?.id));
+    });
+    return () => { data.subscription.unsubscribe(); };
+  }, []);
+
   // The year list is small (one row per school year, ever) and changes about
   // once a year, so it is fetched once and kept.
-  //
-  // `enabled` is gated on looksSignedIn() rather than always true. Every RPC
-  // requires a session, so firing this on a fresh, signed-out tab produces a
-  // guaranteed 401 — harmless (React Query just holds it as an error state),
-  // but it shows up as a red entry in the console on every visit to the
-  // login screen, which reads as "the backend is broken" when it isn't. The
-  // query re-evaluates `enabled` automatically once sign-in flips the hint
-  // cookie, so nothing needs to trigger a refetch manually.
   const { data: years = [], isLoading } = useQuery({
     queryKey: ["academic-years"],
-    enabled: looksSignedIn(),
+    enabled: signedIn,
     queryFn: async (): Promise<AcademicYear[]> => {
       // Comes from get_reference(), which the API publishes — there is no
       // direct table read from the browser any more.

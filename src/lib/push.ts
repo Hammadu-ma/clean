@@ -29,13 +29,22 @@ function clearOptOut(userId: string) {
   try { localStorage.removeItem(disabledKey(userId)); } catch { /* best effort */ }
 }
 
-function encodeApplicationServerKey(value: string): Uint8Array {
+function encodeApplicationServerKey(value: string): Uint8Array<ArrayBuffer> {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized + "===".slice((normalized.length + 3) % 4);
   const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+
+/** True when the browser subscription was created with exactly this VAPID public key. */
+function subscribedWithKey(subscription: PushSubscription, publicKey: string): boolean {
+  const current = subscription.options?.applicationServerKey;
+  if (!current) return false;
+  const a = new Uint8Array(current);
+  const b = encodeApplicationServerKey(publicKey);
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 async function getPublicKey(): Promise<string> {
@@ -70,7 +79,9 @@ async function saveSubscription(subscription: PushSubscription): Promise<void> {
     }),
   });
   const payload = await res.json().catch(() => null);
-  if (!res.ok || !payload?.ok) throw new Error(payload?.error?.message ?? "Couldn't register this device.");
+  if (!res.ok || !payload?.ok) {
+    throw Object.assign(new Error(payload?.error?.message ?? "Couldn't register this device."), { status: res.status });
+  }
 }
 
 async function postUnsubscribe(endpoint: string): Promise<void> {
@@ -88,23 +99,43 @@ async function postUnsubscribe(endpoint: string): Promise<void> {
   if (!res.ok || !payload?.ok) throw new Error(payload?.error?.message ?? "Couldn't disconnect this device.");
 }
 
-async function registerAndSubscribe(): Promise<PushSubscription> {
+async function registerAndSubscribe(forceFresh = false): Promise<PushSubscription> {
   const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   await navigator.serviceWorker.ready;
-  const existing = await registration.pushManager.getSubscription();
-  if (existing) return existing;
   const publicKey = await getPublicKey();
+  const existing = await registration.pushManager.getSubscription();
+  // Reuse only a subscription made with the CURRENT server key. A key mismatch
+  // makes every push fail silently; a forced refresh is how we leave an endpoint
+  // that the server has registered to a different account.
+  if (existing && !forceFresh && subscribedWithKey(existing, publicKey)) return existing;
+  if (existing) await existing.unsubscribe().catch(() => false);
   return registration.pushManager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: encodeApplicationServerKey(publicKey),
   });
 }
 
+/**
+ * Subscribes this browser and registers it for the signed-in user. If the server
+ * refuses because this endpoint already belongs to another account (same browser,
+ * different login), mint a brand-new endpoint and register that instead. The
+ * server-side ownership rule stays strict; we never ask it to reassign endpoints.
+ */
+async function subscribeAndSave(): Promise<void> {
+  let subscription = await registerAndSubscribe();
+  try {
+    await saveSubscription(subscription);
+  } catch (error) {
+    if ((error as { status?: number }).status !== 403) throw error;
+    subscription = await registerAndSubscribe(true);
+    await saveSubscription(subscription);
+  }
+}
+
 /** Silently restores an already-approved device subscription. Never prompts. */
 export async function syncGrantedDevicePush(userId: string): Promise<void> {
   if (!isDevicePushSupported() || isOptedOut(userId) || Notification.permission !== "granted") return;
-  const subscription = await registerAndSubscribe();
-  await saveSubscription(subscription);
+  await subscribeAndSave();
 }
 
 /** Prompts only from the explicit Enable button. */
@@ -115,8 +146,7 @@ export async function enableDevicePush(userId: string): Promise<void> {
   if (permission !== "granted") {
     throw new Error(permission === "denied" ? "Device notifications are blocked in this browser." : "Device notification permission was not granted.");
   }
-  const subscription = await registerAndSubscribe();
-  await saveSubscription(subscription);
+  await subscribeAndSave();
 }
 
 export async function detachDevicePush(): Promise<void> {
@@ -124,7 +154,13 @@ export async function detachDevicePush(): Promise<void> {
   const registration = await navigator.serviceWorker.getRegistration("/");
   const subscription = await registration?.pushManager.getSubscription();
   if (!subscription) return;
-  await postUnsubscribe(subscription.endpoint);
+  try {
+    await postUnsubscribe(subscription.endpoint);
+  } finally {
+    // Even if the server call failed, never leave this endpoint in the browser:
+    // the next person to sign in here would otherwise inherit it.
+    await subscription.unsubscribe().catch(() => false);
+  }
 }
 
 export async function disableDevicePush(userId: string): Promise<void> {

@@ -988,8 +988,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
-    if (sessionUserId) void detachDevicePush().catch((error) => console.warn("[push] detach on logout failed:", error));
-    supabase?.auth.signOut();
+    // Detach this device from the account BEFORE the session cookie is destroyed,
+    // otherwise the unsubscribe request arrives unauthenticated and the endpoint
+    // stays registered to the previous user. Bounded so logout never hangs.
+    const detached = sessionUserId
+      ? Promise.race([
+          detachDevicePush().catch((error) => console.warn("[push] detach on logout failed:", error)),
+          new Promise<void>((resolve) => window.setTimeout(resolve, 2500)),
+        ])
+      : Promise.resolve();
+    void detached.then(() => {
+      // If someone signed in again in the meantime, their session must not be killed.
+      if (!sessionUserIdRef.current) supabase?.auth.signOut();
+    });
     if (sessionUserId) dbCache.clearUserCache(sessionUserId);
     applySessionUserId(null);
     setProfileId(null);

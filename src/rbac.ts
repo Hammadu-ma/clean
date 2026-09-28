@@ -1028,18 +1028,19 @@ export function pushAudit(
 }
 
 /**
- * A notification whose stored route lives in another role's area
- * (e.g. "/teacher/marks" delivered to an admin) was meant for that role, not
- * for this user, so it is never shown, counted or popped up for them.
- * Notifications with no route, or a shared route, always belong to the user.
+ * The only misdelivery this hides is a teacher-area notification (a
+ * "/teacher/..." route) reaching an admin. Every other mismatch is left
+ * visible: "/admin/..." pages are open to any base role (permission-guarded),
+ * and a wrong-area route on anything else is re-targeted when it is clicked
+ * (see notificationDestination), so it can never dead-end on Access denied.
  */
 export const notificationBelongsToUser = (
   n: AppNotification,
   user: User
 ): boolean => {
   if (n.userId !== user.id) return false;
-  const area = n.targetRoute?.trim().match(/^\/(admin|teacher|student|guardian)\//);
-  return !area || area[1] === user.role;
+  if (user.role !== "admin") return true;
+  return !/^\/teacher\//.test(n.targetRoute?.trim() ?? "");
 };
 
 export const unreadNotifications = (

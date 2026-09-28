@@ -1,3 +1,27 @@
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import {
+  BadgeCheck, Baby, BookOpen, CalendarCheck2, CreditCard, FileBarChart2, History, Inbox, KeyRound, Layers, Lock,
+  FileText as Notebook, Pencil, Plus, Search, ShieldCheck, Trash2, User as UserIcon, Users, Wallet, Eye, GraduationCap, X,
+} from "lucide-react";
+import type { DB, Enrollment, FeeItem, Role, Student, User, UserStatus } from "../types";
+import {
+  assessmentCalc, attendanceStats, canSeeStudent, childrenOf, describeSyncErrors, feeStats, fmtDate, fullName, getClass, getSection,
+  getSubject, gradeFor, guardianOfStudent, homePathFor, ordinal, pendingRequestFor, sectionLabel, sectionShort, shortName,
+  studentAverage, studentOf, studentResults, structureRanks, teacherPairs, teachersOfStudent,
+  todayISO, uid, useApp, useLazyGroups,
+} from "../store";
+import {
+  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, RoleBadge, Select, Skel, SkeletonPanel, SkeletonRows,
+  Stat, Tabs, TextInput, UserAvatar, UsernameConflictModal, tdCls, thCls, useConfirm,
+} from "../ui";
+import { getDownloadUrl, isStorageConfigured, uploadFile } from "../lib/storage";
+import { AccessDenied } from "./Auth";
+import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
+import { changeUserPassword, updateMyProfile, useStudents, studentRowToStudent, useStudentDetail, studentDetailToStudent } from "../lib/api";
+import { deleteStudentRecord, deleteUserAccount } from "../lib/backend";
+import { IDCardModal, RegistrationWizard } from "./registration";
+
 /* ================= student profile (entity-guarded) ================= */
 export function StudentProfilePage() {
   const { db, currentUser, toast } = useApp();

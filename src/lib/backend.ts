@@ -251,7 +251,11 @@ async function sel<T = any>(table: string, yearId?: string, _select = "*"): Prom
 
 export type LazyGroup =
   | "academics" | "attendance" | "fees" | "homework" | "timetable"
-  | "announcements" | "messaging" | "notifications" | "events" | "audit" | "reports";
+  | "announcements" | "messaging" | "notifications" | "events" | "audit" | "reports"
+  /** School-wide user accounts + student records. NOT part of ALL_LAZY_GROUPS on
+   *  purpose: only the admin People pages request it, and it must never be
+   *  written to the browser cache (it holds everyone's personal data). */
+  | "people";
 
 export const ALL_LAZY_GROUPS: LazyGroup[] = [
   "academics", "attendance", "fees", "homework", "timetable",
@@ -787,6 +791,22 @@ export async function hydrateGroup(group: LazyGroup, base: DB, yearId?: string):
     case "audit": {
       const audit = await sel("audit_log", yearId);
       return audit ? { audit: mapAudit(audit) } : {};
+    }
+    case "people": {
+      // The bounded bootstrap only carries the signed-in person, but the admin
+      // People pages (Users, Families) work on the whole school. Reuse the same
+      // core snapshot the legacy path used and map it with the same mapper.
+      const snap = await legacyGroupSnapshot("core", yearId);
+      if (!snap) return {};
+      const scratch: DB = { ...base };
+      applyCoreRows(scratch, {
+        schools: null, years: snap.years ?? null, terms: null, classes: null, sections: null,
+        subjects: null, teachers: null, assignments: null,
+        students: snap.students ?? null, enrollments: snap.enrollments ?? null,
+        documents: snap.student_documents ?? null, roleDefs: null, rolePerms: null,
+        profiles: snap.profiles ?? null, guardianStudents: snap.guardian_students ?? null,
+      }, yearId);
+      return { users: scratch.users, students: scratch.students };
     }
     case "reports": {
       const reports = await sel("message_reports", yearId);

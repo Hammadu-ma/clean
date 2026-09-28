@@ -361,6 +361,7 @@ const GROUP_FIELDS: Record<LazyGroup, (keyof DB)[]> = {
   events: ["events"],
   audit: ["audit"],
   reports: ["reports"],
+  people: ["users", "students"],
 };
 
 /**
@@ -601,7 +602,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const merged: DB = { ...dbRef.current, ...partial };
         dbRef.current = merged;
         setDb(merged);
-        if (sessionUserId) dbCache.writeCache(dbCache.cacheKey(sessionUserId, group), partial);
+        if (sessionUserId && group !== "people") dbCache.writeCache(dbCache.cacheKey(sessionUserId, group), partial);
       })
       .catch((e) => console.warn(`[store] realtime refresh failed for ${group}:`, e))
       .finally(() => {
@@ -634,7 +635,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const merged: DB = { ...dbRef.current, ...partial };
         dbRef.current = merged;
         setDb(merged);
-        if (sessionUserId) dbCache.writeCache(dbCache.cacheKey(sessionUserId, group), partial);
+        if (sessionUserId && group !== "people") dbCache.writeCache(dbCache.cacheKey(sessionUserId, group), partial);
       })
       .catch((e) => console.warn(`[store] failed to load ${group}:`, e))
       .finally(() => {

@@ -1068,12 +1068,18 @@ export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
           : null;
     if (!liveGroup) return;
 
-    // The browser no longer holds a Supabase credential, so a direct
-    // EventSource/SSE notification connection is not necessary here and was
-    // responsible for repeated /api/realtime-notifications connection resets.
-    // Keep one bounded same-origin poll instead. The Messages page itself has
-    // a faster, conversation-scoped React Query poll (see api.ts).
-    const interval = liveGroup === "messaging" ? 2500 : liveGroup === "notifications" ? 3000 : 6000;
+    // Keep notification delivery on the same bounded polling path as the
+    // other live groups. Long-lived SSE connections have produced connection
+    // resets in some deployments, which can leave the global header stale even
+    // though the notification row was successfully inserted in PostgreSQL.
+    // get_app_snapshot is rate limited to 10/min, so these intervals must stay
+    // at 6s or slower. This loader is mounted once from AppShell, so it
+    // refreshes notifications even while the user is on Messages, Dashboard, etc.
+    const interval = liveGroup === "notifications"
+      ? 7000
+      : liveGroup === "messaging"
+        ? 7000
+        : 6000;
     const timer = window.setInterval(() => refreshGroup(liveGroup), interval);
     return () => window.clearInterval(timer);
   }, [key, yearId, refreshGroup]);

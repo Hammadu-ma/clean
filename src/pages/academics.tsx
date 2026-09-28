@@ -129,11 +129,20 @@ export function MarkEntryPage() {
 
   const classOptions = [...new Set(allowedStructures.map((st) => st.classId))];
   const subjectOptions = [...new Set(allowedStructures.map((st) => st.subjectId))];
-  // Order the semester filter by the academic year's own term sequence
-  // (anything not a term of this year, e.g. "Annual", goes last).
-  const termSeq = new Map(db.terms.filter((t) => t.yearId === yearId).map((t) => [t.name.trim().toLowerCase(), t.seq]));
-  const periodOptions = [...new Set(allowedStructures.map((st) => st.period))]
-    .sort((x, y) => (termSeq.get(x.trim().toLowerCase()) ?? 999) - (termSeq.get(y.trim().toLowerCase()) ?? 999));
+  // The Semester filter lists the selected academic year's own terms (Academic
+  // years & terms), in their set order, whether or not a structure exists yet.
+  // "Annual" is offered only if a structure uses it. Structure periods that
+  // match none of the year's terms (legacy/mismatched names) are kept
+  // reachable, but in a separate group so they are clearly not year terms.
+  const norm = (v: string) => v.trim().toLowerCase();
+  const yearTermNames = db.terms.filter((t) => t.yearId === yearId).sort((x, y) => x.seq - y.seq).map((t) => t.name);
+  const yearTermKeys = new Set(yearTermNames.map(norm));
+  const structurePeriods = [...new Set(allowedStructures.map((st) => st.period))];
+  const periodOptions = [
+    ...yearTermNames,
+    ...structurePeriods.filter((p) => norm(p) === "annual" && !yearTermKeys.has("annual")),
+  ];
+  const mismatchedPeriods = structurePeriods.filter((p) => norm(p) !== "annual" && !yearTermKeys.has(norm(p)));
 
   const requestedStructureId = new URLSearchParams(location.search).get("structure");
   const requestedStructure = requestedStructureId ? allowedStructures.find((st) => st.id === requestedStructureId) : undefined;
@@ -159,7 +168,7 @@ export function MarkEntryPage() {
       if (!cls?.sections.some((s) => s.id === filterSectionId)) return false;
     }
     if (filterSubjectId && st.subjectId !== filterSubjectId) return false;
-    if (filterPeriod && st.period !== filterPeriod) return false;
+    if (filterPeriod && norm(st.period) !== norm(filterPeriod)) return false;
     return true;
   });
 
@@ -423,6 +432,11 @@ export function MarkEntryPage() {
           <Select value={filterPeriod} onChange={async (e) => { const v = e.target.value; if (await confirmDiscardMarks()) setFilterPeriod(v); }}>
             <option value="">All</option>
             {periodOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+            {mismatchedPeriods.length > 0 && (
+              <optgroup label="Not a term of this year">
+                {mismatchedPeriods.map((p) => <option key={p} value={p}>{p}</option>)}
+              </optgroup>
+            )}
           </Select>
         </Field>
 

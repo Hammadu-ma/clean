@@ -854,7 +854,20 @@ export function notificationDestination(
   );
 
   if (explicit) {
-    return explicit;
+    // A stored route may belong to another role's area (e.g. a marks or
+    // homework notification created for a teacher carries "/teacher/marks").
+    // Those areas are role-guarded, so sending an admin there ends on
+    // "Access denied - Required access: Teacher". Re-target it to the
+    // signed-in user's own equivalent (keeping any ?query), and if that
+    // equivalent doesn't exist fall through to the per-role logic below.
+    const areaMatch = explicit.match(/^\/(admin|teacher|student|guardian)(\/.*)$/);
+    if (!areaMatch || areaMatch[1] === currentUser.role) {
+      return explicit;
+    }
+    const retargeted = safeNotificationRoute(`/${currentUser.role}${areaMatch[2]}`);
+    if (retargeted) {
+      return retargeted;
+    }
   }
 
   switch (notification.type) {

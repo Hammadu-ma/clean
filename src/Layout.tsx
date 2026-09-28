@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { homePathFor, timeAgo, useApp, useLazyGroups } from "./store";
 import { useAdminPendingFeePayments } from "./lib/api";
-import { hasPermission, totalUnreadMessages, unreadNotifications } from "./rbac";
+import { hasPermission, notificationBelongsToUser, notificationDestination, totalUnreadMessages, unreadNotifications } from "./rbac";
 import { Chip, RoleBadge, SchoolLogo, UserAvatar } from "./ui";
 import type { AppNotification, Role } from "./types";
 
@@ -159,7 +159,7 @@ export function AppShell() {
   // seen so existing notifications never flash as if they were new.
   useEffect(() => {
     if (!notificationsLoaded || !currentUser) return;
-    const currentIds = new Set(db.notifications.filter((n) => n.userId === currentUser.id).map((n) => n.id));
+    const currentIds = new Set(db.notifications.filter((n) => notificationBelongsToUser(n, currentUser)).map((n) => n.id));
     if (notificationUserIdRef.current !== currentUser.id) {
       notificationUserIdRef.current = currentUser.id;
       seenNotificationIdsRef.current = currentIds;
@@ -174,7 +174,7 @@ export function AppShell() {
     }
 
     const fresh = db.notifications
-      .filter((n) => n.userId === currentUser.id && !seenNotificationIdsRef.current.has(n.id))
+      .filter((n) => notificationBelongsToUser(n, currentUser) && !seenNotificationIdsRef.current.has(n.id))
       .sort((a, b) => a.at.localeCompare(b.at));
 
     seenNotificationIdsRef.current = currentIds;
@@ -406,7 +406,7 @@ export function AppShell() {
                 if (item) item.read = true;
               });
               setIncomingNotification(null);
-              nav(n.targetRoute || "/notifications");
+              nav(notificationDestination(db, currentUser, n));
             }}
             className="pointer-events-auto group w-full cursor-pointer rounded-2xl border border-pine-200 bg-card px-4 py-3.5 text-left shadow-2xl ring-1 ring-black/5 transition hover:-translate-y-0.5 hover:shadow-[0_18px_45px_rgba(0,0,0,0.16)]"
             aria-label="Open new notification"

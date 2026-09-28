@@ -854,7 +854,20 @@ export function notificationDestination(
   );
 
   if (explicit) {
-    return explicit;
+    // A stored route may belong to another role's area (e.g. a marks or
+    // homework notification created for a teacher carries "/teacher/marks").
+    // Those areas are role-guarded, so sending an admin there ends on
+    // "Access denied - Required access: Teacher". Re-target it to the
+    // signed-in user's own equivalent (keeping any ?query), and if that
+    // equivalent doesn't exist fall through to the per-role logic below.
+    const areaMatch = explicit.match(/^\/(admin|teacher|student|guardian)(\/.*)$/);
+    if (!areaMatch || areaMatch[1] === currentUser.role) {
+      return explicit;
+    }
+    const retargeted = safeNotificationRoute(`/${currentUser.role}${areaMatch[2]}`);
+    if (retargeted) {
+      return retargeted;
+    }
   }
 
   switch (notification.type) {
@@ -1014,6 +1027,22 @@ export function pushAudit(
   });
 }
 
+/**
+ * The only misdelivery this hides is a teacher-area notification (a
+ * "/teacher/..." route) reaching an admin. Every other mismatch is left
+ * visible: "/admin/..." pages are open to any base role (permission-guarded),
+ * and a wrong-area route on anything else is re-targeted when it is clicked
+ * (see notificationDestination), so it can never dead-end on Access denied.
+ */
+export const notificationBelongsToUser = (
+  n: AppNotification,
+  user: User
+): boolean => {
+  if (n.userId !== user.id) return false;
+  if (user.role !== "admin") return true;
+  return !/^\/teacher\//.test(n.targetRoute?.trim() ?? "");
+};
+
 export const unreadNotifications = (
   db: DB,
   user: User | null
@@ -1021,7 +1050,7 @@ export const unreadNotifications = (
   user
     ? db.notifications.filter(
         (n) =>
-          n.userId === user.id &&
+          notificationBelongsToUser(n, user) &&
           !n.read
       ).length
     : 0;
@@ -1033,7 +1062,7 @@ export const userNotifications = (
   user
     ? db.notifications
         .filter(
-          (n) => n.userId === user.id
+          (n) => notificationBelongsToUser(n, user)
         )
         .sort((a, b) =>
           b.at.localeCompare(a.at)

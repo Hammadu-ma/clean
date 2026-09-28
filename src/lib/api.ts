@@ -836,6 +836,12 @@ export function useConversations() {
     queryKey: qk.conversations(yearId ?? ""),
     enabled: Boolean(yearId),
     staleTime: STALE.realtime,
+    // The browser intentionally has no Supabase credential, so the API bridge
+    // uses bounded polling for live chat. This updates the inbox quickly even
+    // when the app is already open on another device/tab.
+    refetchInterval: 2500,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
     queryFn: () => rpc<unknown[]>("list_conversations", { p_year_id: yearId, p_limit: 30 }),
   });
 }
@@ -879,6 +885,11 @@ export function useMessages(conversationId: string | null, pageSize = 50) {
     queryKey: qk.messages(conversationId ?? ""),
     enabled: Boolean(conversationId),
     staleTime: STALE.realtime,
+    // Open conversations refresh every 1.5s. This is deliberately scoped to
+    // the active conversation instead of polling the whole messaging group.
+    refetchInterval: conversationId ? 1500 : false,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       rpc<MessageRow[]>("list_messages", {
@@ -900,7 +911,18 @@ export function useNotifications(unreadOnly = false, pageSize = 30) {
     staleTime: STALE.realtime,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
-      rpc<{ id: string; created_at: string }[]>("list_notifications", {
+      rpc<{
+        id: string;
+        type: string;
+        title: string;
+        body: string;
+        is_read: boolean;
+        year_id: string | null;
+        target_type: string | null;
+        target_id: string | null;
+        target_route: string | null;
+        created_at: string;
+      }[]>("list_notifications", {
         p_before: pageParam,
         p_limit: pageSize,
         p_unread_only: unreadOnly,

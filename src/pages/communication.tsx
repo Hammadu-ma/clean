@@ -7,7 +7,7 @@ import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors,
 import { deleteMessageRecord, getMessageReportContext, markAnnouncementRead, startConversation } from "../lib/backend";
 import {
   canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canTargetAudience, effectiveAnnouncementStatus,
-  hasPermission, pushAudit, pushNotifications, totalUnreadMessages, unreadNotifications, userNotifications, visibleAnnouncements, audienceUserIds,
+  hasPermission, notificationDestination as resolveNotificationDestination, pushAudit, pushNotifications, totalUnreadMessages, unreadNotifications, userNotifications, visibleAnnouncements, audienceUserIds,
 } from "../rbac";
 import type { Announcement, Audience, Conversation, SchoolEvent, User } from "../types";
 import { useDevicePush } from "../lib/push";
@@ -480,7 +480,14 @@ export function MessagesPage() {
       body: m.body,
       createdAt: m.created_at,
       readBy: m.read_by ?? [],
-      status: (Array.isArray(m.read_by) && currentUser?.id && m.read_by.includes(currentUser.id)) ? "read" : "sent",
+      // The database intentionally starts read_by with the sender's own id.
+      // Therefore the sender's own presence in read_by is NOT a read receipt.
+      // A sent message becomes read only after another participant appears.
+      status: (
+        m.sender_id === currentUser?.id &&
+        Array.isArray(m.read_by) &&
+        m.read_by.some((readerId: string) => readerId !== m.sender_id)
+      ) ? "read" : "sent",
     } as any)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }, [messagesQuery.data, currentUser?.id, id]);
 
@@ -710,7 +717,7 @@ export function NotificationsPage() {
   };
   const openNotification = (n: import("../types").AppNotification) => {
     if (!n.read) void update((d) => { const x = d.notifications.find((y) => y.id === n.id); if (x) x.read = true; });
-    const destination = notificationDestination(n);
+    const destination = resolveNotificationDestination(db, currentUser, n);
     if (destination) nav(destination);
   };
   const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, fee: Wallet, fee_payment_request: Wallet, fee_payment_approved: CheckCircle2, fee_payment_rejected: AlertTriangle, fee_payment: Wallet, system: Bell };

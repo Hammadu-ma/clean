@@ -2216,10 +2216,32 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
   const canExport = currentUser?.role === "admin";
   const resultsQuery = useStudentResults(student.id, publishedOnly);
   const results = normalizeReportResults(resultsQuery.data?.results ?? []);
-  const completeOnes = results.filter((r) => r.calc.complete);
   const showGrade = getYear(db, db.years.find((y) => y.active)?.id)?.showGrade !== false;
-  const avg = completeOnes.length ? +(completeOnes.reduce((s, r) => s + r.calc.pct, 0) / completeOnes.length).toFixed(1) : null;
   const [tab, setTab] = useState<"summary" | "detailed">("summary");
+
+  // Results are always grouped by period (semester/term) — a mark sheet's
+  // period is part of its identity, so mixing terms in one flat list reads
+  // as one exam when it's really several. Preserve the order periods first
+  // appear in rather than sorting alphabetically ("Semester 2" before
+  // "Semester 10" is wrong either way, but first-seen at least matches
+  // however the office entered them).
+  const periods = useMemo(() => {
+    const seen: string[] = [];
+    for (const r of results) if (!seen.includes(r.st.period)) seen.push(r.st.period);
+    return seen;
+  }, [results]);
+  const [periodFilter, setPeriodFilter] = useState("");
+  useEffect(() => { if (periodFilter && !periods.includes(periodFilter)) setPeriodFilter(""); }, [periods, periodFilter]);
+
+  const filteredResults = periodFilter ? results.filter((r) => r.st.period === periodFilter) : results;
+  const groups = useMemo(() => {
+    const map = new Map<string, ReportResult[]>();
+    for (const r of filteredResults) map.set(r.st.period, [...(map.get(r.st.period) ?? []), r]);
+    return [...map.entries()];
+  }, [filteredResults]);
+
+  const completeOnes = filteredResults.filter((r) => r.calc.complete);
+  const avg = completeOnes.length ? +(completeOnes.reduce((s, r) => s + r.calc.pct, 0) / completeOnes.length).toFixed(1) : null;
 
   if (resultsQuery.isPending) return <SkeletonPanel rows={5} />;
   if (resultsQuery.error) return <EmptyState icon={<AlertTriangle className="h-5 w-5" />} title="Results unavailable" body={(resultsQuery.error as Error).message || "Could not load this report card."} />;
@@ -2229,31 +2251,51 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
       <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-mist bg-paper/50 p-3">
         <Avatar student={student} size={40} />
         <div><p className="font-display font-bold text-ink">{fullName(student)}</p><p className="text-[11.5px] text-soft">{student.enrollment ? sectionShort(db, student.enrollment.classId, student.enrollment.sectionId) : "—"} · Reg. {student.regId}</p></div>
-        {avg != null && <span className="text-right"><span className="block font-mono text-[20px] font-extrabold text-pine-800">{avg}%</span><span className="block text-[10.5px] font-semibold text-soft">overall average</span></span>}
-        {canExport && <div className="ml-auto flex gap-2"><Btn size="sm" variant="soft" onClick={() => exportReportCardCsv(db, student, results)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn><Btn size="sm" variant="soft" onClick={() => exportReportCardPdf(db, student, results)}><Printer className="h-3.5 w-3.5" /> PDF</Btn></div>}
+        {avg != null && <span className="text-right"><span className="block font-mono text-[20px] font-extrabold text-pine-800">{avg}%</span><span className="block text-[10.5px] font-semibold text-soft">{periodFilter ? `${periodFilter} average` : "overall average"}</span></span>}
+        {canExport && <div className="ml-auto flex gap-2"><Btn size="sm" variant="soft" onClick={() => exportReportCardCsv(db, student, filteredResults)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn><Btn size="sm" variant="soft" onClick={() => exportReportCardPdf(db, student, filteredResults)}><Printer className="h-3.5 w-3.5" /> PDF</Btn></div>}
       </div>
-      <div className="mb-3"><Tabs tabs={[{ id: "summary", label: "Summary", icon: <FileBarChart2 className="h-3.5 w-3.5" /> }, { id: "detailed", label: "Detailed", icon: <Table2 className="h-3.5 w-3.5" /> }]} active={tab} onChange={(id) => setTab(id as any)} /></div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <Tabs tabs={[{ id: "summary", label: "Summary", icon: <FileBarChart2 className="h-3.5 w-3.5" /> }, { id: "detailed", label: "Detailed", icon: <Table2 className="h-3.5 w-3.5" /> }]} active={tab} onChange={(id) => setTab(id as any)} />
+        {periods.length > 1 && (
+          <Field label="Term" className="w-44">
+            <Select value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)}>
+              <option value="">All terms</option>
+              {periods.map((p) => <option key={p} value={p}>{p}</option>)}
+            </Select>
+          </Field>
+        )}
+      </div>
       {tab === "summary" ? (
         <Panel className="overflow-x-auto">
           <table className="academic-results-table w-full min-w-[700px]">
-            <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th>{showGrade && <th className={`${thCls()} text-center`}>Grade</th>}</tr></thead>
-            <tbody className="divide-y divide-mist/70">
-              {results.map((r) => { const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null; return <tr key={r.st.id}>
-                <td className={tdCls()}><span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: r.subject?.color ?? undefined }} /> {r.subject?.name}</span></td>
-                <td className={tdCls()}>{r.st.period}</td><td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.complete ? fmt1(r.calc.total) : "—"}</td><td className={`${tdCls()} text-center font-mono`}>{r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—"}</td>
-                {showGrade && <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={r.calc.pct >= 80 ? "pine" : r.calc.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <Chip tone="gray">pending</Chip>}</td>}
-              </tr>; })}
-              {results.length === 0 && <tr><td colSpan={showGrade ? 5 : 4}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title={publishedOnly ? "No published results yet" : "No results yet"} body={publishedOnly ? "Results appear here once the office publishes them." : "No assessment results have been entered for this student."} /></td></tr>}
-            </tbody>
+            <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th>{showGrade && <th className={`${thCls()} text-center`}>Grade</th>}</tr></thead>
+            {groups.map(([period, rows]) => (
+              <tbody key={period} className="divide-y divide-mist/70">
+                <tr className="bg-paper/70"><td colSpan={showGrade ? 4 : 3} className="px-3 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.1em] text-soft">{period}</td></tr>
+                {rows.map((r) => { const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null; return <tr key={r.st.id}>
+                  <td className={tdCls()}><span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: r.subject?.color ?? undefined }} /> {r.subject?.name}</span></td>
+                  <td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.complete ? fmt1(r.calc.total) : "—"}</td><td className={`${tdCls()} text-center font-mono`}>{r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—"}</td>
+                  {showGrade && <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={r.calc.pct >= 80 ? "pine" : r.calc.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <Chip tone="gray">pending</Chip>}</td>}
+                </tr>; })}
+              </tbody>
+            ))}
+            {groups.length === 0 && <tbody><tr><td colSpan={showGrade ? 4 : 3}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title={publishedOnly ? "No published results yet" : "No results yet"} body={publishedOnly ? "Results appear here once the office publishes them." : "No assessment results have been entered for this student."} /></td></tr></tbody>}
           </table>
         </Panel>
       ) : (
-        <div className="space-y-4">
-          {results.map((r) => <Panel key={r.st.id} className="overflow-hidden">
-            <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-2.5"><span className="flex items-center gap-2 text-[12.5px] font-bold text-ink"><span className="h-2.5 w-2.5 rounded-full" style={{ background: r.subject?.color ?? undefined }} /> {r.subject?.name} <span className="font-normal text-soft">· {r.st.period}</span></span><span className="font-mono text-[12.5px] font-bold text-pine-800">{r.calc.complete ? `${fmt1(r.calc.total)} (${fmt1(r.calc.pct)}%)` : "Incomplete"}</span></div>
-            <div className="overflow-x-auto"><table className="academic-results-table w-full min-w-[520px]"><thead className="border-b border-mist bg-paper/40"><tr><th className={thCls()}>Assessment</th><th className={`${thCls()} text-center`}>Max</th><th className={`${thCls()} text-center`}>Weight</th><th className={`${thCls()} text-center`}>Score</th></tr></thead><tbody className="divide-y divide-mist/70">{r.st.items.map((it) => <tr key={it.id}><td className={tdCls()}>{it.name}</td><td className={`${tdCls()} text-center font-mono`}>{it.max}</td><td className={`${tdCls()} text-center font-mono`}>{it.weight}%</td><td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.raw[it.id] ?? "—"}</td></tr>)}</tbody></table></div>
-          </Panel>)}
-          {results.length === 0 && <Panel><EmptyState icon={<Table2 className="h-5 w-5" />} title={publishedOnly ? "No published results yet" : "No results yet"} body={publishedOnly ? "Results appear here once the office publishes them." : "No assessment results have been entered for this student."} /></Panel>}
+        <div className="space-y-5">
+          {groups.map(([period, rows]) => (
+            <div key={period}>
+              <p className="mb-2 text-[10.5px] font-bold uppercase tracking-[0.1em] text-soft">{period}</p>
+              <div className="space-y-4">
+                {rows.map((r) => <Panel key={r.st.id} className="overflow-hidden">
+                  <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-2.5"><span className="flex items-center gap-2 text-[12.5px] font-bold text-ink"><span className="h-2.5 w-2.5 rounded-full" style={{ background: r.subject?.color ?? undefined }} /> {r.subject?.name}</span><span className="font-mono text-[12.5px] font-bold text-pine-800">{r.calc.complete ? `${fmt1(r.calc.total)} (${fmt1(r.calc.pct)}%)` : "Incomplete"}</span></div>
+                  <div className="overflow-x-auto"><table className="academic-results-table w-full min-w-[520px]"><thead className="border-b border-mist bg-paper/40"><tr><th className={thCls()}>Assessment</th><th className={`${thCls()} text-center`}>Max</th><th className={`${thCls()} text-center`}>Weight</th><th className={`${thCls()} text-center`}>Score</th></tr></thead><tbody className="divide-y divide-mist/70">{r.st.items.map((it) => <tr key={it.id}><td className={tdCls()}>{it.name}</td><td className={`${tdCls()} text-center font-mono`}>{it.max}</td><td className={`${tdCls()} text-center font-mono`}>{it.weight}%</td><td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.raw[it.id] ?? "—"}</td></tr>)}</tbody></table></div>
+                </Panel>)}
+              </div>
+            </div>
+          ))}
+          {groups.length === 0 && <Panel><EmptyState icon={<Table2 className="h-5 w-5" />} title={publishedOnly ? "No published results yet" : "No results yet"} body={publishedOnly ? "Results appear here once the office publishes them." : "No assessment results have been entered for this student."} /></Panel>}
         </div>
       )}
     </div>

@@ -379,6 +379,22 @@ export function StudentProfilePage() {
   const att = attendanceStats(db, s.id);
   const avg = studentAverage(db, s);
   const results = studentResults(db, s);
+  // Grouped by period (semester/term) — see ReportCardBody in academics.tsx
+  // for the same pattern and why: a mark sheet's period is part of its
+  // identity, so a flat list across terms reads as one exam when it isn't.
+  const gradePeriods = useMemo(() => {
+    const seen: string[] = [];
+    for (const r of results) if (!seen.includes(r.st.period)) seen.push(r.st.period);
+    return seen;
+  }, [results]);
+  const [gradePeriodFilter, setGradePeriodFilter] = useState("");
+  useEffect(() => { if (gradePeriodFilter && !gradePeriods.includes(gradePeriodFilter)) setGradePeriodFilter(""); }, [gradePeriods, gradePeriodFilter]);
+  const filteredResults = gradePeriodFilter ? results.filter((r) => r.st.period === gradePeriodFilter) : results;
+  const gradeGroups = useMemo(() => {
+    const map = new Map<string, typeof results>();
+    for (const r of filteredResults) map.set(r.st.period, [...(map.get(r.st.period) ?? []), r]);
+    return [...map.entries()];
+  }, [filteredResults]);
   const fees = feeStats(db, s.id);
   const teachers = teachersOfStudent(db, s);
   const homework = db.homework.filter((h) => h.classId === enr?.classId && h.sectionId === enr?.sectionId);
@@ -480,32 +496,44 @@ export function StudentProfilePage() {
 
         {tab === "grades" && (
           <Panel className="anim-rise overflow-hidden">
-            <div className="border-b border-mist px-5 py-3.5">
-              <h3 className="font-display text-[15px] font-bold">Assessment results</h3>
-              <p className="text-[11.5px] text-soft">Totals and percentages are weighted from each subject's assessment structure.</p>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-mist px-5 py-3.5">
+              <div>
+                <h3 className="font-display text-[15px] font-bold">Assessment results</h3>
+                <p className="text-[11.5px] text-soft">Totals and percentages are weighted from each subject's assessment structure.</p>
+              </div>
+              {gradePeriods.length > 1 && (
+                <Field label="Term" className="w-44">
+                  <Select value={gradePeriodFilter} onChange={(e) => setGradePeriodFilter(e.target.value)}>
+                    <option value="">All terms</option>
+                    {gradePeriods.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </Select>
+                </Field>
+              )}
             </div>
             <div className="overflow-x-auto">
               <table className="academic-results-table w-full min-w-[760px]">
                 <thead className="border-b border-mist bg-paper/60">
-                  <tr><th className={`${thCls()} whitespace-nowrap`}>Subject</th><th className={`${thCls()} whitespace-nowrap`}>Period</th><th className={`${thCls()} min-w-[220px] whitespace-nowrap`}>Structure</th><th className={`${thCls()} w-[100px] whitespace-nowrap`}>%</th><th className={`${thCls()} w-[100px] whitespace-nowrap`}>Grade</th><th className={`${thCls()} min-w-[120px] whitespace-nowrap`}>Position</th></tr>
+                  <tr><th className={`${thCls()} whitespace-nowrap`}>Subject</th><th className={`${thCls()} min-w-[220px] whitespace-nowrap`}>Structure</th><th className={`${thCls()} w-[100px] whitespace-nowrap`}>%</th><th className={`${thCls()} w-[100px] whitespace-nowrap`}>Grade</th><th className={`${thCls()} min-w-[120px] whitespace-nowrap`}>Position</th></tr>
                 </thead>
-                <tbody className="divide-y divide-mist/70">
-                  {results.map(({ st, calc, subject }) => {
-                    const ranks = structureRanks(db, st);
-                    const band = gradeFor(calc.pct, db.grading);
-                    return (
-                      <tr key={st.id} className="transition-colors hover:bg-pine-50/50">
-                        <td className={`${tdCls()} whitespace-nowrap`}><span className="flex items-center gap-2 whitespace-nowrap font-bold text-ink"><span className="h-4 w-1 shrink-0 rounded-full" style={{ background: subject?.color }} />{subject?.name}</span></td>
-                        <td className={`${tdCls()} whitespace-nowrap text-soft`}>{st.period}</td>
-                        <td className={`${tdCls()} min-w-[220px] whitespace-nowrap text-[11.5px] text-soft`}>{st.items.map((i) => i.name).join(" · ")}</td>
-                        <td className={`${tdCls()} whitespace-nowrap font-mono text-[12.5px] font-bold ${calc.complete ? "text-pine-800" : "text-gold-600"}`}>{calc.complete ? `${calc.pct}%` : "in progress"}</td>
-                        <td className={`${tdCls()} whitespace-nowrap`}>{calc.complete ? <Chip tone={calc.pct >= 80 ? "pine" : calc.pct >= 50 ? "gold" : "rust"}>{band.grade}</Chip> : "—"}</td>
-                        <td className={`${tdCls()} whitespace-nowrap text-soft`}>{calc.complete && ranks[s.id] ? `${ordinal(ranks[s.id])} of ${Object.keys(ranks).length}` : "—"}</td>
-                      </tr>
-                    );
-                  })}
-                  {results.length === 0 && <tr><td colSpan={6} className="px-5 py-10 text-center text-[12.5px] text-soft">No assessment structures for this class yet.</td></tr>}
-                </tbody>
+                {gradeGroups.map(([period, rows]) => (
+                  <tbody key={period} className="divide-y divide-mist/70">
+                    <tr className="bg-paper/70"><td colSpan={5} className="px-3 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.1em] text-soft">{period}</td></tr>
+                    {rows.map(({ st, calc, subject }) => {
+                      const ranks = structureRanks(db, st);
+                      const band = gradeFor(calc.pct, db.grading);
+                      return (
+                        <tr key={st.id} className="transition-colors hover:bg-pine-50/50">
+                          <td className={`${tdCls()} whitespace-nowrap`}><span className="flex items-center gap-2 whitespace-nowrap font-bold text-ink"><span className="h-4 w-1 shrink-0 rounded-full" style={{ background: subject?.color }} />{subject?.name}</span></td>
+                          <td className={`${tdCls()} min-w-[220px] whitespace-nowrap text-[11.5px] text-soft`}>{st.items.map((i) => i.name).join(" · ")}</td>
+                          <td className={`${tdCls()} whitespace-nowrap font-mono text-[12.5px] font-bold ${calc.complete ? "text-pine-800" : "text-gold-600"}`}>{calc.complete ? `${calc.pct}%` : "in progress"}</td>
+                          <td className={`${tdCls()} whitespace-nowrap`}>{calc.complete ? <Chip tone={calc.pct >= 80 ? "pine" : calc.pct >= 50 ? "gold" : "rust"}>{band.grade}</Chip> : "—"}</td>
+                          <td className={`${tdCls()} whitespace-nowrap text-soft`}>{calc.complete && ranks[s.id] ? `${ordinal(ranks[s.id])} of ${Object.keys(ranks).length}` : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                ))}
+                {gradeGroups.length === 0 && <tbody><tr><td colSpan={5} className="px-5 py-10 text-center text-[12.5px] text-soft">No assessment structures for this class yet.</td></tr></tbody>}
               </table>
             </div>
           </Panel>

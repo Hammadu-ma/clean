@@ -2685,30 +2685,24 @@ function StudentPicker({
   const [cls, setCls] = useState("");
   const [sec, setSec] = useState("");
 
-  const rows = db.students
-    .filter(
-      (s) =>
-        !cls ||
-        s.enrollment?.classId === cls
-    )
-    .filter(
-      (s) =>
-        !sec ||
-        s.enrollment?.sectionId === sec
-    )
-    .filter((s) =>
-      q
-        ? shortName(s)
-            .toLowerCase()
-            .includes(q.toLowerCase()) ||
-          s.regId
-            .toLowerCase()
-            .includes(q.toLowerCase())
-        : true
-    )
-    .sort((a, b) =>
-      shortName(a).localeCompare(shortName(b))
-    );
+  // The scalable bootstrap deliberately leaves db.students empty for admins and
+  // staff, so the picker must page through students on the server instead.
+  const [debouncedQ, setDebouncedQ] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q.trim()), 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const studentsQuery = useStudents({
+    classId: cls || undefined,
+    sectionId: sec || undefined,
+    search: debouncedQ || undefined,
+    pageSize: 100,
+  });
+  const rows = useMemo(
+    () => studentsQuery.rows.map((r) => studentRowToStudent(r)),
+    [studentsQuery.rows]
+  );
 
   return (
     <div>
@@ -2831,9 +2825,27 @@ function StudentPicker({
           );
         })}
 
-        {rows.length === 0 && (
+        {studentsQuery.isPending && rows.length === 0 && (
+          <p className="col-span-full rounded-lg bg-paper/60 px-3 py-6 text-center text-[11.5px] text-soft">
+            Loading students…
+          </p>
+        )}
+
+        {studentsQuery.isError && (
+          <p className="col-span-full rounded-lg bg-rust-50 px-3 py-6 text-center text-[11.5px] text-rust-700">
+            Couldn't load students. Close this and try again.
+          </p>
+        )}
+
+        {!studentsQuery.isPending && !studentsQuery.isError && rows.length === 0 && (
           <p className="col-span-full rounded-lg bg-paper/60 px-3 py-6 text-center text-[11.5px] text-soft">
             No students match those filters.
+          </p>
+        )}
+
+        {studentsQuery.total > rows.length && (
+          <p className="col-span-full text-center text-[10.5px] text-soft">
+            Showing the first {rows.length} of {studentsQuery.total} — search or pick a grade to narrow it down.
           </p>
         )}
       </div>

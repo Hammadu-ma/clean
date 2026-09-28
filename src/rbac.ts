@@ -1027,6 +1027,21 @@ export function pushAudit(
   });
 }
 
+/**
+ * A notification whose stored route lives in another role's area
+ * (e.g. "/teacher/marks" delivered to an admin) was meant for that role, not
+ * for this user, so it is never shown, counted or popped up for them.
+ * Notifications with no route, or a shared route, always belong to the user.
+ */
+export const notificationBelongsToUser = (
+  n: AppNotification,
+  user: User
+): boolean => {
+  if (n.userId !== user.id) return false;
+  const area = n.targetRoute?.trim().match(/^\/(admin|teacher|student|guardian)\//);
+  return !area || area[1] === user.role;
+};
+
 export const unreadNotifications = (
   db: DB,
   user: User | null
@@ -1034,7 +1049,7 @@ export const unreadNotifications = (
   user
     ? db.notifications.filter(
         (n) =>
-          n.userId === user.id &&
+          notificationBelongsToUser(n, user) &&
           !n.read
       ).length
     : 0;
@@ -1046,7 +1061,7 @@ export const userNotifications = (
   user
     ? db.notifications
         .filter(
-          (n) => n.userId === user.id
+          (n) => notificationBelongsToUser(n, user)
         )
         .sort((a, b) =>
           b.at.localeCompare(a.at)
